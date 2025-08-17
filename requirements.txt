@@ -1,0 +1,11 @@
+fastapi==0.111.0
+mangum==0.17.0
+python-jose==3.3.0
+pydantic==2.7.3
+boto3==1.34.131
+passlib[bcrypt]==1.7.4
+uvicorn==0.30.1
+email-validator==2.1.1
+requests==2.31.0
+openai>=1.12.0
+python-dotenv==1.0.0

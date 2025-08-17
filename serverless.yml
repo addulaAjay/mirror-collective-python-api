@@ -1,0 +1,40 @@
+service: mirror-collective-python-api
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: us-east-1
+  stage: ${env:STAGE, 'staging'}
+  memorySize: 512
+  timeout: 30
+  environment:
+    AWS_REGION: ${env:AWS_REGION, 'us-east-1'}
+    ALLOWED_ORIGINS: ${env:ALLOWED_ORIGINS, 'http://localhost:3000'}
+    COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID, ''}
+    COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, ''}
+    RATE_LIMIT_WINDOW_SECONDS: ${env:RATE_LIMIT_WINDOW_SECONDS, 900}
+    RATE_LIMIT_MAX_REQUESTS: ${env:RATE_LIMIT_MAX_REQUESTS, 100}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
+  logs:
+    http: true
+
+functions:
+  api:
+    handler: src/app/handler.handler
+    events:
+      - httpApi: '*'
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    slim: true
+    layer: false
+
+package:
+  patterns:
+    - '!**/*'
+    - 'src/**'
+    - 'requirements.txt'

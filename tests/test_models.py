@@ -1,0 +1,235 @@
+"""
+Test Pydantic models
+"""
+import pytest
+from pydantic import ValidationError
+from src.app.api.models import (
+    UserRegistrationRequest,
+    LoginRequest, 
+    MirrorChatRequest,
+    ConversationTurn,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    EmailVerificationRequest
+)
+
+
+def test_user_registration_request_valid():
+    """Test valid user registration request"""
+    data = {
+        "email": "test@example.com",
+        "password": "ValidPass123!",
+        "fullName": "John Doe"
+    }
+    
+    request = UserRegistrationRequest(**data)
+    assert request.email == "test@example.com"
+    assert request.password == "ValidPass123!"
+    assert request.fullName == "John Doe"
+
+
+def test_user_registration_request_invalid_email():
+    """Test user registration with invalid email"""
+    data = {
+        "email": "invalid-email",
+        "password": "ValidPass123!",
+        "fullName": "John Doe"
+    }
+    
+    with pytest.raises(ValidationError) as exc_info:
+        UserRegistrationRequest(**data)
+    
+    assert "email" in str(exc_info.value)
+
+
+def test_user_registration_request_short_password():
+    """Test user registration with short password"""
+    data = {
+        "email": "test@example.com",
+        "password": "short",
+        "fullName": "John Doe"
+    }
+    
+    with pytest.raises(ValidationError) as exc_info:
+        UserRegistrationRequest(**data)
+    
+    assert "password" in str(exc_info.value)
+
+
+def test_user_registration_request_invalid_name():
+    """Test user registration with invalid name"""
+    data = {
+        "email": "test@example.com",
+        "password": "ValidPass123!",
+        "fullName": "J"  # Too short
+    }
+    
+    with pytest.raises(ValidationError) as exc_info:
+        UserRegistrationRequest(**data)
+    
+    assert "fullName" in str(exc_info.value)
+
+
+def test_login_request_valid():
+    """Test valid login request"""
+    data = {
+        "email": "test@example.com",
+        "password": "password123"
+    }
+    
+    request = LoginRequest(**data)
+    assert request.email == "test@example.com"
+    assert request.password == "password123"
+
+
+def test_conversation_turn_valid():
+    """Test valid conversation turn"""
+    data = {
+        "role": "user",
+        "content": "Hello there"
+    }
+    
+    turn = ConversationTurn(**data)
+    assert turn.role == "user"
+    assert turn.content == "Hello there"
+
+
+def test_conversation_turn_invalid_role():
+    """Test conversation turn with invalid role"""
+    data = {
+        "role": "invalid",
+        "content": "Hello there"
+    }
+    
+    with pytest.raises(ValidationError) as exc_info:
+        ConversationTurn(**data)
+    
+    assert "role" in str(exc_info.value)
+
+
+def test_conversation_turn_empty_content():
+    """Test conversation turn with empty content"""
+    data = {
+        "role": "user",
+        "content": ""
+    }
+    
+    with pytest.raises(ValidationError) as exc_info:
+        ConversationTurn(**data)
+    
+    assert "content" in str(exc_info.value)
+
+
+def test_mirror_chat_request_valid():
+    """Test valid mirror chat request"""
+    data = {
+        "message": "Hello, how are you?",
+        "conversationHistory": [
+            {
+                "role": "user",
+                "content": "Previous message"
+            }
+        ]
+    }
+    
+    request = MirrorChatRequest(**data)
+    assert request.message == "Hello, how are you?"
+    assert len(request.conversationHistory) == 1
+    assert request.conversationHistory[0].role == "user"
+
+
+def test_mirror_chat_request_no_history():
+    """Test mirror chat request without history"""
+    data = {
+        "message": "Hello, how are you?"
+    }
+    
+    request = MirrorChatRequest(**data)
+    assert request.message == "Hello, how are you?"
+    assert request.conversationHistory is None
+
+
+def test_mirror_chat_request_empty_message():
+    """Test mirror chat request with empty message"""
+    data = {
+        "message": ""
+    }
+    
+    with pytest.raises(ValidationError) as exc_info:
+        MirrorChatRequest(**data)
+    
+    assert "message" in str(exc_info.value)
+
+
+def test_forgot_password_request_valid():
+    """Test valid forgot password request"""
+    data = {
+        "email": "test@example.com"
+    }
+    
+    request = ForgotPasswordRequest(**data)
+    assert request.email == "test@example.com"
+
+
+def test_reset_password_request_valid():
+    """Test valid reset password request"""
+    data = {
+        "email": "test@example.com",
+        "resetCode": "123456",
+        "newPassword": "NewPass123!"
+    }
+    
+    request = ResetPasswordRequest(**data)
+    assert request.email == "test@example.com"
+    assert request.resetCode == "123456"
+    assert request.newPassword == "NewPass123!"
+
+
+def test_email_verification_request_valid():
+    """Test valid email verification request"""
+    data = {
+        "email": "test@example.com",
+        "verificationCode": "123456"
+    }
+    
+    request = EmailVerificationRequest(**data)
+    assert request.email == "test@example.com"
+    assert request.verificationCode == "123456"
+
+
+def test_password_pattern_validation():
+    """Test password pattern validation"""
+    valid_passwords = [
+        "ValidPass123!",
+        "Another1@",
+        "Test123$",
+        "MyPassword2&"
+    ]
+    
+    invalid_passwords = [
+        "short",          # Too short
+        "nouppercase1!",  # No uppercase
+        "NOLOWERCASE1!",  # No lowercase  
+        "NoDigits!",      # No digits
+        "NoSpecial123"    # No special chars
+    ]
+    
+    # Test valid passwords
+    for password in valid_passwords:
+        data = {
+            "email": "test@example.com",
+            "password": password,
+            "fullName": "Test User"
+        }
+        request = UserRegistrationRequest(**data)
+        assert request.password == password
+    
+    # Test invalid passwords
+    for password in invalid_passwords:
+        data = {
+            "email": "test@example.com", 
+            "password": password,
+            "fullName": "Test User"
+        }
+        with pytest.raises(ValidationError):
+            UserRegistrationRequest(**data)
