@@ -158,12 +158,12 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.npm
-        key: ${{ runner.os }}-serverless-3.38.0
+        key: ${{ runner.os }}-serverless-3.40.0
         restore-keys: |
           ${{ runner.os }}-serverless-
     
     - name: Install Serverless Framework
-      run: npm install -g serverless@3.38.0
+      run: npm install -g serverless@3.40.0
     
     - name: Install plugins and verify setup
       run: |
@@ -213,12 +213,12 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.npm
-        key: ${{ runner.os }}-serverless-3.38.0
+        key: ${{ runner.os }}-serverless-3.40.0
         restore-keys: |
           ${{ runner.os }}-serverless-
     
     - name: Install Serverless Framework
-      run: npm install -g serverless@3.38.0
+      run: npm install -g serverless@3.40.0
     
     - name: Install plugins and verify setup
       run: |
