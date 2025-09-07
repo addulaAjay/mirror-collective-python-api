@@ -106,6 +106,7 @@ custom:
     slim: false
     layer: false
     dockerizePip: true
+    dockerImage: public.ecr.aws/sam/build-python3.12:latest
     pipCmdExtraArgs:
       - --no-cache-dir
 
