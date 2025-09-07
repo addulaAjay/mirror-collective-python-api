@@ -50,6 +50,7 @@ jobs:
         # Test environment variables
         COGNITO_USER_POOL_ID: test-pool-id
         COGNITO_CLIENT_ID: test-client-id
+        COGNITO_CLIENT_SECRET: test-secret
         OPENAI_API_KEY: test-key
         AWS_REGION: us-east-1
       run: |
