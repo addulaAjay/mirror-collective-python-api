@@ -122,11 +122,10 @@ jobs:
       run: |
         mkdir -p build
         cp -r src/ build/
-        cp -r scripts/ build/ 2>/dev/null || true
         cp requirements.txt build/
         cp serverless.yml build/
         # Create package.json for serverless plugins
-        echo '{"dependencies": {"serverless-python-requirements": "^6.0.0"}}' > build/package.json
+        echo '{"dependencies": {"serverless-python-requirements": "^5.4.0"}}' > build/package.json
     
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -152,20 +151,24 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 'build/package.json'
+    
+    - name: Cache Serverless Framework
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-serverless-3.38.0
+        restore-keys: |
+          ${{ runner.os }}-serverless-
     
     - name: Install Serverless Framework
-      run: |
-        npm install -g serverless
+      run: npm install -g serverless@3.38.0
     
-    - name: Install local plugins and verify setup
+    - name: Install plugins and verify setup
       run: |
         cd build
-        npm install
-        serverless --version
-        echo "Current directory: $(pwd)"
-        echo "Files in build directory:"
-        ls -la
-        echo "Serverless config check:"
+        npm install --production
         serverless print --stage staging
     
     - name: Configure AWS credentials
@@ -178,9 +181,6 @@ jobs:
     - name: Deploy to staging
       run: |
         cd build
-        echo "Deploying to staging environment..."
-        echo "Files in build directory:"
-        ls -la
         serverless deploy --stage staging --verbose
       env:
         COGNITO_USER_POOL_ID: ${{ secrets.STAGING_COGNITO_USER_POOL_ID }}
@@ -206,20 +206,24 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 'build/package.json'
+    
+    - name: Cache Serverless Framework
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-serverless-3.38.0
+        restore-keys: |
+          ${{ runner.os }}-serverless-
     
     - name: Install Serverless Framework
-      run: |
-        npm install -g serverless
+      run: npm install -g serverless@3.38.0
     
-    - name: Install local plugins and verify setup
+    - name: Install plugins and verify setup
       run: |
         cd build
-        npm install
-        serverless --version
-        echo "Current directory: $(pwd)"
-        echo "Files in build directory:"
-        ls -la
-        echo "Serverless config check:"
+        npm install --production
         serverless print --stage production
     
     - name: Configure AWS credentials
@@ -232,9 +236,6 @@ jobs:
     - name: Deploy to production
       run: |
         cd build
-        echo "Deploying to production environment..."
-        echo "Files in build directory:"
-        ls -la
         serverless deploy --stage production --verbose
       env:
         COGNITO_USER_POOL_ID: ${{ secrets.PROD_COGNITO_USER_POOL_ID }}
