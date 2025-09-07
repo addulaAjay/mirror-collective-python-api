@@ -1,5 +1,6 @@
 from typing import List, Optional, Literal, Any, Dict
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
+import re
 
 class ConversationTurn(BaseModel):
     role: Literal['system', 'user', 'assistant']
@@ -16,8 +17,23 @@ class MirrorChatResponse(BaseModel):
     
 class UserRegistrationRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, pattern=r'^[A-Za-z\d@$!%*?&]+$')
+    password: str = Field(min_length=8)
     fullName: str = Field(min_length=2, max_length=100, pattern=r'^[a-zA-Z\s\'-]+$')
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        if not re.search(r'[@$!%*?&]', v):
+            raise ValueError('Password must contain at least one special character')
+        return v
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -29,7 +45,22 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
     resetCode: str = Field(min_length=1)
-    newPassword: str = Field(min_length=8, pattern=r'^[A-Za-z\d@$!%*?&]+$')
+    newPassword: str = Field(min_length=8)
+    
+    @field_validator('newPassword')
+    @classmethod
+    def validate_new_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        if not re.search(r'[@$!%*?&]', v):
+            raise ValueError('Password must contain at least one special character')
+        return v
 
 class RefreshTokenRequest(BaseModel):
     refreshToken: str = Field(min_length=1)

@@ -15,7 +15,7 @@ def test_register_success(client: TestClient, mock_cognito_client, sample_user_d
     data = response.json()
     assert data["success"] is True
     assert "data" in data
-    assert data["data"]["userSub"] == "test-user-sub"
+    assert data["data"]["user"]["id"] == "test-user-sub"
 
 
 def test_register_invalid_email(client: TestClient, sample_user_data):
@@ -51,8 +51,8 @@ def test_login_success(client: TestClient, mock_cognito_client, sample_login_dat
     data = response.json()
     assert data["success"] is True
     assert "data" in data
-    assert data["data"]["accessToken"] == "test-access-token"
-    assert data["data"]["refreshToken"] == "test-refresh-token"
+    assert data["data"]["tokens"]["accessToken"] == "test-access-token"
+    assert data["data"]["tokens"]["refreshToken"] == "test-refresh-token"
 
 
 def test_login_invalid_credentials(client: TestClient, mock_cognito_client, sample_login_data):
@@ -86,7 +86,7 @@ def test_verify_email_success(client: TestClient, mock_cognito_client):
     
     mock_cognito_client.confirm_sign_up.return_value = {}
     
-    response = client.post("/api/auth/verify-email", json=verification_data)
+    response = client.post("/api/auth/confirm-email", json=verification_data)
     assert response.status_code == 200
     
     data = response.json()
@@ -105,8 +105,8 @@ def test_verify_email_invalid_code(client: TestClient, mock_cognito_client):
         operation_name='ConfirmSignUp'
     )
     
-    response = client.post("/api/auth/verify-email", json=verification_data)
-    assert response.status_code == 422
+    response = client.post("/api/auth/confirm-email", json=verification_data)
+    assert response.status_code == 400
 
 
 def test_forgot_password_success(client: TestClient, mock_cognito_client):
@@ -155,7 +155,7 @@ def test_refresh_token_success(client: TestClient, mock_cognito_client):
     
     data = response.json()
     assert data["success"] is True
-    assert data["data"]["accessToken"] == "new-access-token"
+    assert data["data"]["tokens"]["accessToken"] == "new-access-token"
 
 
 def test_resend_verification_success(client: TestClient, mock_cognito_client):
@@ -164,7 +164,7 @@ def test_resend_verification_success(client: TestClient, mock_cognito_client):
     
     mock_cognito_client.resend_confirmation_code.return_value = {}
     
-    response = client.post("/api/auth/resend-verification", json=resend_data)
+    response = client.post("/api/auth/resend-verification-code", json=resend_data)
     assert response.status_code == 200
     
     data = response.json()

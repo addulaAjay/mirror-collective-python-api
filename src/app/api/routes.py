@@ -22,7 +22,7 @@ chat_controller = ChatController()
 
 # Auth endpoints
 
-@router.post('/auth/register', response_model=AuthResponse)
+@router.post('/auth/register', response_model=AuthResponse, status_code=201)
 async def register(payload: UserRegistrationRequest):
     """Register a new user account"""
     return await auth_controller.register(payload)

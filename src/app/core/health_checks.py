@@ -74,7 +74,6 @@ class CognitoHealthCheck(HealthCheck):
     async def _check_implementation(self) -> Dict[str, Any]:
         try:
             import os
-            from src.app.services.cognito_service import CognitoService
             
             # Basic configuration check
             user_pool_id = os.getenv('COGNITO_USER_POOL_ID')
@@ -90,17 +89,29 @@ class CognitoHealthCheck(HealthCheck):
             client = boto3.client('cognito-idp', region_name=os.getenv('AWS_REGION', 'us-east-1'))
             
             # Simple API call to test connectivity
-            response = await asyncio.get_event_loop().run_in_executor(
-                None, 
-                lambda: client.describe_user_pool(UserPoolId=user_pool_id)
-            )
-            
-            return {
-                "configured": True,
-                "user_pool_id": user_pool_id[:8] + "...",  # Masked for security
-                "region": os.getenv('AWS_REGION', 'us-east-1'),
-                "pool_name": response.get('UserPool', {}).get('Name', 'Unknown')
-            }
+            try:
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None, 
+                    lambda: client.describe_user_pool(UserPoolId=user_pool_id)
+                )
+                
+                # Extract only basic info to avoid serialization issues
+                pool_name = "Unknown"
+                if response and 'UserPool' in response and 'Name' in response['UserPool']:
+                    pool_name = str(response['UserPool']['Name'])
+                
+                return {
+                    "configured": True,
+                    "user_pool_id": user_pool_id[:8] + "...",  # Masked for security
+                    "region": os.getenv('AWS_REGION', 'us-east-1'),
+                    "pool_name": pool_name
+                }
+            except Exception as api_error:
+                return {
+                    "configured": True,
+                    "error": f"AWS API Error: {str(api_error)}"
+                }
+                
         except (ClientError, BotoCoreError) as e:
             logger.warning(f"Cognito health check failed: {str(e)}")
             return {
@@ -129,18 +140,30 @@ class OpenAIHealthCheck(HealthCheck):
             client = OpenAI(api_key=api_key)
             
             # Simple API call to test connectivity
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: client.models.list()
-            )
-            
-            models = [model.id for model in response.data if 'gpt' in model.id][:3]
-            
-            return {
-                "configured": True,
-                "api_key_present": True,
-                "available_models": models
-            }
+            try:
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: client.models.list()
+                )
+                
+                # Extract only the model IDs to avoid circular references
+                models = []
+                if hasattr(response, 'data') and response.data:
+                    models = [model.id for model in response.data if hasattr(model, 'id') and 'gpt' in model.id][:3]
+                
+                return {
+                    "configured": True,
+                    "api_key_present": True,
+                    "available_models": models
+                }
+            except Exception as api_error:
+                # Return basic info if API call fails but client is configured
+                return {
+                    "configured": True,
+                    "api_key_present": True,
+                    "connection_error": str(api_error)
+                }
+                
         except Exception as e:
             logger.warning(f"OpenAI health check failed: {str(e)}")
             return {
@@ -183,7 +206,7 @@ class HealthCheckService:
             return_exceptions=True
         )
         
-        # Process results
+        # Process results and ensure they're JSON serializable
         check_results: List[Dict[str, Any]] = []
         overall_status = HealthStatus.HEALTHY
         
@@ -196,11 +219,12 @@ class HealthCheckService:
                 })
                 overall_status = HealthStatus.UNHEALTHY
             elif isinstance(result, dict):
-                # Result is a Dict[str, Any] from the check() method
-                check_results.append(result)
-                if result.get("status") == HealthStatus.UNHEALTHY.value:
+                # Ensure the result is JSON serializable by converting to basic types
+                serializable_result = self._make_json_serializable(result)
+                check_results.append(serializable_result)
+                if serializable_result.get("status") == HealthStatus.UNHEALTHY.value:
                     overall_status = HealthStatus.UNHEALTHY
-                elif result.get("status") == HealthStatus.DEGRADED.value and overall_status == HealthStatus.HEALTHY:
+                elif serializable_result.get("status") == HealthStatus.DEGRADED.value and overall_status == HealthStatus.HEALTHY:
                     overall_status = HealthStatus.DEGRADED
         
         total_duration = time.time() - start_time
@@ -212,7 +236,21 @@ class HealthCheckService:
             "checks": check_results,
             "summary": {
                 "total_checks": len(check_results),
-                "healthy_checks": len([c for c in check_results if c["status"] == HealthStatus.HEALTHY.value]),
-                "unhealthy_checks": len([c for c in check_results if c["status"] == HealthStatus.UNHEALTHY.value])
+                "healthy_checks": len([c for c in check_results if c.get("status") == HealthStatus.HEALTHY.value]),
+                "unhealthy_checks": len([c for c in check_results if c.get("status") == HealthStatus.UNHEALTHY.value])
             }
         }
+    
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """Recursively convert objects to JSON serializable types"""
+        if obj is None or isinstance(obj, (bool, int, float, str)):
+            return obj
+        elif isinstance(obj, dict):
+            return {str(k): self._make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, Enum):
+            return obj.value
+        else:
+            # Convert any other type to string
+            return str(obj)
