@@ -1,6 +1,7 @@
 """
 Authentication controller - handles all auth-related endpoints
 """
+import logging
 from typing import Dict, Any
 
 from ..api.models import (
@@ -11,6 +12,8 @@ from ..api.models import (
 )
 from ..core.exceptions import AuthenticationError, UserNotFoundError
 from ..services.cognito_service import CognitoService
+
+logger = logging.getLogger(__name__)
 
 
 class AuthController:
@@ -157,9 +160,9 @@ class AuthController:
             if user_email:
                 # You could implement token blacklisting here
                 pass
-        except Exception:
+        except Exception as e:
             # Don't fail logout if token invalidation fails
-            pass
+            logger.warning(f"Token invalidation failed during logout: {e}")
         
         return GeneralApiResponse(
             success=True,

@@ -15,7 +15,7 @@ class UserStatus(Enum):
     COMPROMISED = "COMPROMISED"
     UNKNOWN = "UNKNOWN"
     RESET_REQUIRED = "RESET_REQUIRED"
-    FORCE_CHANGE_PASSWORD = "FORCE_CHANGE_PASSWORD"
+    FORCE_CHANGE_PASSWORD = "FORCE_CHANGE_PASSWORD"  # nosec B105 - This is a status constant, not a password
 
 
 @dataclass
