@@ -41,8 +41,18 @@ provider:
           Action:
             - cognito-idp:GetUser
             - cognito-idp:AdminGetUser
+            - cognito-idp:AdminInitiateAuth
+            - cognito-idp:AdminDeleteUser
             - cognito-idp:DescribeUserPool
             - cognito-idp:DescribeUserPoolClient
+            - cognito-idp:SignUp
+            - cognito-idp:ConfirmSignUp
+            - cognito-idp:ResendConfirmationCode
+            - cognito-idp:ForgotPassword
+            - cognito-idp:ConfirmForgotPassword
+            - cognito-idp:InitiateAuth
+            - cognito-idp:DeleteUser
+            - cognito-idp:GlobalSignOut
           Resource:
             - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
   logs:
