@@ -9,7 +9,6 @@ provider:
   memorySize: 512
   timeout: 30
   environment:
-    AWS_REGION: ${env:AWS_REGION, 'us-east-1'}
     ALLOWED_ORIGINS: ${env:ALLOWED_ORIGINS, 'http://localhost:3000'}
     COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID, ''}
     COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, ''}
