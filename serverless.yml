@@ -28,6 +28,7 @@ provider:
             - dynamodb:PutItem
             - dynamodb:UpdateItem
             - dynamodb:DeleteItem
+            - dynamodb:DescribeTable
           Resource:
             - Fn::GetAtt: [ UsersTable, Arn ]
             - Fn::Join:
@@ -39,6 +40,8 @@ provider:
           Action:
             - cognito-idp:GetUser
             - cognito-idp:AdminGetUser
+            - cognito-idp:DescribeUserPool
+            - cognito-idp:DescribeUserPoolClient
           Resource:
             - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
   logs:

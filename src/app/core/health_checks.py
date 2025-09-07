@@ -167,14 +167,74 @@ class OpenAIHealthCheck(HealthCheck):
 
 
 class DatabaseHealthCheck(HealthCheck):
-    """Placeholder for database health check"""
+    """Health check for DynamoDB tables"""
 
     def __init__(self):
-        super().__init__("database", timeout=5.0)
+        super().__init__("database", timeout=10.0)
 
     async def _check_implementation(self) -> Dict[str, Any]:
-        # For now, just return healthy since no database is configured
-        return {"configured": False, "note": "No database configured"}
+        try:
+            import os
+
+            # Check if DynamoDB table names are configured
+            users_table = os.getenv("DYNAMODB_USERS_TABLE")
+            activity_table = os.getenv("DYNAMODB_ACTIVITY_TABLE")
+
+            if not users_table or not activity_table:
+                return {"configured": False, "error": "Missing DynamoDB table configuration"}
+
+            # Create DynamoDB client
+            dynamodb = boto3.client(
+                "dynamodb", region_name=os.getenv("AWS_REGION", "us-east-1")
+            )
+
+            # Check if tables exist and are active
+            table_statuses = {}
+            
+            try:
+                # Check users table
+                users_response = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: dynamodb.describe_table(TableName=users_table)
+                )
+                table_statuses["users_table"] = {
+                    "name": users_table,
+                    "status": users_response["Table"]["TableStatus"],
+                    "item_count": users_response["Table"].get("ItemCount", 0)
+                }
+
+                # Check activity table
+                activity_response = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: dynamodb.describe_table(TableName=activity_table)
+                )
+                table_statuses["activity_table"] = {
+                    "name": activity_table,
+                    "status": activity_response["Table"]["TableStatus"],
+                    "item_count": activity_response["Table"].get("ItemCount", 0)
+                }
+
+                # Check if all tables are ACTIVE
+                all_active = all(
+                    table["status"] == "ACTIVE" 
+                    for table in table_statuses.values()
+                )
+
+                return {
+                    "configured": True,
+                    "region": os.getenv("AWS_REGION", "us-east-1"),
+                    "tables": table_statuses,
+                    "all_tables_active": all_active
+                }
+
+            except Exception as api_error:
+                return {
+                    "configured": True,
+                    "error": f"DynamoDB API Error: {str(api_error)}",
+                    "tables_checked": [users_table, activity_table]
+                }
+
+        except Exception as e:
+            logger.warning(f"DynamoDB health check failed: {str(e)}")
+            return {"configured": False, "error": str(e)}
 
 
 class HealthCheckService:
