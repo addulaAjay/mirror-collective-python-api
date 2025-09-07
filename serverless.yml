@@ -3,7 +3,7 @@ frameworkVersion: '3'
 
 provider:
   name: aws
-  runtime: python3.11
+  runtime: python3.12
   region: us-east-1
   stage: ${env:STAGE, 'staging'}
   memorySize: 512
@@ -106,6 +106,9 @@ custom:
   pythonRequirements:
     slim: true
     layer: false
+    dockerizePip: false
+    pipCmdExtraArgs:
+      - --no-cache-dir
 
 package:
   patterns:

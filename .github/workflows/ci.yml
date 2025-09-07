@@ -125,6 +125,8 @@ jobs:
         cp -r scripts/ build/ 2>/dev/null || true
         cp requirements.txt build/
         cp serverless.yml build/
+        # Create package.json for serverless plugins
+        echo '{"dependencies": {"serverless-python-requirements": "^6.0.0"}}' > build/package.json
     
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -152,7 +154,19 @@ jobs:
         node-version: '18'
     
     - name: Install Serverless Framework
-      run: npm install -g serverless serverless-python-requirements
+      run: |
+        npm install -g serverless
+    
+    - name: Install local plugins and verify setup
+      run: |
+        cd build
+        npm install
+        serverless --version
+        echo "Current directory: $(pwd)"
+        echo "Files in build directory:"
+        ls -la
+        echo "Serverless config check:"
+        serverless print --stage staging
     
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -164,7 +178,10 @@ jobs:
     - name: Deploy to staging
       run: |
         cd build
-        serverless deploy --stage staging
+        echo "Deploying to staging environment..."
+        echo "Files in build directory:"
+        ls -la
+        serverless deploy --stage staging --verbose
       env:
         COGNITO_USER_POOL_ID: ${{ secrets.STAGING_COGNITO_USER_POOL_ID }}
         COGNITO_CLIENT_ID: ${{ secrets.STAGING_COGNITO_CLIENT_ID }}
@@ -191,7 +208,19 @@ jobs:
         node-version: '18'
     
     - name: Install Serverless Framework
-      run: npm install -g serverless serverless-python-requirements
+      run: |
+        npm install -g serverless
+    
+    - name: Install local plugins and verify setup
+      run: |
+        cd build
+        npm install
+        serverless --version
+        echo "Current directory: $(pwd)"
+        echo "Files in build directory:"
+        ls -la
+        echo "Serverless config check:"
+        serverless print --stage production
     
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -203,7 +232,10 @@ jobs:
     - name: Deploy to production
       run: |
         cd build
-        serverless deploy --stage production
+        echo "Deploying to production environment..."
+        echo "Files in build directory:"
+        ls -la
+        serverless deploy --stage production --verbose
       env:
         COGNITO_USER_POOL_ID: ${{ secrets.PROD_COGNITO_USER_POOL_ID }}
         COGNITO_CLIENT_ID: ${{ secrets.PROD_COGNITO_CLIENT_ID }}
