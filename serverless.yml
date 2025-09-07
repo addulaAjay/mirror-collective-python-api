@@ -103,9 +103,9 @@ plugins:
 
 custom:
   pythonRequirements:
-    slim: true
+    slim: false
     layer: false
-    dockerizePip: false
+    dockerizePip: true
     pipCmdExtraArgs:
       - --no-cache-dir
 
