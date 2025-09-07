@@ -16,6 +16,32 @@ provider:
     RATE_LIMIT_WINDOW_SECONDS: ${env:RATE_LIMIT_WINDOW_SECONDS, 900}
     RATE_LIMIT_MAX_REQUESTS: ${env:RATE_LIMIT_MAX_REQUESTS, 100}
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
+    DYNAMODB_USERS_TABLE: ${self:service}-users-${self:provider.stage}
+    DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - Fn::GetAtt: [ UsersTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ UsersTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ ActivityTable, Arn ]
+        - Effect: Allow
+          Action:
+            - cognito-idp:GetUser
+            - cognito-idp:AdminGetUser
+          Resource:
+            - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
   logs:
     http: true
 
@@ -24,6 +50,54 @@ functions:
     handler: src/app/handler.handler
     events:
       - httpApi: '*'
+
+resources:
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-users-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: email-index
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+    
+    ActivityTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-activity-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: activity_date
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: activity_date
+            KeyType: RANGE
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
 
 plugins:
   - serverless-python-requirements

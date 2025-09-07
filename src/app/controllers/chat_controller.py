@@ -6,6 +6,7 @@ from typing import Dict, Any
 from ..api.models import MirrorChatRequest, MirrorChatResponse
 from ..use_cases.mirror_chat_use_case import MirrorChatUseCase, MirrorChatRequest as UseCaseRequest
 from ..services.openai_service import ChatMessage, OpenAIService
+from ..services.user_service import UserService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -17,9 +18,10 @@ class ChatController:
     """
     
     def __init__(self):
-        """Initialize controller with injected chat service and use case"""
+        """Initialize controller with injected services"""
         chat_service = OpenAIService()
         self.use_case = MirrorChatUseCase(chat_service)
+        self.user_service = UserService()
     
     async def handle_chat(self, req: MirrorChatRequest, current_user: Dict[str, Any]) -> MirrorChatResponse:
         """
@@ -46,27 +48,35 @@ class ChatController:
             logger.error(f"Error logging request: {e}")
         
         try:
-            # Extract user name from token or request with safe fallbacks
-            user_name = req.userName
+            # Get user ID from current_user (from JWT token)
+            user_id = current_user.get('id') or current_user.get('sub')
+            
+            # Get or create user profile and sync with Cognito if needed
+            user_profile = await self.user_service.get_or_create_user_profile(user_id)
+            
+            # Extract user name with intelligent fallbacks
+            user_name = req.userName  # Explicit name from request
             if not user_name:
-                # Try firstName from the user object
-                user_name = current_user.get('firstName')
-                if user_name and user_name.strip():  # Make sure it's not empty string
+                user_name = user_profile.chat_name  # From user profile
+            if not user_name:
+                # Fallback to current_user data
+                user_name = current_user.get('firstName') or current_user.get('given_name') or current_user.get('name')
+                if user_name and user_name.strip():
                     user_name = user_name.strip()
                 else:
                     user_name = None
             if not user_name:
-                # Try standard JWT fields as fallback
-                user_name = current_user.get('given_name') or current_user.get('name')
-            if not user_name:
-                # Use email username as last resort
-                email = current_user.get('email')
+                # Last resort: email username
+                email = user_profile.email or current_user.get('email')
                 if email:
                     user_name = email.split('@')[0]
             
+            # Record chat activity for analytics
+            await self.user_service.record_chat_activity(user_id)
+            
             # Log user name resolution for debugging
-            logger.info(f"Current user object: {current_user}")
-            logger.info(f"User name resolved: '{user_name}' | Request userName: '{req.userName}' | Token given_name: '{current_user.get('given_name')}' | Token email: '{current_user.get('email')}'")  
+            logger.info(f"User ID: {user_id} | Profile: {user_profile.full_name if user_profile else 'None'}")
+            logger.info(f"User name resolved: '{user_name}' | Request userName: '{req.userName}' | Profile chat_name: '{user_profile.chat_name if user_profile else 'None'}'")  
             
             # Transform API conversation history to use case format
             conversation_history = []

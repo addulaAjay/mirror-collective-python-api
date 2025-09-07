@@ -125,6 +125,7 @@ jobs:
       run: |
         mkdir -p build
         cp -r src/ build/
+        cp -r scripts/ build/ 2>/dev/null || true
         cp requirements.txt build/
         cp serverless.yml build/
     
@@ -138,7 +139,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/develop'
-    environment: staging
     
     steps:
     - uses: actions/checkout@v4
@@ -179,7 +179,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main'
-    environment: production
     
     steps:
     - uses: actions/checkout@v4

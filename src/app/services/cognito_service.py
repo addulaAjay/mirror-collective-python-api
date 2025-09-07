@@ -415,3 +415,26 @@ class CognitoService:
         except Exception as e:
             logger.exception(f"Unexpected error during global sign out: {str(e)}")
             raise CognitoServiceError(f"Global sign out failed: {str(e)}")
+    
+    async def get_user_by_id(self, user_id: str) -> Dict[str, Any]:
+        """Get user details by Cognito user ID (sub)"""
+        try:
+            # Note: This requires admin privileges and would need to be implemented
+            # For now, we'll use the email-based lookup or return mock data
+            # In production, you'd use admin_get_user with proper permissions
+            
+            # Placeholder implementation - would need proper admin setup
+            logger.warning(f"get_user_by_id not fully implemented for user: {user_id}")
+            return {
+                'Username': user_id,
+                'UserStatus': 'CONFIRMED',
+                'UserAttributes': [
+                    {'Name': 'sub', 'Value': user_id},
+                    {'Name': 'email', 'Value': ''},
+                    {'Name': 'email_verified', 'Value': 'false'}
+                ]
+            }
+            
+        except Exception as e:
+            logger.exception(f"Unexpected error getting user by ID: {str(e)}")
+            raise CognitoServiceError(f"Get user by ID failed: {str(e)}")
