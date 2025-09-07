@@ -33,9 +33,12 @@ class CognitoService:
         if not all([user_pool_id, client_id]):
             raise ValueError("Missing required Cognito configuration")
             
-        # Type assertions since we validated they're not None above
-        assert user_pool_id is not None
-        assert client_id is not None
+        # Runtime checks instead of assert statements for security
+        if user_pool_id is None:
+            raise ValueError("COGNITO_USER_POOL_ID environment variable is required")
+        if client_id is None:
+            raise ValueError("COGNITO_CLIENT_ID environment variable is required")
+            
         self.user_pool_id: str = user_pool_id  
         self.client_id: str = client_id
         
