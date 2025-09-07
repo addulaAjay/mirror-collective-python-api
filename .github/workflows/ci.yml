@@ -90,7 +90,7 @@ jobs:
         pip install -r requirements.txt -r requirements-dev.txt
     
     - name: Run safety check
-      run: safety check --json --output safety-report.json || true
+      run: safety check --json > safety-report.json || true
     
     - name: Run bandit security scan
       run: bandit -r src/ -f json -o bandit-security-report.json
