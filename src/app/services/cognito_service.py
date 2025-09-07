@@ -5,7 +5,7 @@ import os
 import base64
 import hashlib
 import hmac
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, NoReturn
 import boto3
 from botocore.exceptions import ClientError
 import logging
@@ -26,12 +26,18 @@ class CognitoService:
     
     def __init__(self):
         self.region = os.getenv('AWS_REGION', 'us-east-1')
-        self.user_pool_id = os.getenv('COGNITO_USER_POOL_ID')
-        self.client_id = os.getenv('COGNITO_CLIENT_ID')
+        user_pool_id = os.getenv('COGNITO_USER_POOL_ID')
+        client_id = os.getenv('COGNITO_CLIENT_ID')
         self.client_secret = os.getenv('COGNITO_CLIENT_SECRET')
         
-        if not all([self.user_pool_id, self.client_id]):
+        if not all([user_pool_id, client_id]):
             raise ValueError("Missing required Cognito configuration")
+            
+        # Type assertions since we validated they're not None above
+        assert user_pool_id is not None
+        assert client_id is not None
+        self.user_pool_id: str = user_pool_id  
+        self.client_id: str = client_id
         
         self.client = boto3.client('cognito-idp', region_name=self.region)
         
@@ -50,7 +56,7 @@ class CognitoService:
         ).digest()
         return base64.b64encode(dig).decode()
     
-    def _handle_cognito_error(self, error: ClientError, operation: str) -> None:
+    def _handle_cognito_error(self, error: ClientError, operation: str) -> NoReturn:
         """Handle and transform Cognito errors to our custom exceptions"""
         error_code = error.response['Error']['Code']
         error_message = error.response['Error']['Message']
@@ -119,7 +125,9 @@ class CognitoService:
             }
             
             if self.client_secret:
-                params['SecretHash'] = self._get_secret_hash(email)
+                secret_hash = self._get_secret_hash(email)
+                if secret_hash:
+                    params['SecretHash'] = secret_hash
             
             response = self.client.sign_up(**params)
             
@@ -140,7 +148,7 @@ class CognitoService:
     async def authenticate_user(self, email: str, password: str) -> Dict[str, Any]:
         """Authenticate user with email and password using ADMIN_NO_SRP_AUTH"""
         try:
-            params = {
+            params: Dict[str, Any] = {
                 'UserPoolId': self.user_pool_id,
                 'ClientId': self.client_id,
                 'AuthFlow': 'ADMIN_NO_SRP_AUTH',
@@ -151,7 +159,9 @@ class CognitoService:
             }
             
             if self.client_secret:
-                params['AuthParameters']['SECRET_HASH'] = self._get_secret_hash(email)
+                secret_hash = self._get_secret_hash(email)
+                if secret_hash:
+                    params['AuthParameters']['SECRET_HASH'] = secret_hash
             
             response = self.client.admin_initiate_auth(**params)
             
@@ -189,7 +199,9 @@ class CognitoService:
             }
             
             if self.client_secret:
-                params['SecretHash'] = self._get_secret_hash(email)
+                secret_hash = self._get_secret_hash(email)
+                if secret_hash:
+                    params['SecretHash'] = secret_hash
             
             response = self.client.forgot_password(**params)
             
@@ -214,7 +226,9 @@ class CognitoService:
             }
             
             if self.client_secret:
-                params['SecretHash'] = self._get_secret_hash(email)
+                secret_hash = self._get_secret_hash(email)
+                if secret_hash:
+                    params['SecretHash'] = secret_hash
             
             response = self.client.confirm_forgot_password(**params)
             
@@ -238,7 +252,9 @@ class CognitoService:
             }
             
             if self.client_secret:
-                params['SecretHash'] = self._get_secret_hash(email)
+                secret_hash = self._get_secret_hash(email)
+                if secret_hash:
+                    params['SecretHash'] = secret_hash
             
             response = self.client.confirm_sign_up(**params)
             
@@ -261,7 +277,9 @@ class CognitoService:
             }
             
             if self.client_secret:
-                params['SecretHash'] = self._get_secret_hash(email)
+                secret_hash = self._get_secret_hash(email)
+                if secret_hash:
+                    params['SecretHash'] = secret_hash
             
             response = self.client.resend_confirmation_code(**params)
             
@@ -278,7 +296,7 @@ class CognitoService:
     async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """Refresh access token using refresh token"""
         try:
-            params = {
+            params: Dict[str, Any] = {
                 'ClientId': self.client_id,
                 'AuthFlow': 'REFRESH_TOKEN_AUTH',
                 'AuthParameters': {
@@ -288,7 +306,9 @@ class CognitoService:
             
             if self.client_secret:
                 # For refresh token flow, use empty username for secret hash
-                params['AuthParameters']['SECRET_HASH'] = self._get_secret_hash('')
+                secret_hash = self._get_secret_hash('')
+                if secret_hash:
+                    params['AuthParameters']['SECRET_HASH'] = secret_hash
             
             response = self.client.initiate_auth(**params)
             

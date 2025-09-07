@@ -107,7 +107,10 @@ class DynamoDBService:
             if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
                 logger.warning(f"User profile already exists: {user_profile.user_id}")
                 # Return existing profile
-                return await self.get_user_profile(user_profile.user_id)
+                existing_profile = await self.get_user_profile(user_profile.user_id)
+                if existing_profile is None:
+                    raise InternalServerError(f"User profile should exist but could not be retrieved: {user_profile.user_id}")
+                return existing_profile
             else:
                 logger.error(f"DynamoDB error creating user profile: {e}")
                 raise InternalServerError(f"Failed to create user profile: {str(e)}")

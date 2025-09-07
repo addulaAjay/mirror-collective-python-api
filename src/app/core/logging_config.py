@@ -72,8 +72,14 @@ def get_logging_config() -> Dict[str, Any]:
     
     # Use JSON formatting for production
     if os.getenv('ENVIRONMENT') == 'production':
-        config['handlers']['console']['formatter'] = 'json'
-        config['handlers']['error_console']['formatter'] = 'json'
+        handlers = config['handlers']
+        if isinstance(handlers, dict):
+            console_handler = handlers.get('console')
+            error_console_handler = handlers.get('error_console')
+            if isinstance(console_handler, dict):
+                console_handler['formatter'] = 'json'
+            if isinstance(error_console_handler, dict):
+                error_console_handler['formatter'] = 'json'
     
     return config
 

@@ -37,7 +37,7 @@ class UserProfile:
     email_verified: bool = False
     
     # Application-specific data
-    preferences: Dict[str, Any] = None
+    preferences: Optional[Dict[str, Any]] = None
     subscription_tier: str = "free"
     conversation_count: int = 0
     
@@ -73,9 +73,15 @@ class UserProfile:
             return self.email.split('@')[0] if self.email else "User"
     
     @property
-    def chat_name(self) -> str:
+    def chat_name(self) -> Optional[str]:
         """Get the name to use in chat conversations"""
-        return self.display_name or self.first_name or self.email.split('@')[0] if self.email else None
+        if self.display_name:
+            return self.display_name
+        if self.first_name:
+            return self.first_name
+        if self.email:
+            return self.email.split('@')[0]
+        return None
     
     def to_dynamodb_item(self) -> Dict[str, Any]:
         """Convert to DynamoDB item format"""

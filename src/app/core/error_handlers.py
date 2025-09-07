@@ -5,7 +5,7 @@ import time
 import logging
 import traceback
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 from fastapi import FastAPI, Request, Response, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -65,7 +65,7 @@ def sanitize_error(error: Exception, is_development: bool = False) -> Dict[str, 
     }
 
 
-async def base_api_exception_handler(request: Request, exc: BaseAPIException):
+async def base_api_exception_handler(request: Request, exc: BaseAPIException) -> JSONResponse:
     """Handler for BaseAPIException and its subclasses"""
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     is_development = request.app.debug or False
@@ -104,7 +104,7 @@ async def base_api_exception_handler(request: Request, exc: BaseAPIException):
     )
 
 
-async def http_exception_handler(request: Request, exc: HTTPException):
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Handler for HTTPException"""
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     
@@ -129,7 +129,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Handler for Pydantic validation errors"""
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     
@@ -165,7 +165,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-async def general_exception_handler(request: Request, exc: Exception):
+async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handler for unexpected exceptions"""
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     is_development = request.app.debug or False
@@ -205,10 +205,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 def setup_error_handlers(app: FastAPI):
     """Setup all error handlers for the FastAPI app"""
     
-    # Add custom exception handlers
-    app.add_exception_handler(BaseAPIException, base_api_exception_handler)
-    app.add_exception_handler(HTTPException, http_exception_handler)
-    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    # Add custom exception handlers - use type: ignore to suppress mypy warnings
+    # about complex exception handler signatures
+    app.add_exception_handler(BaseAPIException, base_api_exception_handler)  # type: ignore
+    app.add_exception_handler(HTTPException, http_exception_handler)  # type: ignore
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore
     app.add_exception_handler(Exception, general_exception_handler)
     
     # Add request ID middleware

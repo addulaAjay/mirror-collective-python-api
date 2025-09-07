@@ -74,7 +74,7 @@ class CognitoHealthCheck(HealthCheck):
     async def _check_implementation(self) -> Dict[str, Any]:
         try:
             import os
-            from ..services.cognito_service import CognitoService
+            from src.app.services.cognito_service import CognitoService
             
             # Basic configuration check
             user_pool_id = os.getenv('COGNITO_USER_POOL_ID')
@@ -184,7 +184,7 @@ class HealthCheckService:
         )
         
         # Process results
-        check_results = []
+        check_results: List[Dict[str, Any]] = []
         overall_status = HealthStatus.HEALTHY
         
         for result in results:
@@ -195,11 +195,12 @@ class HealthCheckService:
                     "error": str(result)
                 })
                 overall_status = HealthStatus.UNHEALTHY
-            else:
+            elif isinstance(result, dict):
+                # Result is a Dict[str, Any] from the check() method
                 check_results.append(result)
-                if result["status"] == HealthStatus.UNHEALTHY.value:
+                if result.get("status") == HealthStatus.UNHEALTHY.value:
                     overall_status = HealthStatus.UNHEALTHY
-                elif result["status"] == HealthStatus.DEGRADED.value and overall_status == HealthStatus.HEALTHY:
+                elif result.get("status") == HealthStatus.DEGRADED.value and overall_status == HealthStatus.HEALTHY:
                     overall_status = HealthStatus.DEGRADED
         
         total_duration = time.time() - start_time

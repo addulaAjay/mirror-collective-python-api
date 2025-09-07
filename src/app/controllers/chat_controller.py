@@ -50,6 +50,8 @@ class ChatController:
         try:
             # Get user ID from current_user (from JWT token)
             user_id = current_user.get('id') or current_user.get('sub')
+            if not user_id:
+                raise ValueError("User ID not found in token")
             
             # Get or create user profile and sync with Cognito if needed
             user_profile = await self.user_service.get_or_create_user_profile(user_id)

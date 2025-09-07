@@ -2,9 +2,10 @@
 OpenAI service for AI chat completions and conversation management
 """
 import os
-from typing import List, Dict
+from typing import List, Dict, Any, cast
 import logging
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from ..core.exceptions import InternalServerError
 
@@ -30,7 +31,26 @@ class ChatMessage:
         }
 
 
-class OpenAIService:
+class IMirrorChatRepository:
+    """
+    Abstract interface for mirror chat service implementations
+    Defines the contract for AI conversation services
+    """
+    
+    def send(self, messages: List[ChatMessage]) -> str:
+        """
+        Send conversation messages and return AI-generated response
+        
+        Args:
+            messages: List of conversation messages
+            
+        Returns:
+            str: AI response content
+        """
+        raise NotImplementedError("send method must be implemented by concrete implementations")
+
+
+class OpenAIService(IMirrorChatRepository):
     """
     Service for generating AI responses using OpenAI's chat completion API
     Implements the mirror chat repository interface
@@ -60,7 +80,9 @@ class OpenAIService:
         """
         try:
             # Convert internal message format to OpenAI API format
-            openai_messages = [msg.to_dict() for msg in messages]
+            openai_messages: List[ChatCompletionMessageParam] = [
+                cast(ChatCompletionMessageParam, msg.to_dict()) for msg in messages
+            ]
             
             logger.debug(f"Generating AI response from {len(openai_messages)} conversation messages")
             
@@ -82,22 +104,3 @@ class OpenAIService:
         except Exception as e:
             logger.error(f"OpenAI API error: {str(e)}")
             raise InternalServerError(f"Chat service unavailable: {str(e)}")
-
-
-class IMirrorChatRepository:
-    """
-    Abstract interface for mirror chat service implementations
-    Defines the contract for AI conversation services
-    """
-    
-    def send(self, messages: List[ChatMessage]) -> str:
-        """
-        Send conversation messages and return AI-generated response
-        
-        Args:
-            messages: List of conversation messages
-            
-        Returns:
-            str: AI response content
-        """
-        raise NotImplementedError("send method must be implemented by concrete implementations")

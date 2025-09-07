@@ -43,7 +43,7 @@ jobs:
         flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
     
     - name: Type check with mypy
-      run: mypy src/ --ignore-missing-imports
+      run: mypy src/
     
     - name: Security scan with bandit
       run: bandit -r src/ -f json -o bandit-report.json || true
