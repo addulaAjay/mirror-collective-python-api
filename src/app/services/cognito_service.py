@@ -312,10 +312,9 @@ class CognitoService:
             }
 
             if self.client_secret:
-                # For refresh token flow, use empty username for secret hash
-                secret_hash = self._get_secret_hash("")
-                if secret_hash:
-                    params["AuthParameters"]["SECRET_HASH"] = secret_hash
+                # For refresh token flow, we don't need SECRET_HASH with username
+                # The refresh token itself contains the user identity
+                pass
 
             response = self.client.initiate_auth(**params)
 
@@ -340,7 +339,20 @@ class CognitoService:
             }
 
         except ClientError as e:
-            self._handle_cognito_error(e, "refresh_token")
+            # Custom error handling for refresh token operations
+            error_code = e.response["Error"]["Code"]
+            error_message = e.response["Error"]["Message"]
+            
+            logger.error(f"Cognito refresh_token error: {error_code} - {error_message}")
+            
+            # Specific error mappings for refresh token flow
+            if error_code == "NotAuthorizedException":
+                raise AuthenticationError("Invalid or expired refresh token")
+            elif error_code == "InvalidParameterException":
+                raise ValidationError("Invalid refresh token format")
+            else:
+                # Fall back to general error handling
+                self._handle_cognito_error(e, "refresh_token")
         except Exception as e:
             logger.exception(f"Unexpected error during token refresh: {str(e)}")
             raise CognitoServiceError(f"Token refresh failed: {str(e)}")
