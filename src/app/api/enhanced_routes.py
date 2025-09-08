@@ -16,7 +16,7 @@ from ..api.models import (
 from ..core.security import get_current_user
 
 # Create router for enhanced chat endpoints
-enhanced_chat_router = APIRouter(prefix="/api/chat", tags=["Enhanced Chat"])
+enhanced_chat_router = APIRouter(prefix="/chat", tags=["Enhanced Chat"])
 
 # Dependency injection for controllers
 def get_enhanced_chat_controller():
