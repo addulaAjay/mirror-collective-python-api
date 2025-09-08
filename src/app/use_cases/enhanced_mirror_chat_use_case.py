@@ -6,11 +6,12 @@ Production-ready implementation with comprehensive error handling
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from ..core.exceptions import ValidationError
+from ..models.conversation import Conversation
 from ..services.conversation_service import ConversationService
-from ..services.openai_service import IMirrorChatRepository
+from ..services.openai_service import ChatMessage, IMirrorChatRepository
 from ..services.user_service import UserService
 
 logger = logging.getLogger(__name__)
@@ -141,8 +142,8 @@ class EnhancedMirrorChatUseCase:
                 # For new conversations, we can skip history lookup and start AI immediately
                 system_content = self._build_system_prompt(request.user_name)
                 ai_messages = [
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": request.message}
+                    ChatMessage(role="system", content=system_content),
+                    ChatMessage(role="user", content=request.message)
                 ]
             else:
                 # Use existing conversation - parallel fetch context and validate conversation
@@ -165,9 +166,11 @@ class EnhancedMirrorChatUseCase:
                 )
                 
                 # Wait for both operations
-                conversation, ai_messages = await asyncio.gather(
+                gather_results = await asyncio.gather(
                     conversation_task, ai_context_task
                 )
+                conversation = gather_results[0]
+                ai_messages = gather_results[1]
 
             logger.debug(
                 f"Built AI context with {len(ai_messages)} messages for conversation {conversation_id}"
