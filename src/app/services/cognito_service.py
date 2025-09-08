@@ -311,11 +311,27 @@ class CognitoService:
                 "AuthParameters": {"REFRESH_TOKEN": refresh_token},
             }
 
-            # For refresh token flow, AWS Cognito doesn't require SECRET_HASH
-            # when using the standard initiate_auth flow, even with client secret.
-            # The refresh token already contains the user identity and client validation.
-
-            response = self.client.initiate_auth(**params)
+            # First, try without SECRET_HASH (standard approach)
+            try:
+                response = self.client.initiate_auth(**params)
+            except ClientError as e:
+                # If it fails and we have a client secret, try with SECRET_HASH
+                if (self.client_secret and 
+                    e.response["Error"]["Code"] in ["NotAuthorizedException", "InvalidParameterException"]):
+                    
+                    logger.info("Retrying refresh token with SECRET_HASH")
+                    # For refresh tokens, we need to extract the username from the token
+                    # or use an empty string as some configurations accept this
+                    secret_hash = self._get_secret_hash("")
+                    if secret_hash:
+                        params["AuthParameters"]["SECRET_HASH"] = secret_hash
+                        response = self.client.initiate_auth(**params)
+                    else:
+                        # Re-raise the original error if we can't generate secret hash
+                        raise e
+                else:
+                    # Re-raise if it's not an auth error or we don't have client secret
+                    raise e
 
             if not response.get("AuthenticationResult"):
                 raise AuthenticationError("Token refresh failed")
