@@ -4,7 +4,7 @@ OpenAI service for AI chat completions and conversation management
 
 import logging
 import os
-from typing import Dict, List, cast
+from typing import Dict, List, cast, AsyncGenerator
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -51,6 +51,20 @@ class IMirrorChatRepository:
         raise NotImplementedError(
             "send method must be implemented by concrete implementations"
         )
+    
+    def send_stream(self, messages: List[ChatMessage]) -> AsyncGenerator[str, None]:
+        """
+        Send conversation messages and return streaming AI-generated response
+
+        Args:
+            messages: List of conversation messages
+
+        Returns:
+            AsyncGenerator[str, None]: Streaming AI response chunks
+        """
+        raise NotImplementedError(
+            "send_stream method must be implemented by concrete implementations"
+        )
 
 
 class OpenAIService(IMirrorChatRepository):
@@ -67,8 +81,8 @@ class OpenAIService(IMirrorChatRepository):
             raise ValueError("OPENAI_API_KEY environment variable is required")
 
         self.client = OpenAI(api_key=api_key)
-        # Optimized model selection - gpt-4o-mini is faster and cheaper for most chat tasks
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        # High-performance model selection - gpt-4o for better quality and faster response
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
         self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
         
@@ -97,13 +111,13 @@ class OpenAIService(IMirrorChatRepository):
                 f"Generating AI response from {len(openai_messages)} conversation messages using {self.model}"
             )
 
-            # Call OpenAI chat completion API with optimized settings
+            # Call OpenAI chat completion API with optimized settings (non-streaming)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=openai_messages,
                 temperature=self.temperature,  # Configurable creativity
                 max_tokens=self.max_tokens,    # Configurable response length
-                stream=False,  # Disable streaming for now (could be enabled for real-time responses)
+                stream=False,
             )
 
             # Extract and validate response content
@@ -115,6 +129,49 @@ class OpenAIService(IMirrorChatRepository):
 
         except Exception as e:
             logger.error(f"OpenAI API error: {str(e)}")
+            raise InternalServerError(f"Chat service unavailable: {str(e)}")
+
+    async def send_stream(self, messages: List[ChatMessage]) -> AsyncGenerator[str, None]:
+        """
+        Generate streaming AI response from conversation messages using OpenAI's chat completion
+
+        Args:
+            messages: List of conversation messages including system prompt and history
+
+        Yields:
+            str: AI-generated response chunks
+
+        Raises:
+            InternalServerError: If OpenAI API call fails
+        """
+        try:
+            # Convert internal message format to OpenAI API format
+            openai_messages: List[ChatCompletionMessageParam] = [
+                cast(ChatCompletionMessageParam, msg.to_dict()) for msg in messages
+            ]
+
+            logger.debug(
+                f"Generating streaming AI response from {len(openai_messages)} messages using {self.model}"
+            )
+
+            # Call OpenAI chat completion API with streaming enabled
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=openai_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
+
+            # Stream response chunks
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+            logger.debug("Streaming AI response completed successfully")
+
+        except Exception as e:
+            logger.error(f"OpenAI API streaming error: {str(e)}")
             raise InternalServerError(f"Chat service unavailable: {str(e)}")
 
     async def send_async(self, messages: List[ChatMessage]) -> str:

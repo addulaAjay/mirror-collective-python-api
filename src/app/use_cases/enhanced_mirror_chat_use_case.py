@@ -291,17 +291,16 @@ class EnhancedMirrorChatUseCase:
 
     async def _generate_ai_response_async(self, ai_messages) -> str:
         """
-        Generate AI response asynchronously with timing analysis
+        Generate AI response asynchronously with streaming and timing analysis
         
         Args:
             ai_messages: List of messages for AI context
             
         Returns:
-            str: AI generated response
+            str: AI generated response (concatenated from streaming chunks)
         """
         ai_start_time = time.time()
         
-        import asyncio
         # Convert ChatMessage objects to dict format if needed
         format_start = time.time()
         if hasattr(ai_messages[0], 'to_dict'):
@@ -313,22 +312,29 @@ class EnhancedMirrorChatUseCase:
         
         format_time = time.time() - format_start
         
-        # Run OpenAI call in thread pool to avoid blocking
+        # Use streaming response for faster perceived performance
         openai_start = time.time()
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self.chat_service.send, formatted_messages)
-        openai_time = time.time() - openai_start
+        full_response = ""
+        chunk_count = 0
         
+        # Stream response chunks and concatenate
+        async for chunk in self.chat_service.send_stream(formatted_messages):
+            full_response += chunk
+            chunk_count += 1
+            
+        openai_time = time.time() - openai_start
         total_ai_time = time.time() - ai_start_time
         
         logger.info(
-            f"🤖 AI Response Timing:\n"
+            f"🤖 AI Streaming Response Timing:\n"
             f"  - Message formatting: {format_time:.3f}s\n"
-            f"  - OpenAI API call: {openai_time:.3f}s ({openai_time/total_ai_time*100:.1f}%)\n"
+            f"  - OpenAI streaming API: {openai_time:.3f}s ({openai_time/total_ai_time*100:.1f}%)\n"
+            f"  - Chunks received: {chunk_count}\n"
+            f"  - Response length: {len(full_response)} chars\n"
             f"  - Total AI time: {total_ai_time:.3f}s"
         )
         
-        return result
+        return full_response
 
     async def _record_user_activity_safe(self, user_id: str):
         """
