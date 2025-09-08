@@ -423,6 +423,47 @@ class CognitoService:
             )
             raise CognitoServiceError(f"Admin account deletion failed: {str(e)}")
 
+    async def soft_delete_user(self, username: str) -> Dict[str, Any]:
+        """Soft delete user by disabling account instead of deleting"""
+        try:
+            # Disable the user account
+            response = self.client.admin_disable_user(
+                UserPoolId=self.user_pool_id,
+                Username=username
+            )
+
+            logger.info(f"User account soft deleted (disabled): {username}")
+
+            # Add custom attributes to mark as deleted with timestamp
+            import time
+            try:
+                self.client.admin_update_user_attributes(
+                    UserPoolId=self.user_pool_id,
+                    Username=username,
+                    UserAttributes=[
+                        {
+                            'Name': 'custom:deleted_at',
+                            'Value': str(int(time.time()))
+                        },
+                        {
+                            'Name': 'custom:account_status',
+                            'Value': 'SOFT_DELETED'
+                        }
+                    ]
+                )
+                logger.info(f"Added soft delete attributes for user: {username}")
+            except Exception as attr_error:
+                # Don't fail if custom attributes can't be set
+                logger.warning(f"Failed to set soft delete attributes: {attr_error}")
+
+            return response
+
+        except ClientError as e:
+            self._handle_cognito_error(e, "soft_delete_user")
+        except Exception as e:
+            logger.exception(f"Unexpected error during soft delete: {str(e)}")
+            raise CognitoServiceError(f"Soft delete failed: {str(e)}")
+
     async def get_user_by_email(self, email: str) -> Dict[str, Any]:
         """Get user details using admin privileges"""
         try:
@@ -465,25 +506,57 @@ class CognitoService:
             logger.exception(f"Unexpected error during global sign out: {str(e)}")
             raise CognitoServiceError(f"Global sign out failed: {str(e)}")
 
-    async def get_user_by_id(self, user_id: str) -> Dict[str, Any]:
-        """Get user details by Cognito user ID (sub)"""
+    async def admin_user_global_sign_out(self, username: str) -> Dict[str, Any]:
+        """Admin-level global sign out for a user (signs out from all devices)"""
         try:
-            # Note: This requires admin privileges and would need to be implemented
-            # For now, we'll use the email-based lookup or return mock data
-            # In production, you'd use admin_get_user with proper permissions
+            response = self.client.admin_user_global_sign_out(
+                UserPoolId=self.user_pool_id,
+                Username=username
+            )
 
-            # Placeholder implementation - would need proper admin setup
-            logger.warning(f"get_user_by_id not fully implemented for user: {user_id}")
-            return {
-                "Username": user_id,
-                "UserStatus": "CONFIRMED",
-                "UserAttributes": [
-                    {"Name": "sub", "Value": user_id},
-                    {"Name": "email", "Value": ""},
-                    {"Name": "email_verified", "Value": "false"},
-                ],
-            }
+            logger.info(f"User signed out globally by admin: {username}")
 
+            return response
+
+        except ClientError as e:
+            self._handle_cognito_error(e, "admin_user_global_sign_out")
         except Exception as e:
-            logger.exception(f"Unexpected error getting user by ID: {str(e)}")
-            raise CognitoServiceError(f"Get user by ID failed: {str(e)}")
+            logger.exception(f"Unexpected error during admin global sign out: {str(e)}")
+            raise CognitoServiceError(f"Admin global sign out failed: {str(e)}")
+
+    # Note: get_user_by_id method removed for security reasons
+    # Use get_user_by_email or get_user with access tokens instead
+    
+    async def get_user_by_id_secure(self, user_id: str, requesting_user_id: str) -> Dict[str, Any]:
+        """
+        SECURE: Get user details by Cognito user ID with proper access control
+        
+        Args:
+            user_id: The target user's Cognito sub
+            requesting_user_id: The authenticated user making the request
+            
+        Returns:
+            User data if authorized
+            
+        Raises:
+            AuthenticationError: If user cannot access this data
+            UserNotFoundError: If user doesn't exist
+        """
+        try:
+            # SECURITY: Only allow users to access their own data
+            if user_id != requesting_user_id:
+                logger.warning(f"Unauthorized access attempt: {requesting_user_id} tried to access {user_id}")
+                raise AuthenticationError("You can only access your own user data")
+            
+            # SECURITY: Log the access attempt
+            logger.info(f"Secure user lookup: {requesting_user_id} accessing own data")
+            
+            # Implementation would need AWS Cognito admin permissions
+            # For now, this is a security-first placeholder that fails safely
+            raise CognitoServiceError(
+                "get_user_by_id not implemented - use get_user with access token instead"
+            )
+            
+        except Exception as e:
+            logger.exception(f"Error in secure user lookup: {str(e)}")
+            raise

@@ -4,6 +4,7 @@ Chat controller - handles HTTP requests for mirror chat conversations
 
 import logging
 from typing import Any, Dict
+from fastapi import HTTPException
 
 from ..api.models import MirrorChatRequest, MirrorChatResponse
 from ..services.openai_service import ChatMessage, OpenAIService
@@ -57,8 +58,13 @@ class ChatController:
             if not user_id:
                 raise ValueError("User ID not found in token")
 
-            # Get or create user profile and sync with Cognito if needed
-            user_profile = await self.user_service.get_or_create_user_profile(user_id)
+            # Get user profile from DynamoDB (should exist from registration)
+            # If not found, create with available user data (fallback for existing users)
+            user_profile = await self.user_service.get_user_profile(user_id)
+            if not user_profile:
+                logger.warning(f"User profile not found in DynamoDB for user: {user_id}. Creating fallback profile.")
+                # Create a basic profile for existing users who might not have been migrated yet
+                user_profile = await self.user_service.get_or_create_user_profile(user_id)
 
             # Extract user name with intelligent fallbacks
             user_name = req.userName  # Explicit name from request

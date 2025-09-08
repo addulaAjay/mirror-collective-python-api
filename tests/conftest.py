@@ -92,9 +92,15 @@ mock_profile.user_id = 'mock-user-123'
 
 # Configure async methods
 mock_user_service_instance.get_or_create_user_profile = AsyncMock(return_value=mock_profile)
+mock_user_service_instance.get_user_profile = AsyncMock(return_value=mock_profile)
+mock_user_service_instance.create_user_profile_from_cognito = AsyncMock(return_value=mock_profile)
 mock_user_service_instance.record_chat_activity = AsyncMock(return_value=None)
+mock_user_service_instance.record_login_activity = AsyncMock(return_value=None)
+mock_user_service_instance.record_logout_activity = AsyncMock(return_value=None)
+mock_user_service_instance.delete_user_account = AsyncMock(return_value=True)
 mock_user_service_instance.get_user_chat_name = AsyncMock(return_value='Test')
 mock_user_service_instance.increment_conversation_count = AsyncMock(return_value=None)
+mock_user_service_instance.sync_user_with_cognito = AsyncMock(return_value=mock_profile)
 
 # Mock DynamoDB service  
 mock_dynamodb_service_instance = Mock()
