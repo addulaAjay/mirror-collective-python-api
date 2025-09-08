@@ -6,7 +6,7 @@ Production-ready service with comprehensive error handling and optimization
 import logging
 import os
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 from uuid import uuid4
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
@@ -151,7 +151,7 @@ class ConversationService:
         self, 
         conversation_id: str, 
         user_id: str,
-        role: str, 
+        role: Literal["system", "user", "assistant"], 
         content: str,
         token_count: Optional[int] = None
     ) -> ConversationMessage:

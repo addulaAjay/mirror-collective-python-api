@@ -248,6 +248,44 @@ class EnhancedMirrorChatUseCase:
         # This is a simple approximation - for production, consider using tiktoken
         return len(text) // 4 if text else 0
 
+    async def _handle_stateless_chat(self, request: EnhancedMirrorChatRequest) -> EnhancedMirrorChatResponse:
+        """
+        Handle chat in stateless mode when persistence is disabled
+        Falls back to simple AI chat without conversation history
+        """
+        try:
+            logger.info("Handling chat in stateless mode")
+            
+            # Build system prompt
+            system_content = self._build_system_prompt(request.user_name)
+            
+            # Create simple message list for AI (no conversation history)
+            from ..services.openai_service import ChatMessage
+            ai_messages = [
+                ChatMessage("system", system_content),
+                ChatMessage("user", request.message)
+            ]
+            
+            # Get AI response using the chat service
+            ai_response = self.chat_service.send(ai_messages)
+            
+            # Update user activity (still track user engagement)
+            await self.user_service.record_chat_activity(request.user_id)
+            
+            # Return response with minimal metadata (no conversation persistence)
+            return EnhancedMirrorChatResponse(
+                reply=ai_response,
+                conversation_id="",  # Empty for stateless mode
+                message_count=1,  # Just this exchange
+                is_new_conversation=False,
+                conversation_title="Stateless Chat",
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in stateless chat: {e}")
+            raise
+
 
 class ConversationManagementUseCase:
     """
@@ -367,44 +405,4 @@ class ConversationManagementUseCase:
 
         except Exception as e:
             logger.error(f"Error updating conversation title {conversation_id}: {e}")
-            raise
-
-    async def _handle_stateless_chat(self, request: EnhancedMirrorChatRequest) -> EnhancedMirrorChatResponse:
-        """
-        Handle chat in stateless mode when persistence is disabled
-        Falls back to simple AI chat without conversation history
-        """
-        try:
-            logger.info("Handling chat in stateless mode")
-            
-            # Build system prompt
-            system_content = self._build_system_prompt(request.user_name)
-            
-            # Create simple message list for AI (no conversation history)
-            ai_messages = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": request.message}
-            ]
-            
-            # Get AI response
-            ai_response = await self.openai_service.get_chat_response(ai_messages)
-            
-            # Update user activity (still track user engagement)
-            await self.user_service.update_user_activity(
-                request.user_id,
-                activity_type="stateless_chat"
-            )
-            
-            # Return response with minimal metadata (no conversation persistence)
-            return EnhancedMirrorChatResponse(
-                message=ai_response,
-                conversation_id=None,  # No conversation tracking
-                message_count=1,  # Just this exchange
-                is_new_conversation=False,
-                conversation_title="Stateless Chat",
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-        except Exception as e:
-            logger.error(f"Error in stateless chat: {e}")
             raise

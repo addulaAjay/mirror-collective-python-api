@@ -125,7 +125,7 @@ class ConversationSummary:
     
     conversation_id: str
     title: str
-    last_message_at: str
+    last_message_at: Optional[str]  # Can be None for new conversations
     message_count: int
     is_archived: bool = False
     
