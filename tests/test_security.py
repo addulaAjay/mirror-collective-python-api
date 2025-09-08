@@ -129,7 +129,7 @@ def test_input_validation_edge_cases(client: TestClient):
     ]
     
     for case in edge_cases:
-        response = client.post("/api/chat/mirror", json=case)
+        response = client.post("/api/chat", json=case)
         # Should return validation error or internal error, not crash
         # Allow 200 for successful processing of some edge cases too
         assert response.status_code in [200, 422, 400, 500]
@@ -154,7 +154,7 @@ def test_no_sensitive_data_in_logs(client: TestClient, caplog):
 def test_error_handling_no_stack_trace(client: TestClient):
     """Test that stack traces are not exposed in production"""
     # Try to trigger an error
-    response = client.post("/api/chat/mirror", json={"message": "test"})
+    response = client.post("/api/chat", json={"message": "test"})
     
     # Even if there's an error, stack trace should not be exposed
     if response.status_code >= 500:

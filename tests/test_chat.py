@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 def test_mirror_chat_success(client: TestClient, mock_openai_client, sample_chat_data):
     """Test successful mirror chat"""
-    response = client.post("/api/chat/mirror", json=sample_chat_data)
+    response = client.post("/api/chat", json=sample_chat_data)
     assert response.status_code == 200
     
     data = response.json()
@@ -22,7 +22,7 @@ def test_mirror_chat_empty_message(client: TestClient):
     """Test mirror chat with empty message"""
     chat_data = {"message": ""}
     
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code == 422  # Validation error
 
 
@@ -30,7 +30,7 @@ def test_mirror_chat_no_message(client: TestClient):
     """Test mirror chat without message field"""
     chat_data = {}
     
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code == 422  # Validation error
 
 
@@ -45,7 +45,7 @@ def test_mirror_chat_with_conversation_history(client: TestClient, mock_openai_c
         ]
     }
     
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code == 200
     
     data = response.json()
@@ -62,7 +62,7 @@ def test_mirror_chat_invalid_conversation_history(client: TestClient):
         ]
     }
     
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code == 422  # Validation error
 
 
@@ -74,7 +74,7 @@ def test_mirror_chat_openai_error(client: TestClient, sample_chat_data):
     from tests.conftest import mock_openai_instance
     mock_openai_instance.chat.completions.create.side_effect = Exception("OpenAI API Error")
     
-    response = client.post("/api/chat/mirror", json=sample_chat_data)
+    response = client.post("/api/chat", json=sample_chat_data)
     assert response.status_code == 500  # Internal server error
     
     # Reset the mock for other tests
@@ -91,7 +91,7 @@ def test_mirror_chat_rate_limiting(client: TestClient, mock_openai_client):
     
     # Make requests up to the rate limit - save some for other chat tests
     for i in range(10):  # Reduced from 100 to avoid interfering with other tests
-        response = client.post("/api/chat/mirror", json=chat_data)
+        response = client.post("/api/chat", json=chat_data)
         if response.status_code == 429:
             # Rate limit reached earlier
             assert "Retry-After" in response.headers
@@ -100,7 +100,7 @@ def test_mirror_chat_rate_limiting(client: TestClient, mock_openai_client):
     
     # If we got here, the rate limit is higher than expected, which is fine
     # Just verify one more request works
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code in [200, 429]  # Either works or rate limited
 
 
@@ -109,7 +109,7 @@ def test_mirror_chat_large_message(client: TestClient, mock_openai_client):
     large_message = "x" * 10000  # Very long message
     chat_data = {"message": large_message}
     
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code == 200  # Should handle large messages
     
     data = response.json()
@@ -125,7 +125,7 @@ def test_mirror_chat_special_characters(client: TestClient, mock_openai_client):
         ]
     }
     
-    response = client.post("/api/chat/mirror", json=chat_data)
+    response = client.post("/api/chat", json=chat_data)
     assert response.status_code == 200
     
     data = response.json()
