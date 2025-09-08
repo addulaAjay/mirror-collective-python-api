@@ -20,6 +20,46 @@ class MirrorChatResponse(BaseModel):
     data: Dict[str, Any]  # Contains reply and timestamp from use case
 
 
+# Enhanced models for conversation management
+class EnhancedMirrorChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+    conversationId: Optional[str] = None
+    userName: Optional[str] = None
+    createNewConversation: bool = False
+
+
+class EnhancedMirrorChatResponse(BaseModel):
+    success: bool = True
+    data: Dict[str, Any]  # Contains reply, timestamp, conversation metadata
+
+
+class ConversationSummaryResponse(BaseModel):
+    conversationId: str
+    title: str
+    lastMessageAt: str
+    messageCount: int
+    isArchived: bool = False
+
+
+class ConversationListResponse(BaseModel):
+    success: bool = True
+    data: Dict[str, Any]  # Contains conversations list and metadata
+
+
+class ConversationDetailResponse(BaseModel):
+    success: bool = True
+    data: Dict[str, Any]  # Contains conversation details and recent messages
+
+
+class ConversationManagementRequest(BaseModel):
+    conversationId: str = Field(min_length=1)
+
+
+class UpdateConversationTitleRequest(BaseModel):
+    conversationId: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=100)
+
+
 class UserRegistrationRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)

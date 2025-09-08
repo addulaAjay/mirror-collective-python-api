@@ -23,6 +23,18 @@ from .models import (
     UserRegistrationRequest,
 )
 
+# Import enhanced routes
+from .enhanced_routes import enhanced_chat_router
+
+router = APIRouter()
+
+# Initialize controllers
+auth_controller = AuthController()
+chat_controller = ChatController()
+
+# Include enhanced chat routes
+router.include_router(enhanced_chat_router)
+
 router = APIRouter()
 
 # Initialize controllers

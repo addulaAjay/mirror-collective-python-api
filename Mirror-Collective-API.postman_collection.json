@@ -437,7 +437,7 @@
 			"name": "Chat",
 			"item": [
 				{
-					"name": "Mirror Chat",
+					"name": "Mirror Chat (Legacy)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -466,12 +466,249 @@
 								"mirror"
 							]
 						},
-						"description": "Handle mirror chat requests with OpenAI"
+						"description": "Legacy mirror chat endpoint (stateless)"
+					},
+					"response": []
+				},
+				{
+					"name": "Enhanced Mirror Chat",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message\": \"{{chat_message}}\",\n  \"conversationId\": null,\n  \"userName\": \"{{test_full_name}}\",\n  \"createNewConversation\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/chat/enhanced",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"enhanced"
+							]
+						},
+						"description": "Enhanced chat with persistent conversation management"
+					},
+					"response": []
+				},
+				{
+					"name": "Enhanced Chat - Continue Conversation",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message\": \"Continue our previous discussion\",\n  \"conversationId\": \"{{conversation_id}}\",\n  \"userName\": \"{{test_full_name}}\",\n  \"createNewConversation\": false\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/chat/enhanced",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"enhanced"
+							]
+						},
+						"description": "Continue an existing conversation"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Conversations",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/chat/conversations?limit=50&include_archived=false",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"conversations"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "50",
+									"description": "Maximum number of conversations to return (1-100)"
+								},
+								{
+									"key": "include_archived",
+									"value": "false",
+									"description": "Include archived conversations"
+								}
+							]
+						},
+						"description": "Get all conversations for the authenticated user"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Conversation Detail",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/chat/conversations/{{conversation_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"conversations",
+								"{{conversation_id}}"
+							]
+						},
+						"description": "Get detailed information about a specific conversation including recent messages"
+					},
+					"response": []
+				},
+				{
+					"name": "Archive Conversation",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"conversationId\": \"{{conversation_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/chat/conversations/archive",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"conversations",
+								"archive"
+							]
+						},
+						"description": "Archive a conversation (soft delete)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Conversation",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"conversationId\": \"{{conversation_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/chat/conversations",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"conversations"
+							]
+						},
+						"description": "Permanently delete a conversation and all its messages (cannot be undone)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Conversation Title",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{access_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"conversationId\": \"{{conversation_id}}\",\n  \"title\": \"Updated Conversation Title\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/chat/conversations/title",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"chat",
+								"conversations",
+								"title"
+							]
+						},
+						"description": "Update the title of a conversation"
 					},
 					"response": []
 				}
 			],
-			"description": "Chat endpoints for AI conversations"
+			"description": "Chat endpoints for AI conversations including enhanced conversation management"
 		}
 	],
 	"event": [
@@ -560,6 +797,12 @@
 			"value": "",
 			"type": "string",
 			"description": "User Cognito sub ID - automatically set by registration"
+		},
+		{
+			"key": "conversation_id",
+			"value": "",
+			"type": "string",
+			"description": "Conversation ID for testing - set manually or from Enhanced Mirror Chat response"
 		}
 	]
 }
