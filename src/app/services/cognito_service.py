@@ -311,15 +311,9 @@ class CognitoService:
                 "AuthParameters": {"REFRESH_TOKEN": refresh_token},
             }
 
-            # For refresh token flow with client secret, we need to use a placeholder username
-            # or extract the username from the token. Since we can't easily extract it,
-            # we'll try without SECRET_HASH first, then with an empty username if needed
-            if self.client_secret:
-                # Some AWS Cognito configurations require SECRET_HASH even for refresh tokens
-                # We'll add it with an empty username as a fallback
-                secret_hash = self._get_secret_hash("")
-                if secret_hash:
-                    params["AuthParameters"]["SECRET_HASH"] = secret_hash
+            # For refresh token flow, AWS Cognito doesn't require SECRET_HASH
+            # when using the standard initiate_auth flow, even with client secret.
+            # The refresh token already contains the user identity and client validation.
 
             response = self.client.initiate_auth(**params)
 
