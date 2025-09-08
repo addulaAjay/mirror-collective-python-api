@@ -4,7 +4,8 @@ Production-ready implementation with comprehensive error handling
 """
 
 import logging
-from typing import Any, Dict, Optional
+import json
+from typing import Any, Dict, Optional, AsyncGenerator
 from fastapi import HTTPException
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
@@ -108,6 +109,70 @@ class EnhancedChatController:
         except Exception as e:
             logger.error(f"Error processing enhanced mirror chat request: {str(e)}")
             raise HTTPException(status_code=500, detail="Internal server error")
+
+    async def handle_enhanced_chat_stream(
+        self, 
+        req: EnhancedMirrorChatRequest, 
+        current_user: Dict[str, Any]
+    ) -> AsyncGenerator[str, None]:
+        """
+        Process enhanced mirror chat requests with REAL-TIME STREAMING
+        
+        Args:
+            req: The validated enhanced chat request from the API layer
+            current_user: The authenticated user information from JWT token
+            
+        Yields:
+            str: Streaming AI response chunks
+            
+        Raises:
+            HTTPException: For various error conditions (400, 404, 500)
+        """
+        try:
+            # Extract user ID from JWT token
+            user_id = current_user.get("id") or current_user.get("sub")
+            if not user_id:
+                logger.error("User ID not found in JWT token")
+                raise HTTPException(status_code=400, detail="User ID not found in token")
+
+            # Get user profile for personalization
+            user_profile = await self.user_service.get_user_profile(user_id)
+            if not user_profile:
+                logger.warning(f"User profile not found for user: {user_id}")
+                raise HTTPException(status_code=404, detail=f"User profile not found for user: {user_id}")
+
+            # Resolve user name with intelligent fallbacks
+            user_name = self._resolve_user_name(req.userName, user_profile, current_user)
+
+            logger.info(
+                f"Processing STREAMING chat request - User: {user_id}, "
+                f"ConversationId: {req.conversationId}, "
+                f"CreateNew: {req.createNewConversation}"
+            )
+
+            # Create use case request
+            from ..use_cases.enhanced_mirror_chat_use_case import EnhancedMirrorChatRequest as UseCaseRequest
+            use_case_request = UseCaseRequest(
+                message=req.message,
+                user_id=user_id,
+                conversation_id=req.conversationId,
+                user_name=user_name,
+                create_new_conversation=req.createNewConversation
+            )
+
+            # Stream AI response in real-time
+            async for chunk in self.chat_use_case.execute_stream(use_case_request):
+                yield chunk
+
+        except ValidationError as e:
+            logger.warning(f"Validation error in streaming chat: {e}")
+            yield f"ERROR: {str(e)}"
+        except NotFoundError as e:
+            logger.warning(f"Not found error in streaming chat: {e}")
+            yield f"ERROR: {str(e)}"
+        except Exception as e:
+            logger.error(f"Error processing streaming chat request: {str(e)}")
+            yield f"ERROR: Internal server error"
 
     async def get_user_conversations(
         self, 

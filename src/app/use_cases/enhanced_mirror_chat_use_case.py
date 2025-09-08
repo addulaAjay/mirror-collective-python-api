@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, AsyncGenerator
 
 from ..core.exceptions import ValidationError
 from ..models.conversation import Conversation
@@ -288,6 +288,151 @@ class EnhancedMirrorChatUseCase:
             total_time = time.time() - start_time
             logger.error(f"Error processing enhanced chat request after {total_time:.3f}s: {str(e)}")
             raise
+
+    async def execute_stream(self, request: EnhancedMirrorChatRequest) -> AsyncGenerator[str, None]:
+        """
+        Process streaming enhanced mirror chat request with real-time AI response
+        
+        Args:
+            request: The enhanced chat request with conversation context
+            
+        Yields:
+            str: Real-time AI response chunks
+            
+        Raises:
+            ValidationError: If request validation fails
+            NotFoundError: If conversation not found
+            InternalServerError: If processing fails
+        """
+        try:
+            # 1. Validate the request
+            request.validate()
+            
+            logger.info(f"Processing STREAMING enhanced chat request for user {request.user_id}")
+            
+            # 2. Check if conversation persistence is enabled
+            if not self.conversation_service.is_persistence_enabled():
+                logger.warning("Conversation persistence is disabled - falling back to stateless streaming")
+                async for chunk in self._handle_stateless_chat_stream(request):
+                    yield chunk
+                return
+            
+            # 3. Setup conversation context (similar to regular execute)
+            conversation = None
+            conversation_id = None
+            is_new_conversation = False
+            
+            if request.create_new_conversation or not request.conversation_id:
+                # Create new conversation
+                logger.debug(f"Creating new conversation for STREAMING user {request.user_id}")
+                conversation = await self.conversation_service.create_conversation(
+                    user_id=request.user_id,
+                    initial_message=request.message
+                )
+                conversation_id = conversation.conversation_id
+                is_new_conversation = True
+                
+                # Build AI context for new conversation
+                system_content = self._build_system_prompt(request.user_name)
+                ai_messages = [
+                    ChatMessage(role="system", content=system_content),
+                    ChatMessage(role="user", content=request.message)
+                ]
+            else:
+                # Use existing conversation
+                logger.debug(f"Using existing conversation {request.conversation_id} for STREAMING")
+                conversation_id = request.conversation_id
+                
+                # Get conversation and build AI context
+                system_content = self._build_system_prompt(request.user_name)
+                conversation_task = asyncio.create_task(
+                    self.conversation_service.get_conversation(conversation_id, request.user_id)
+                )
+                ai_context_task = asyncio.create_task(
+                    self.conversation_service.get_ai_context(
+                        conversation_id=conversation_id,
+                        user_id=request.user_id,
+                        system_prompt=system_content,
+                        current_message=request.message
+                    )
+                )
+                
+                # Wait for both operations
+                gather_results = await asyncio.gather(conversation_task, ai_context_task)
+                conversation = gather_results[0]
+                ai_messages = gather_results[1]
+            
+            # 4. Stream AI response in real-time
+            full_response = ""
+            
+            # Start user message storage task (don't wait)
+            user_message_task = asyncio.create_task(
+                self.conversation_service.add_message(
+                    conversation_id=conversation_id,
+                    user_id=request.user_id,
+                    role="user",
+                    content=request.message,
+                    token_count=self._estimate_token_count(request.message)
+                )
+            )
+            
+            # Stream AI chunks
+            async for chunk in self.chat_service.send_stream(ai_messages):
+                full_response += chunk
+                yield chunk
+            
+            # 5. Store AI response and complete background tasks
+            ai_message_task = asyncio.create_task(
+                self.conversation_service.add_message(
+                    conversation_id=conversation_id,
+                    user_id=request.user_id,
+                    role="assistant",
+                    content=full_response,
+                    token_count=self._estimate_token_count(full_response)
+                )
+            )
+            
+            activity_task = asyncio.create_task(
+                self._record_user_activity_safe(request.user_id)
+            )
+            
+            # Complete background operations
+            asyncio.create_task(self._complete_background_operations(
+                user_message_task, ai_message_task, activity_task
+            ))
+            
+            logger.info(f"Completed STREAMING chat for user {request.user_id}, response length: {len(full_response)}")
+            
+        except (ValidationError, Exception) as e:
+            logger.error(f"Error processing streaming chat request: {str(e)}")
+            yield f"ERROR: {str(e)}"
+
+    async def _handle_stateless_chat_stream(self, request: EnhancedMirrorChatRequest) -> AsyncGenerator[str, None]:
+        """
+        Handle streaming chat in stateless mode when persistence is disabled
+        """
+        try:
+            logger.info("Handling STREAMING chat in stateless mode")
+            
+            # Build system prompt
+            system_content = self._build_system_prompt(request.user_name)
+            
+            # Create simple message list for AI (no conversation history)
+            ai_messages = [
+                ChatMessage("system", system_content),
+                ChatMessage("user", request.message)
+            ]
+            
+            # Stream AI response
+            async for chunk in self.chat_service.send_stream(ai_messages):
+                yield chunk
+            
+            # Update user activity (don't wait)
+            asyncio.create_task(self.user_service.record_chat_activity(request.user_id))
+            
+        except Exception as e:
+            logger.error(f"Error in stateless streaming chat: {e}")
+            yield f"ERROR: {str(e)}"
 
     async def _generate_ai_response_async(self, ai_messages) -> str:
         """

@@ -4,6 +4,7 @@ Production-ready endpoints with comprehensive error handling
 """
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 
 from ..api.models import (
     EnhancedMirrorChatRequest,
@@ -45,6 +46,31 @@ async def enhanced_mirror_chat(
         EnhancedMirrorChatResponse: AI response with conversation metadata
     """
     return await controller.handle_enhanced_chat(request, current_user)
+
+
+@enhanced_chat_router.post("/stream")
+async def enhanced_mirror_chat_stream(
+    request: EnhancedMirrorChatRequest,
+    current_user=Depends(get_current_user),
+    controller=Depends(get_enhanced_chat_controller)
+):
+    """
+    Enhanced mirror chat with REAL-TIME STREAMING response
+    
+    This endpoint streams AI responses in real-time using Server-Sent Events (SSE).
+    Perfect for live chat UIs that want to show responses as they're generated.
+    
+    Args:
+        request: Enhanced chat request with conversation context
+        current_user: Authenticated user from JWT token
+        
+    Returns:
+        StreamingResponse: Real-time streaming AI response chunks
+    """
+    return StreamingResponse(
+        controller.handle_enhanced_chat_stream(request, current_user),
+        media_type="text/plain"
+    )
 
 
 @enhanced_chat_router.get("/conversations", response_model=ConversationListResponse)
