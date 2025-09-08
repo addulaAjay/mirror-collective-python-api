@@ -387,7 +387,7 @@ class DynamoDBService:
             user_id: The user ID (for security)
 
         Returns:
-            Optional[Conversation]: The conversation if found
+            Optional[Conversation]: The conversation if found and belongs to user
         """
         try:
             async with self.session.resource(
@@ -396,11 +396,17 @@ class DynamoDBService:
                 table = await dynamodb.Table(self.conversations_table)
 
                 response = await table.get_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id}
+                    Key={"conversation_id": conversation_id}
                 )
 
                 if "Item" in response:
-                    return Conversation.from_dynamodb_item(response["Item"])
+                    conversation = Conversation.from_dynamodb_item(response["Item"])
+                    # Security check: ensure conversation belongs to the requesting user
+                    if conversation.user_id == user_id:
+                        return conversation
+                    else:
+                        logger.warning(f"User {user_id} attempted to access conversation {conversation_id} owned by {conversation.user_id}")
+                        return None
                 return None
 
         except ClientError as e:
@@ -438,7 +444,7 @@ class DynamoDBService:
                 }
 
                 await table.update_item(
-                    Key={"conversation_id": conversation.conversation_id, "user_id": conversation.user_id},
+                    Key={"conversation_id": conversation.conversation_id},
                     UpdateExpression=update_expression,
                     ExpressionAttributeNames=expression_attribute_names,
                     ExpressionAttributeValues=expression_attribute_values
@@ -510,7 +516,7 @@ class DynamoDBService:
 
         Args:
             conversation_id: The conversation ID
-            user_id: The user ID
+            user_id: The user ID (for security validation)
 
         Returns:
             bool: True if archived successfully
@@ -521,8 +527,18 @@ class DynamoDBService:
             ) as dynamodb:
                 table = await dynamodb.Table(self.conversations_table)
 
+                # First verify the conversation belongs to the user
+                response = await table.get_item(Key={"conversation_id": conversation_id})
+                if "Item" not in response:
+                    return False
+                
+                conversation_item = response["Item"]
+                if conversation_item.get("user_id") != user_id:
+                    logger.warning(f"User {user_id} attempted to archive conversation {conversation_id} owned by {conversation_item.get('user_id')}")
+                    return False
+
                 await table.update_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id},
+                    Key={"conversation_id": conversation_id},
                     UpdateExpression="SET is_archived = :archived, updated_at = :updated_at",
                     ExpressionAttributeValues={
                         ":archived": True,
@@ -578,8 +594,19 @@ class DynamoDBService:
 
                 # Delete the conversation
                 conversations_table = await dynamodb.Table(self.conversations_table)
+                
+                # First verify the conversation belongs to the user
+                conversation_response = await conversations_table.get_item(Key={"conversation_id": conversation_id})
+                if "Item" not in conversation_response:
+                    return False
+                
+                conversation_item = conversation_response["Item"]
+                if conversation_item.get("user_id") != user_id:
+                    logger.warning(f"User {user_id} attempted to delete conversation {conversation_id} owned by {conversation_item.get('user_id')}")
+                    return False
+                
                 await conversations_table.delete_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id}
+                    Key={"conversation_id": conversation_id}
                 )
 
                 logger.info(f"Deleted conversation {conversation_id} and its messages for user {user_id}")
