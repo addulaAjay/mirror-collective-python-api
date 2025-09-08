@@ -324,7 +324,7 @@ class CognitoService:
             except ClientError as init_error:
                 # If initiate_auth fails, try admin_initiate_auth as fallback
                 logger.warning(f"initiate_auth failed, trying admin_initiate_auth: {init_error}")
-                admin_params = {
+                admin_params: Dict[str, Any] = {
                     "UserPoolId": self.user_pool_id,
                     "ClientId": self.client_id,
                     "AuthFlow": "REFRESH_TOKEN_AUTH",
