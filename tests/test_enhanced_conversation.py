@@ -276,9 +276,14 @@ class TestEnhancedMirrorChatUseCase:
         chat_use_case.conversation_service.get_ai_context = AsyncMock(return_value=[])
         chat_use_case.conversation_service.add_message = AsyncMock()
         chat_use_case.conversation_service.get_conversation = AsyncMock(return_value=mock_conversation)
+        chat_use_case.conversation_service.is_persistence_enabled = Mock(return_value=True)
         
-        # Mock chat service
-        chat_use_case.chat_service.send = Mock(return_value="AI response")
+        # Mock chat service with async generator for streaming
+        async def mock_stream(messages):
+            yield "AI "
+            yield "response"
+        
+        chat_use_case.chat_service.send_stream = mock_stream
         
         # Mock user service
         chat_use_case.user_service.record_chat_activity = AsyncMock()
