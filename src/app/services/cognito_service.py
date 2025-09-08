@@ -312,7 +312,7 @@ class CognitoService:
             params: Dict[str, Any] = {
                 "ClientId": self.client_id,
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
-                "AuthParameters": {"REFRESH_TOKEN": refresh_token},
+                "AuthParameters": {"REFRESH_TOKEN": refresh_token, "SECRET_HASH": self._get_secret_hash("")},
             }
 
             # Note: SECRET_HASH is NOT required for refresh token operations
