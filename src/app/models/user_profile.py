@@ -90,7 +90,17 @@ class UserProfile:
         """Convert to DynamoDB item format"""
         item = asdict(self)
         item["status"] = self.status.value  # Convert enum to string
-        return {k: v for k, v in item.items() if v is not None}
+        
+        # Filter out None values and empty strings for indexed fields
+        filtered_item = {}
+        for k, v in item.items():
+            if v is None:
+                continue  # Skip None values
+            if k == "email" and (not v or not v.strip()):
+                continue  # Skip empty email values to avoid index errors
+            filtered_item[k] = v
+        
+        return filtered_item
 
     @classmethod
     def from_dynamodb_item(cls, item: Dict[str, Any]) -> "UserProfile":
@@ -118,14 +128,19 @@ class UserProfile:
         # Extract attributes from Cognito format
         attributes = {}
         if "UserAttributes" in cognito_user_data:
+            # Raw AWS Cognito format: [{"Name": "email", "Value": "user@example.com"}, ...]
             for attr in cognito_user_data["UserAttributes"]:
                 attributes[attr["Name"]] = attr["Value"]
         elif "Attributes" in cognito_user_data:
+            # Alternative AWS Cognito format
             for attr in cognito_user_data["Attributes"]:
                 attributes[attr["Name"]] = attr["Value"]
+        elif "userAttributes" in cognito_user_data:
+            # Our transformed format: {"email": "user@example.com", "given_name": "John", ...}
+            attributes = cognito_user_data["userAttributes"]
 
         # Map Cognito status to our enum
-        cognito_status = cognito_user_data.get("UserStatus", "UNKNOWN")
+        cognito_status = cognito_user_data.get("UserStatus") or cognito_user_data.get("userStatus", "UNKNOWN")
         try:
             status = UserStatus(cognito_status)
         except ValueError:
@@ -133,7 +148,7 @@ class UserProfile:
 
         return cls(
             user_id=user_id,
-            email=attributes.get("email") or "",  # Ensure empty string if None
+            email=attributes.get("email", ""),  # Will be validated in service layer
             first_name=attributes.get("given_name"),
             last_name=attributes.get("family_name"),
             status=status,

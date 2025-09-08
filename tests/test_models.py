@@ -233,3 +233,115 @@ def test_password_pattern_validation():
         }
         with pytest.raises(ValidationError):
             UserRegistrationRequest(**data)
+
+
+def test_user_profile_to_dynamodb_item_empty_email():
+    """Test that UserProfile.to_dynamodb_item() properly handles empty email"""
+    from src.app.models.user_profile import UserProfile, UserStatus
+    
+    # Test with empty email string
+    profile = UserProfile(
+        user_id="test-user-123",
+        email="",  # Empty string
+        status=UserStatus.CONFIRMED
+    )
+    
+    item = profile.to_dynamodb_item()
+    
+    # Empty email should be filtered out to prevent DynamoDB index issues
+    assert "email" not in item
+    assert item["user_id"] == "test-user-123"
+    assert item["status"] == "CONFIRMED"
+
+
+def test_user_profile_to_dynamodb_item_valid_email():
+    """Test that UserProfile.to_dynamodb_item() preserves valid email"""
+    from src.app.models.user_profile import UserProfile, UserStatus
+    
+    # Test with valid email
+    profile = UserProfile(
+        user_id="test-user-123",
+        email="test@example.com",
+        status=UserStatus.CONFIRMED
+    )
+    
+    item = profile.to_dynamodb_item()
+    
+    # Valid email should be preserved
+    assert item["email"] == "test@example.com"
+    assert item["user_id"] == "test-user-123"
+    assert item["status"] == "CONFIRMED"
+
+
+def test_user_profile_from_cognito_user_missing_email():
+    """Test creating UserProfile from Cognito data with missing email"""
+    from src.app.models.user_profile import UserProfile
+    
+    cognito_data = {
+        "username": "test-user-123",
+        "UserStatus": "CONFIRMED",
+        "UserAttributes": [
+            {"Name": "given_name", "Value": "John"},
+            {"Name": "family_name", "Value": "Doe"},
+            # Note: no email attribute
+        ]
+    }
+    
+    # Should create profile but with empty email
+    profile = UserProfile.from_cognito_user(cognito_data, "test-user-123")
+    assert profile.user_id == "test-user-123"
+    assert profile.email == ""  # Empty string for missing email
+    assert profile.first_name == "John"
+    assert profile.last_name == "Doe"
+
+
+def test_user_profile_from_cognito_user_transformed_format():
+    """Test creating UserProfile from transformed Cognito data (userAttributes format)"""
+    from src.app.models.user_profile import UserProfile
+    
+    # This is the format returned by CognitoService.get_user_by_email()
+    cognito_data = {
+        "username": "test-user-123",
+        "userStatus": "CONFIRMED",  # Note: lowercase 's' in userStatus
+        "userAttributes": {  # Note: flat dict, not array
+            "email": "test@example.com",
+            "given_name": "John", 
+            "family_name": "Doe",
+            "email_verified": "true"
+        }
+    }
+    
+    # Should create profile with correct email from transformed format
+    profile = UserProfile.from_cognito_user(cognito_data, "test-user-123")
+    assert profile.user_id == "test-user-123"
+    assert profile.email == "test@example.com"  # Should find email in userAttributes
+    assert profile.first_name == "John"
+    assert profile.last_name == "Doe"
+    assert profile.email_verified == True
+
+
+def test_user_profile_cognito_format_mismatch_original_bug():
+    """Test that reproduces the original bug: email empty due to format mismatch"""
+    from src.app.models.user_profile import UserProfile
+    
+    # This simulates what was happening before our fix:
+    # CognitoService.get_user_by_email() returns userAttributes as a flat dict,
+    # but UserProfile.from_cognito_user() was only looking for UserAttributes array
+    
+    cognito_data_with_wrong_format = {
+        "username": "test-user-123",
+        "userStatus": "CONFIRMED",
+        "userAttributes": {  # Our service returns this format
+            "email": "user@example.com",
+            "given_name": "John"
+        }
+        # But the UserProfile was only looking for "UserAttributes" (capital U)
+    }
+    
+    # With our fix, this should now work correctly
+    profile = UserProfile.from_cognito_user(cognito_data_with_wrong_format, "test-user-123")
+    
+    # Before our fix, email would be empty string due to format mismatch
+    # After our fix, email should be correctly extracted
+    assert profile.email == "user@example.com"
+    assert profile.first_name == "John"

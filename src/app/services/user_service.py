@@ -42,6 +42,18 @@ class UserService:
             if not user_id:
                 raise ValueError("No user ID found in Cognito data")
             
+            # Extract email from Cognito data to validate it exists
+            attributes = cognito_user_data.get("userAttributes", {})
+            if "UserAttributes" in cognito_user_data:
+                attrs_dict = {}
+                for attr in cognito_user_data["UserAttributes"]:
+                    attrs_dict[attr["Name"]] = attr["Value"]
+                attributes = attrs_dict
+            
+            email = attributes.get("email", "").strip()
+            if not email:
+                raise ValueError(f"No valid email found in Cognito data for user: {user_id}")
+            
             logger.info(f"Creating user profile from Cognito data for user: {user_id}")
             
             # Check if profile already exists
@@ -52,6 +64,11 @@ class UserService:
             
             # Create new profile from Cognito data
             user_profile = UserProfile.from_cognito_user(cognito_user_data, user_id)
+            
+            # Double-check email is valid before saving
+            if not user_profile.email or not user_profile.email.strip():
+                raise ValueError(f"User profile has invalid email for user: {user_id}")
+            
             user_profile = await self.dynamodb_service.create_user_profile(user_profile)
             
             logger.info(f"Successfully created user profile for user: {user_id}")
