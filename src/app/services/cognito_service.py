@@ -305,6 +305,7 @@ class CognitoService:
     async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """Refresh access token using refresh token"""
         try:
+            # Try the standard initiate_auth first, which is the preferred method
             params: Dict[str, Any] = {
                 "ClientId": self.client_id,
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
@@ -318,7 +319,23 @@ class CognitoService:
                 if secret_hash:
                     params["AuthParameters"]["SECRET_HASH"] = secret_hash
 
-            response = self.client.initiate_auth(**params)
+            try:
+                response = self.client.initiate_auth(**params)
+            except ClientError as init_error:
+                # If initiate_auth fails, try admin_initiate_auth as fallback
+                logger.warning(f"initiate_auth failed, trying admin_initiate_auth: {init_error}")
+                admin_params = {
+                    "UserPoolId": self.user_pool_id,
+                    "ClientId": self.client_id,
+                    "AuthFlow": "REFRESH_TOKEN_AUTH",
+                    "AuthParameters": {"REFRESH_TOKEN": refresh_token},
+                }
+                if self.client_secret:
+                    secret_hash = self._get_secret_hash("")
+                    if secret_hash:
+                        admin_params["AuthParameters"]["SECRET_HASH"] = secret_hash
+                
+                response = self.client.admin_initiate_auth(**admin_params)
 
             if not response.get("AuthenticationResult"):
                 raise AuthenticationError("Token refresh failed")
