@@ -3,6 +3,7 @@ Enhanced mirror chat use case with persistent conversation management
 Production-ready implementation with comprehensive error handling
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -94,6 +95,7 @@ class EnhancedMirrorChatUseCase:
     async def execute(self, request: EnhancedMirrorChatRequest) -> EnhancedMirrorChatResponse:
         """
         Process an enhanced mirror chat request with persistent conversation management
+        OPTIMIZED VERSION: Parallel processing and reduced database calls
 
         Args:
             request: The enhanced chat request with conversation context
@@ -118,8 +120,11 @@ class EnhancedMirrorChatUseCase:
                 logger.warning("Conversation persistence is disabled - falling back to stateless mode")
                 # Fall back to simple chat without persistence
                 return await self._handle_stateless_chat(request)
+
+            # 3. OPTIMIZATION: Parallel conversation setup and AI context building
+            import asyncio
             
-            # 3. Handle conversation creation/retrieval
+            # Handle conversation creation/retrieval
             conversation = None
             is_new_conversation = False
             
@@ -132,69 +137,95 @@ class EnhancedMirrorChatUseCase:
                 )
                 conversation_id = conversation.conversation_id
                 is_new_conversation = True
+                
+                # For new conversations, we can skip history lookup and start AI immediately
+                system_content = self._build_system_prompt(request.user_name)
+                ai_messages = [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": request.message}
+                ]
             else:
-                # Use existing conversation
+                # Use existing conversation - parallel fetch context and validate conversation
                 logger.debug(f"Using existing conversation {request.conversation_id}")
                 conversation_id = request.conversation_id
-                conversation = await self.conversation_service.get_conversation(
-                    conversation_id, request.user_id
+                
+                # PARALLEL OPERATIONS: Get conversation details and AI context simultaneously
+                system_content = self._build_system_prompt(request.user_name)
+                
+                conversation_task = asyncio.create_task(
+                    self.conversation_service.get_conversation(conversation_id, request.user_id)
                 )
-
-            # 4. Build system prompt with personalization
-            system_content = self._build_system_prompt(request.user_name)
-
-            # 5. Get optimized AI context (system prompt + conversation history + current message)
-            ai_messages = await self.conversation_service.get_ai_context(
-                conversation_id=conversation_id,
-                user_id=request.user_id,
-                system_prompt=system_content,
-                current_message=request.message
-            )
+                ai_context_task = asyncio.create_task(
+                    self.conversation_service.get_ai_context(
+                        conversation_id=conversation_id,
+                        user_id=request.user_id,
+                        system_prompt=system_content,
+                        current_message=request.message
+                    )
+                )
+                
+                # Wait for both operations
+                conversation, ai_messages = await asyncio.gather(
+                    conversation_task, ai_context_task
+                )
 
             logger.debug(
                 f"Built AI context with {len(ai_messages)} messages for conversation {conversation_id}"
             )
 
-            # 5. Generate AI response
-            reply = self.chat_service.send(ai_messages)
-
-            # 6. Store the user message
-            await self.conversation_service.add_message(
-                conversation_id=conversation_id,
-                user_id=request.user_id,
-                role="user",
-                content=request.message,
-                token_count=self._estimate_token_count(request.message)
+            # 4. OPTIMIZATION: Start AI generation immediately while preparing to store messages
+            ai_generation_task = asyncio.create_task(
+                self._generate_ai_response_async(ai_messages)
+            )
+            
+            # 5. OPTIMIZATION: Prepare message storage operations (don't wait for AI yet)
+            user_message_task = asyncio.create_task(
+                self.conversation_service.add_message(
+                    conversation_id=conversation_id,
+                    user_id=request.user_id,
+                    role="user",
+                    content=request.message,
+                    token_count=self._estimate_token_count(request.message)
+                )
             )
 
-            # 7. Store the AI response
-            await self.conversation_service.add_message(
-                conversation_id=conversation_id,
-                user_id=request.user_id,
-                role="assistant",
-                content=reply,
-                token_count=self._estimate_token_count(reply)
+            # 6. Wait for AI response (this is the longest operation)
+            reply = await ai_generation_task
+            
+            # 7. OPTIMIZATION: Parallel completion - store AI response and record activity
+            ai_message_task = asyncio.create_task(
+                self.conversation_service.add_message(
+                    conversation_id=conversation_id,
+                    user_id=request.user_id,
+                    role="assistant",
+                    content=reply,
+                    token_count=self._estimate_token_count(reply)
+                )
+            )
+            
+            activity_task = asyncio.create_task(
+                self._record_user_activity_safe(request.user_id)
             )
 
-            # 8. Record user activity for analytics
-            try:
-                await self.user_service.record_chat_activity(request.user_id)
-            except Exception as e:
-                logger.warning(f"Failed to record chat activity: {e}")
-                # Don't fail the main request for analytics issues
+            # Wait for user message to be stored (required for accurate count)
+            await user_message_task
+            
+            # 8. OPTIMIZATION: Calculate response metadata without fetching full conversation
+            # Instead of fetching updated conversation, calculate metadata locally
+            if conversation:
+                estimated_message_count = conversation.message_count + 2  # user + assistant
+                conversation_title = conversation.title or "New Conversation"
+            else:
+                estimated_message_count = 2 if is_new_conversation else 0
+                conversation_title = "New Conversation"
 
-            # 9. Get updated conversation for response metadata
-            updated_conversation = await self.conversation_service.get_conversation(
-                conversation_id, request.user_id
-            )
-
-            # 10. Build and return enhanced response
+            # 9. Build and return enhanced response (don't wait for non-critical operations)
             response = EnhancedMirrorChatResponse(
                 reply=reply,
                 timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 conversation_id=conversation_id,
-                message_count=updated_conversation.message_count,
-                conversation_title=updated_conversation.title or "New Conversation",
+                message_count=estimated_message_count,
+                conversation_title=conversation_title,
                 is_new_conversation=is_new_conversation
             )
 
@@ -203,11 +234,62 @@ class EnhancedMirrorChatUseCase:
                 f"in conversation {conversation_id}"
             )
 
+            # Let remaining operations complete in background (don't block response)
+            asyncio.create_task(self._complete_background_operations(ai_message_task, activity_task))
+
             return response
 
         except (ValidationError, Exception) as e:
             logger.error(f"Error processing enhanced chat request: {str(e)}")
             raise
+
+    async def _generate_ai_response_async(self, ai_messages) -> str:
+        """
+        Generate AI response asynchronously
+        
+        Args:
+            ai_messages: List of messages for AI context
+            
+        Returns:
+            str: AI generated response
+        """
+        import asyncio
+        # Convert ChatMessage objects to dict format if needed
+        if hasattr(ai_messages[0], 'to_dict'):
+            formatted_messages = [msg for msg in ai_messages]
+        else:
+            # Already in dict format from optimization
+            from ..services.openai_service import ChatMessage
+            formatted_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in ai_messages]
+        
+        # Run OpenAI call in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.chat_service.send, formatted_messages)
+
+    async def _record_user_activity_safe(self, user_id: str):
+        """
+        Record user activity safely without failing the main request
+        
+        Args:
+            user_id: The user ID
+        """
+        try:
+            await self.user_service.record_chat_activity(user_id)
+        except Exception as e:
+            logger.warning(f"Failed to record chat activity: {e}")
+            # Don't fail the main request for analytics issues
+
+    async def _complete_background_operations(self, *tasks):
+        """
+        Complete background operations without blocking the response
+        
+        Args:
+            tasks: List of asyncio tasks to complete
+        """
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            logger.warning(f"Background operation failed: {e}")
 
     def _build_system_prompt(self, user_name: Optional[str] = None) -> str:
         """
