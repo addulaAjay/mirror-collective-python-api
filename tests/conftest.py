@@ -91,7 +91,6 @@ mock_profile.chat_name = 'Test'
 mock_profile.user_id = 'mock-user-123'
 
 # Configure async methods
-mock_user_service_instance.get_or_create_user_profile = AsyncMock(return_value=mock_profile)
 mock_user_service_instance.get_user_profile = AsyncMock(return_value=mock_profile)
 mock_user_service_instance.create_user_profile_from_cognito = AsyncMock(return_value=mock_profile)
 mock_user_service_instance.record_chat_activity = AsyncMock(return_value=None)

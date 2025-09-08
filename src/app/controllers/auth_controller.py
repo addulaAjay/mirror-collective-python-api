@@ -132,9 +132,8 @@ class AuthController:
             # Only sync if profile already exists - don't create new ones
             existing_profile = await self.user_service.get_user_profile(user_id)
             if existing_profile:
-                # Force sync with latest Cognito data
-                await self.user_service.sync_user_with_cognito(user_id)
-                logger.info(f"Synced existing user profile after password reset: {user_id}")
+                # Note: Cognito sync removed for security reasons
+                logger.info(f"User profile exists but sync with Cognito not available: {user_id}")
             else:
                 logger.info(f"No existing profile to sync for user: {user_id}")
             

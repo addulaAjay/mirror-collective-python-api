@@ -5,7 +5,7 @@ Chat controller - handles HTTP requests for mirror chat conversations
 import logging
 from typing import Any, Dict
 from fastapi import HTTPException
-
+from ..core.exceptions import InternalServerError
 from ..api.models import MirrorChatRequest, MirrorChatResponse
 from ..services.openai_service import ChatMessage, OpenAIService
 from ..services.user_service import UserService
@@ -64,7 +64,7 @@ class ChatController:
             if not user_profile:
                 logger.warning(f"User profile not found in DynamoDB for user: {user_id}. Creating fallback profile.")
                 # Create a basic profile for existing users who might not have been migrated yet
-                user_profile = await self.user_service.get_or_create_user_profile(user_id)
+                raise InternalServerError(f"User profile not found for user: {user_id}")
 
             # Extract user name with intelligent fallbacks
             user_name = req.userName  # Explicit name from request
