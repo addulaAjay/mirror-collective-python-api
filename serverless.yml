@@ -18,6 +18,8 @@ provider:
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     DYNAMODB_USERS_TABLE: ${self:service}-users-${self:provider.stage}
     DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
+    DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}
+    DYNAMODB_MESSAGES_TABLE: ${self:service}-messages-${self:provider.stage}
   iam:
     role:
       statements:
@@ -37,6 +39,16 @@ provider:
               - - Fn::GetAtt: [ UsersTable, Arn ]
                 - 'index/*'
             - Fn::GetAtt: [ ActivityTable, Arn ]
+            - Fn::GetAtt: [ ConversationsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ ConversationsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ MessagesTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ MessagesTable, Arn ]
+                - 'index/*'
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -107,6 +119,68 @@ resources:
             KeyType: HASH
           - AttributeName: activity_date
             KeyType: RANGE
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    ConversationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-conversations-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: conversation_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: last_message_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversation_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-conversations-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: last_message_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    MessagesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-messages-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: conversation_id
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: S
+          - AttributeName: message_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversation_id
+            KeyType: HASH
+          - AttributeName: timestamp
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: message-id-index
+            KeySchema:
+              - AttributeName: message_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
         BillingMode: PROVISIONED
         ProvisionedThroughput:
           ReadCapacityUnits: 1
