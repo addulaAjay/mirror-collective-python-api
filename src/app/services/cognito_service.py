@@ -305,37 +305,22 @@ class CognitoService:
     async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """Refresh access token using refresh token"""
         try:
-            # Try the standard initiate_auth first, which is the preferred method
+            logger.info("Starting refresh token operation")
+            
+            # For refresh token operations, don't include SECRET_HASH as it's not needed
+            # and causes "SecretHash does not match" errors
             params: Dict[str, Any] = {
                 "ClientId": self.client_id,
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
                 "AuthParameters": {"REFRESH_TOKEN": refresh_token},
             }
 
-            # For refresh token flow with client secret, use empty username for SECRET_HASH
-            # This matches the Node.js implementation behavior
-            if self.client_secret:
-                secret_hash = self._get_secret_hash("")  # Empty username for refresh
-                if secret_hash:
-                    params["AuthParameters"]["SECRET_HASH"] = secret_hash
+            # Note: SECRET_HASH is NOT required for refresh token operations
+            # AWS Cognito validates the refresh token itself without needing SECRET_HASH
+            logger.debug(f"Refresh token params (without SECRET_HASH): ClientId={self.client_id}, AuthFlow=REFRESH_TOKEN_AUTH")
 
-            try:
-                response = self.client.initiate_auth(**params)
-            except ClientError as init_error:
-                # If initiate_auth fails, try admin_initiate_auth as fallback
-                logger.warning(f"initiate_auth failed, trying admin_initiate_auth: {init_error}")
-                admin_params: Dict[str, Any] = {
-                    "UserPoolId": self.user_pool_id,
-                    "ClientId": self.client_id,
-                    "AuthFlow": "REFRESH_TOKEN_AUTH",
-                    "AuthParameters": {"REFRESH_TOKEN": refresh_token},
-                }
-                if self.client_secret:
-                    secret_hash = self._get_secret_hash("")
-                    if secret_hash:
-                        admin_params["AuthParameters"]["SECRET_HASH"] = secret_hash
-                
-                response = self.client.admin_initiate_auth(**admin_params)
+            response = self.client.initiate_auth(**params)
+            logger.info("Successfully called initiate_auth for refresh token")
 
             if not response.get("AuthenticationResult"):
                 raise AuthenticationError("Token refresh failed")
@@ -362,18 +347,23 @@ class CognitoService:
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"]["Message"]
             
-            logger.error(f"Cognito refresh_token error: {error_code} - {error_message}")
+            logger.error(f"Cognito refresh_token ClientError: {error_code} - {error_message}")
+            logger.error(f"Full error response: {e.response}")
             
             # Specific error mappings for refresh token flow
             if error_code == "NotAuthorizedException":
+                logger.warning("Refresh token is invalid or expired")
                 raise AuthenticationError("Invalid or expired refresh token")
             elif error_code == "InvalidParameterException":
+                logger.warning("Invalid refresh token format provided")
                 raise ValidationError("Invalid refresh token format")
             else:
+                logger.error(f"Unexpected Cognito error code: {error_code}")
                 # Fall back to general error handling
                 self._handle_cognito_error(e, "refresh_token")
         except Exception as e:
             logger.exception(f"Unexpected error during token refresh: {str(e)}")
+            logger.error(f"Error type: {type(e).__name__}")
             raise CognitoServiceError(f"Token refresh failed: {str(e)}")
 
     async def get_user(self, access_token: str) -> Dict[str, Any]:
