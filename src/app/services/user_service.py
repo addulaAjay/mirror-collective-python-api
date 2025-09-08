@@ -38,6 +38,10 @@ class UserService:
             UserProfile
         """
         try:
+            if not user_id:
+                raise ValueError("user_id is required and cannot be None or empty")
+            
+            logger.info(f"Getting or creating user profile for user_id: {user_id}")
             # Get existing profile
             user_profile = await self.dynamodb_service.get_user_profile(user_id)
 
@@ -55,9 +59,23 @@ class UserService:
                         )
                     else:
                         # Create new profile from Cognito data
-                        user_profile = UserProfile.from_cognito_user(
-                            cognito_data, user_id
-                        )
+                        try:
+                            logger.info(f"Creating UserProfile from Cognito data for user {user_id}")
+                            logger.debug(f"Cognito data: {cognito_data}")
+                            user_profile = UserProfile.from_cognito_user(
+                                cognito_data, user_id
+                            )
+                            logger.info(f"Created UserProfile with email: '{user_profile.email}'")
+                        except Exception as profile_error:
+                            logger.error(f"Error creating UserProfile from Cognito data: {profile_error}")
+                            logger.error(f"Cognito data: {cognito_data}")
+                            # Create minimal profile as fallback
+                            user_profile = UserProfile(
+                                user_id=user_id,
+                                email="",  # Will be updated when sync succeeds
+                                status=UserStatus.UNKNOWN,
+                            )
+                        
                         user_profile = await self.dynamodb_service.create_user_profile(
                             user_profile
                         )

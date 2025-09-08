@@ -17,7 +17,7 @@ class UserStatus(Enum):
     COMPROMISED = "COMPROMISED"
     UNKNOWN = "UNKNOWN"
     RESET_REQUIRED = "RESET_REQUIRED"
-    FORCE_CHANGE_PASSWORD = "FORCE_CHANGE_PASSWORD"  # nosec B105 - This is a status constant, not a password
+    FORCE_CHANGE_PASSWORD = "FORCE_CHANGE_PASSWORD"  # nosec B105 - Status constant, not password
 
 
 @dataclass
@@ -133,7 +133,7 @@ class UserProfile:
 
         return cls(
             user_id=user_id,
-            email=attributes.get("email", ""),
+            email=attributes.get("email") or "",  # Ensure empty string if None
             first_name=attributes.get("given_name"),
             last_name=attributes.get("family_name"),
             status=status,
