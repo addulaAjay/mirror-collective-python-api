@@ -1,10 +1,12 @@
 """
 Enhanced mirror chat use case with persistent conversation management
 Production-ready implementation with comprehensive error handling
+PERFORMANCE ANALYSIS: Added timing to identify bottlenecks
 """
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -96,7 +98,7 @@ class EnhancedMirrorChatUseCase:
     async def execute(self, request: EnhancedMirrorChatRequest) -> EnhancedMirrorChatResponse:
         """
         Process an enhanced mirror chat request with persistent conversation management
-        OPTIMIZED VERSION: Parallel processing and reduced database calls
+        PERFORMANCE ANALYSIS: Added timing to identify bottlenecks
 
         Args:
             request: The enhanced chat request with conversation context
@@ -110,19 +112,28 @@ class EnhancedMirrorChatUseCase:
             InternalServerError: If processing fails
         """
         
+        # PERFORMANCE ANALYSIS: Start timing
+        start_time = time.time()
+        timings = {}
+        
         try:
             # 1. Validate the request
+            validation_start = time.time()
             request.validate()
+            timings['validation'] = time.time() - validation_start
             
             logger.info(f"Processing enhanced chat request for user {request.user_id}")
             
             # 2. Check if conversation persistence is enabled
+            persistence_check_start = time.time()
             if not self.conversation_service.is_persistence_enabled():
                 logger.warning("Conversation persistence is disabled - falling back to stateless mode")
                 # Fall back to simple chat without persistence
                 return await self._handle_stateless_chat(request)
+            timings['persistence_check'] = time.time() - persistence_check_start
 
             # 3. OPTIMIZATION: Parallel conversation setup and AI context building
+            conversation_setup_start = time.time()
             import asyncio
             
             # Handle conversation creation/retrieval
@@ -131,6 +142,7 @@ class EnhancedMirrorChatUseCase:
             
             if request.create_new_conversation or not request.conversation_id:
                 # Create new conversation
+                create_conversation_start = time.time()
                 logger.debug(f"Creating new conversation for user {request.user_id}")
                 conversation = await self.conversation_service.create_conversation(
                     user_id=request.user_id,
@@ -138,19 +150,23 @@ class EnhancedMirrorChatUseCase:
                 )
                 conversation_id = conversation.conversation_id
                 is_new_conversation = True
+                timings['create_conversation'] = time.time() - create_conversation_start
                 
                 # For new conversations, we can skip history lookup and start AI immediately
+                build_prompt_start = time.time()
                 system_content = self._build_system_prompt(request.user_name)
                 ai_messages = [
                     ChatMessage(role="system", content=system_content),
                     ChatMessage(role="user", content=request.message)
                 ]
+                timings['build_prompt'] = time.time() - build_prompt_start
             else:
                 # Use existing conversation - parallel fetch context and validate conversation
                 logger.debug(f"Using existing conversation {request.conversation_id}")
                 conversation_id = request.conversation_id
                 
                 # PARALLEL OPERATIONS: Get conversation details and AI context simultaneously
+                parallel_operations_start = time.time()
                 system_content = self._build_system_prompt(request.user_name)
                 
                 conversation_task = asyncio.create_task(
@@ -171,17 +187,22 @@ class EnhancedMirrorChatUseCase:
                 )
                 conversation = gather_results[0]
                 ai_messages = gather_results[1]
+                timings['parallel_operations'] = time.time() - parallel_operations_start
+
+            timings['conversation_setup'] = time.time() - conversation_setup_start
 
             logger.debug(
                 f"Built AI context with {len(ai_messages)} messages for conversation {conversation_id}"
             )
 
             # 4. OPTIMIZATION: Start AI generation immediately while preparing to store messages
+            ai_generation_start = time.time()
             ai_generation_task = asyncio.create_task(
                 self._generate_ai_response_async(ai_messages)
             )
             
             # 5. OPTIMIZATION: Prepare message storage operations (don't wait for AI yet)
+            message_storage_start = time.time()
             user_message_task = asyncio.create_task(
                 self.conversation_service.add_message(
                     conversation_id=conversation_id,
@@ -194,8 +215,10 @@ class EnhancedMirrorChatUseCase:
 
             # 6. Wait for AI response (this is the longest operation)
             reply = await ai_generation_task
+            timings['ai_generation'] = time.time() - ai_generation_start
             
             # 7. OPTIMIZATION: Parallel completion - store AI response and record activity
+            completion_start = time.time()
             ai_message_task = asyncio.create_task(
                 self.conversation_service.add_message(
                     conversation_id=conversation_id,
@@ -212,8 +235,10 @@ class EnhancedMirrorChatUseCase:
 
             # Wait for user message to be stored (required for accurate count)
             await user_message_task
+            timings['message_storage'] = time.time() - message_storage_start
             
             # 8. OPTIMIZATION: Calculate response metadata without fetching full conversation
+            metadata_start = time.time()
             # Instead of fetching updated conversation, calculate metadata locally
             if conversation:
                 estimated_message_count = conversation.message_count + 2  # user + assistant
@@ -231,10 +256,27 @@ class EnhancedMirrorChatUseCase:
                 conversation_title=conversation_title,
                 is_new_conversation=is_new_conversation
             )
+            timings['metadata'] = time.time() - metadata_start
+            timings['completion'] = time.time() - completion_start
 
+            # PERFORMANCE ANALYSIS: Log detailed timing breakdown
+            total_time = time.time() - start_time
+            timings['total'] = total_time
+            
             logger.info(
-                f"Successfully processed chat request for user {request.user_id} "
-                f"in conversation {conversation_id}"
+                f"🔍 PERFORMANCE ANALYSIS for user {request.user_id}:\n"
+                f"Total time: {total_time:.3f}s\n"
+                f"Breakdown:\n"
+                f"  - Validation: {timings.get('validation', 0):.3f}s\n"
+                f"  - Persistence check: {timings.get('persistence_check', 0):.3f}s\n"
+                f"  - Conversation setup: {timings.get('conversation_setup', 0):.3f}s\n"
+                f"    ├─ Create conversation: {timings.get('create_conversation', 0):.3f}s\n"
+                f"    ├─ Build prompt: {timings.get('build_prompt', 0):.3f}s\n"
+                f"    └─ Parallel operations: {timings.get('parallel_operations', 0):.3f}s\n"
+                f"  - 🔥 AI generation: {timings.get('ai_generation', 0):.3f}s ({timings.get('ai_generation', 0)/total_time*100:.1f}%)\n"
+                f"  - Message storage: {timings.get('message_storage', 0):.3f}s\n"
+                f"  - Metadata: {timings.get('metadata', 0):.3f}s\n"
+                f"  - Completion: {timings.get('completion', 0):.3f}s"
             )
 
             # Let remaining operations complete in background (don't block response)
@@ -243,12 +285,13 @@ class EnhancedMirrorChatUseCase:
             return response
 
         except (ValidationError, Exception) as e:
-            logger.error(f"Error processing enhanced chat request: {str(e)}")
+            total_time = time.time() - start_time
+            logger.error(f"Error processing enhanced chat request after {total_time:.3f}s: {str(e)}")
             raise
 
     async def _generate_ai_response_async(self, ai_messages) -> str:
         """
-        Generate AI response asynchronously
+        Generate AI response asynchronously with timing analysis
         
         Args:
             ai_messages: List of messages for AI context
@@ -256,8 +299,11 @@ class EnhancedMirrorChatUseCase:
         Returns:
             str: AI generated response
         """
+        ai_start_time = time.time()
+        
         import asyncio
         # Convert ChatMessage objects to dict format if needed
+        format_start = time.time()
         if hasattr(ai_messages[0], 'to_dict'):
             formatted_messages = [msg for msg in ai_messages]
         else:
@@ -265,9 +311,24 @@ class EnhancedMirrorChatUseCase:
             from ..services.openai_service import ChatMessage
             formatted_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in ai_messages]
         
+        format_time = time.time() - format_start
+        
         # Run OpenAI call in thread pool to avoid blocking
+        openai_start = time.time()
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.chat_service.send, formatted_messages)
+        result = await loop.run_in_executor(None, self.chat_service.send, formatted_messages)
+        openai_time = time.time() - openai_start
+        
+        total_ai_time = time.time() - ai_start_time
+        
+        logger.info(
+            f"🤖 AI Response Timing:\n"
+            f"  - Message formatting: {format_time:.3f}s\n"
+            f"  - OpenAI API call: {openai_time:.3f}s ({openai_time/total_ai_time*100:.1f}%)\n"
+            f"  - Total AI time: {total_ai_time:.3f}s"
+        )
+        
+        return result
 
     async def _record_user_activity_safe(self, user_id: str):
         """
