@@ -311,10 +311,10 @@ class CognitoService:
                 "AuthParameters": {"REFRESH_TOKEN": refresh_token},
             }
 
-            # For refresh tokens with client secret, always include SECRET_HASH with empty username
-            # This matches the Node.js implementation and some Cognito client configurations require it
+            # For refresh token flow with client secret, use empty username for SECRET_HASH
+            # This matches the Node.js implementation behavior
             if self.client_secret:
-                secret_hash = self._get_secret_hash("")
+                secret_hash = self._get_secret_hash("")  # Empty username for refresh
                 if secret_hash:
                     params["AuthParameters"]["SECRET_HASH"] = secret_hash
 
