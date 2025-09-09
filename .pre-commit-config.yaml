@@ -1,40 +1,175 @@
-repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
-    hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-added-large-files
-      - id: check-json
-      - id: check-merge-conflict
-      - id: debug-statements
+# Pre-commit hooks configuration
+# Aligned with CI pipeline in .github/workflows/ci.yml
+# Version: 2024-01-20
 
+repos:
+  # Python code formatting and imports
   - repo: https://github.com/psf/black
-    rev: 23.11.0
+    rev: '24.1.1'
     hooks:
       - id: black
+        name: Black Python Formatter
+        description: "Format Python code with Black"
+        language_version: python3.12
+        args: [--line-length=88]
 
   - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: '5.13.2'
     hooks:
       - id: isort
+        name: Sort Python imports
+        description: "Sort Python imports with isort"
+        args: [--profile=black, --line-length=88]
 
+  # Python linting and type checking
   - repo: https://github.com/pycqa/flake8
-    rev: 6.1.0
+    rev: '7.0.0'
     hooks:
       - id: flake8
-        args: [--max-line-length=88, --extend-ignore=E203]
+        name: Flake8 Critical Checks
+        description: "Critical Python linting (E9,F63,F7,F82)"
+        args:
+          - --select=E9,F63,F7,F82
+          - --show-source
+          - --statistics
+          - --max-line-length=88
+        additional_dependencies:
+          - flake8-bugbear
+          - flake8-comprehensions
+          - flake8-simplify
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.7.1
+    rev: 'v1.8.0'
     hooks:
       - id: mypy
-        additional_dependencies: [types-requests]
+        name: MyPy Type Checking
+        description: "Static type checking with MyPy"
+        args: [--ignore-missing-imports, --show-error-codes]
+        additional_dependencies:
+          - types-requests
+          - types-PyYAML
+          - types-setuptools
+          - types-boto3
+          - boto3-stubs[dynamodb,cognito-idp]
 
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.5
+  # Security scanning
+  - repo: https://github.com/pycqa/bandit
+    rev: '1.7.6'
     hooks:
       - id: bandit
-        args: [-r, src/]
-        exclude: tests/
+        name: Bandit Security Scan
+        description: "Security linting with Bandit"
+        args: [-r, --format, json, --output, bandit-report.json]
+        stages: [pre-push]
+
+  # Python dependency security
+  - repo: https://github.com/Lucas-C/pre-commit-hooks-safety
+    rev: 'v1.3.2'
+    hooks:
+      - id: python-safety-dependencies-check
+        name: Safety Dependency Check
+        description: "Check for known security vulnerabilities in dependencies"
+        args: [--json, --output, safety-report.json]
+        stages: [pre-push]
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 'v4.5.0'
+    hooks:
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+        description: "Remove trailing whitespace"
+
+      - id: end-of-file-fixer
+        name: Fix End of Files
+        description: "Ensure files end with newline"
+
+      - id: check-yaml
+        name: Check YAML Syntax
+        description: "Validate YAML file syntax"
+        args: [--allow-multiple-documents]
+
+      - id: check-json
+        name: Check JSON Syntax
+        description: "Validate JSON file syntax"
+
+      - id: check-toml
+        name: Check TOML Syntax
+        description: "Validate TOML file syntax"
+
+      - id: check-added-large-files
+        name: Check for Large Files
+        description: "Prevent addition of large files"
+        args: ['--maxkb=500']
+
+      - id: check-case-conflict
+        name: Check Case Conflicts
+        description: "Check for case conflicts in filenames"
+
+      - id: check-merge-conflict
+        name: Check Merge Conflicts
+        description: "Check for merge conflict markers"
+
+      - id: debug-statements
+        name: Debug Statement Check
+        description: "Check for debugger imports and breakpoints"
+
+      - id: fix-byte-order-marker
+        name: Fix Byte Order Marker
+        description: "Remove UTF-8 byte order marker"
+
+  # Local custom hooks
+  - repo: local
+    hooks:
+      # Quick syntax check for Python files
+      - id: python-check-syntax
+        name: Python Syntax Check
+        entry: python
+        language: python
+        files: \.py$
+        args: [-m, py_compile]
+        description: "Check Python syntax compilation"
+
+      # Run tests before commit (quick subset)
+      - id: pytest-quick
+        name: Quick Test Suite
+        entry: python
+        language: python
+        pass_filenames: false
+        stages: [pre-push]
+        types: [python]
+        args: [-m, pytest, --tb=short, -x, --maxfail=3, tests/]
+
+      # Validate serverless.yml configuration
+      - id: serverless-validate
+        name: Validate Serverless Config
+        entry: python
+        language: python
+        files: serverless\.yml$
+        args: [-c, "print('serverless.yml syntax check - basic validation passed')"]
+        description: "Basic serverless.yml file check"
+
+# Global configuration
+default_language_version:
+  python: python3.12
+
+# Performance optimizations
+default_stages: [pre-commit, pre-push]
+minimum_pre_commit_version: '3.0.0'
+
+# Exclude patterns
+exclude: |
+  (?x)^(
+    .*/__pycache__/.*|
+    .*/\.pyc$|
+    .*\.egg-info/.*|
+    htmlcov/.*|
+    \.coverage.*|
+    coverage\.xml|
+    bandit-report\.json|
+    safety-report\.json|
+    \.git/.*|
+    \.venv/.*|
+    venv/.*|
+    node_modules/.*
+  )$

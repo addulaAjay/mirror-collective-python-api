@@ -85,7 +85,7 @@ class AuthController:
         try:
             await self.user_service.record_login_activity(user_id)
             logger.info(f"Recorded login activity for user: {user_id}")
-            
+
         except Exception as e:
             # Log the error but don't fail the login
             logger.error(f"Failed to record login activity: {e}")
@@ -122,25 +122,27 @@ class AuthController:
             confirmation_code=payload.resetCode,
             new_password=payload.newPassword,
         )
-        
+
         # Update user profile with latest Cognito data (if profile exists)
         try:
             # Get updated user details from Cognito
             user_details = await self.cognito_service.get_user_by_email(payload.email)
             user_id = user_details["username"]
-            
+
             # Only sync if profile already exists - don't create new ones
             existing_profile = await self.user_service.get_user_profile(user_id)
             if existing_profile:
                 # Note: Cognito sync removed for security reasons
-                logger.info(f"User profile exists but sync with Cognito not available: {user_id}")
+                logger.info(
+                    f"User profile exists but sync with Cognito not available: {user_id}"
+                )
             else:
                 logger.info(f"No existing profile to sync for user: {user_id}")
-            
+
         except Exception as e:
             # Log the error but don't fail the password reset
             logger.error(f"Failed to sync user data after password reset: {e}")
-        
+
         return GeneralApiResponse(
             success=True,
             message="Password has been reset successfully. You can now log in with your new password.",
@@ -173,27 +175,35 @@ class AuthController:
             await self.cognito_service.confirm_sign_up(
                 email=payload.email, confirmation_code=payload.verificationCode
             )
-            
+
             # After successful email confirmation, create user profile in DynamoDB
             try:
                 # Get the full user details from Cognito
-                user_details = await self.cognito_service.get_user_by_email(payload.email)
-                
+                user_details = await self.cognito_service.get_user_by_email(
+                    payload.email
+                )
+
                 # Create user profile in DynamoDB
-                user_profile = await self.user_service.create_user_profile_from_cognito(user_details)
-                logger.info(f"Created user profile in DynamoDB for user: {user_profile.user_id}")
-                
+                user_profile = await self.user_service.create_user_profile_from_cognito(
+                    user_details
+                )
+                logger.info(
+                    f"Created user profile in DynamoDB for user: {user_profile.user_id}"
+                )
+
             except Exception as e:
                 # Log the error but don't fail the email confirmation
                 # The user can still use the system, profile creation can be retried
-                logger.error(f"Failed to create user profile in DynamoDB after email confirmation: {e}")
+                logger.error(
+                    f"Failed to create user profile in DynamoDB after email confirmation: {e}"
+                )
                 # In production, you might want to trigger a retry mechanism or alert
-            
+
             return GeneralApiResponse(
                 success=True,
                 message="Email verified successfully. Your account is now active.",
             )
-            
+
         except Exception as e:
             logger.error(f"Email confirmation failed: {e}")
             raise
@@ -219,7 +229,7 @@ class AuthController:
         try:
             user_id = current_user.get("id") or current_user.get("sub")
             user_email = current_user.get("email")
-            
+
             # Record logout activity (only if profile exists)
             if user_id:
                 try:
@@ -227,7 +237,7 @@ class AuthController:
                     logger.info(f"Logout activity recorded for user: {user_id}")
                 except Exception as e:
                     logger.warning(f"Failed to record logout activity: {e}")
-            
+
             # Invalidate tokens by signing out user from all devices
             if user_email:
                 try:
@@ -236,9 +246,9 @@ class AuthController:
                 except Exception as e:
                     # Don't fail logout if global sign out fails
                     logger.warning(f"Failed to sign out user globally: {e}")
-            
+
             logger.info(f"User logout processed successfully: {user_id}")
-                
+
         except Exception as e:
             # Don't fail logout if any step fails
             logger.warning(f"Error during logout processing: {e}")
@@ -249,16 +259,16 @@ class AuthController:
         """Delete current user account from both Cognito and DynamoDB"""
         user_email = current_user.get("email")
         user_id = current_user.get("id") or current_user.get("sub")
-        
+
         if user_email and user_id:
             try:
                 await self.cognito_service.admin_delete_user(user_email)
                 logger.info(f"Deleted user from Cognito: {user_email}")
-                
+
                 # Then delete from DynamoDB
                 await self.user_service.delete_user_account(user_id)
                 logger.info(f"Deleted user profile from DynamoDB: {user_id}")
-                
+
             except Exception as e:
                 logger.error(f"Error during account deletion: {e}")
                 # Re-raise to ensure the client knows deletion failed

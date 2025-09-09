@@ -202,11 +202,10 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 def setup_error_handlers(app: FastAPI):
     """Setup all error handlers for the FastAPI app"""
 
-    # Add custom exception handlers - use type: ignore to suppress mypy warnings
-    # about complex exception handler signatures
-    app.add_exception_handler(BaseAPIException, base_api_exception_handler)  # type: ignore
-    app.add_exception_handler(HTTPException, http_exception_handler)  # type: ignore
-    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore
+    # Add custom exception handlers
+    app.add_exception_handler(BaseAPIException, base_api_exception_handler)
+    app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(Exception, general_exception_handler)
 
     # Add request ID middleware

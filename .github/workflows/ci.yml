@@ -12,15 +12,15 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    
+
     - name: Cache pip dependencies
       uses: actions/cache@v4
       with:
@@ -28,23 +28,23 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt -r requirements-dev.txt
-    
+
     - name: Lint with flake8
       run: |
         flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
-    
+
     - name: Type check with mypy
       run: mypy src/
-    
+
     - name: Security scan with bandit
       run: bandit -r src/ -f json -o bandit-report.json
-    
+
     - name: Test with pytest
       env:
         # Test environment variables
@@ -55,14 +55,14 @@ jobs:
         AWS_REGION: us-east-1
       run: |
         pytest --cov=src --cov-report=xml --cov-report=html --cov-report=term
-    
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
-    
+
     - name: Upload test results
       uses: actions/upload-artifact@v4
       if: always()
@@ -76,23 +76,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt -r requirements-dev.txt
-    
+
     - name: Run safety check
       run: safety check --json > safety-report.json || true
-    
+
     - name: Run bandit security scan
       run: bandit -r src/ -f json -o bandit-security-report.json
-    
+
     - name: Upload security reports
       uses: actions/upload-artifact@v4
       with:
@@ -105,20 +105,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, security]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
+
     - name: Create deployment package
       run: |
         mkdir -p build
@@ -127,7 +127,7 @@ jobs:
         cp serverless.yml build/
         # Create package.json for serverless plugins
         echo '{"dependencies": {"serverless-python-requirements": "^5.4.0"}}' > build/package.json
-    
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -138,23 +138,23 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/develop'
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Download build artifacts
       uses: actions/download-artifact@v4
       with:
         name: deployment-package
         path: build/
-    
+
     - name: Setup Node.js (for Serverless Framework)
       uses: actions/setup-node@v4
       with:
         node-version: '18'
         cache: 'npm'
         cache-dependency-path: 'build/package.json'
-    
+
     - name: Cache Serverless Framework
       uses: actions/cache@v4
       with:
@@ -162,23 +162,23 @@ jobs:
         key: ${{ runner.os }}-serverless-3.40.0
         restore-keys: |
           ${{ runner.os }}-serverless-
-    
+
     - name: Install Serverless Framework
       run: npm install -g serverless@3.40.0
-    
+
     - name: Install plugins and verify setup
       run: |
         cd build
         npm install --production
         serverless print --stage staging
-    
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-    
+
     - name: Deploy to staging
       run: |
         cd build
@@ -193,23 +193,23 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main'
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Download build artifacts
       uses: actions/download-artifact@v4
       with:
         name: deployment-package
         path: build/
-    
+
     - name: Setup Node.js (for Serverless Framework)
       uses: actions/setup-node@v4
       with:
         node-version: '18'
         cache: 'npm'
         cache-dependency-path: 'build/package.json'
-    
+
     - name: Cache Serverless Framework
       uses: actions/cache@v4
       with:
@@ -217,23 +217,23 @@ jobs:
         key: ${{ runner.os }}-serverless-3.40.0
         restore-keys: |
           ${{ runner.os }}-serverless-
-    
+
     - name: Install Serverless Framework
       run: npm install -g serverless@3.40.0
-    
+
     - name: Install plugins and verify setup
       run: |
         cd build
         npm install --production
         serverless print --stage production
-    
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-    
+
     - name: Deploy to production
       run: |
         cd build
@@ -248,7 +248,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [deploy-staging, deploy-production]
     if: always()
-    
+
     steps:
     - name: Notify deployment status
       run: |

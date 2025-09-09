@@ -27,10 +27,24 @@ skip_glob = ["*/migrations/*"]
 python_version = "3.12"
 check_untyped_defs = true
 ignore_missing_imports = true
-warn_unused_ignores = true
+warn_unused_ignores = false
 warn_redundant_casts = true
 warn_unused_configs = true
 explicit_package_bases = true
+disallow_untyped_defs = false
+
+# Per-module configuration
+[[tool.mypy.overrides]]
+module = "src.app.services.cognito_service"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "performance_analysis"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "scripts.*"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"

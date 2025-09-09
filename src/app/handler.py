@@ -9,6 +9,7 @@ from mangum import Mangum
 
 load_dotenv()
 
+from .api.mirrorgpt_routes import router as mirrorgpt_router
 from .api.models import HealthResponse
 from .api.routes import router as api_router
 from .core.error_handlers import setup_error_handlers
@@ -24,21 +25,21 @@ app = FastAPI(
     version="1.0.0",
     description="""
     ## Mirror Collective Python API
-    
+
     RESTful API for Mirror Collective platform with comprehensive authentication and chat capabilities.
-    
+
     ### Features
     - 🔐 AWS Cognito Authentication
     - 💬 AI-powered Chat Mirror
-    - 🔒 JWT Token Management  
+    - 🔒 JWT Token Management
     - 📧 Email Services with AWS SES
     - 🛡️ Rate Limiting and Security Headers
     - 🔄 Password Reset Functionality
-    
+
     ### Authentication
     Most endpoints require authentication via JWT tokens obtained from the `/api/auth/login` endpoint.
     Include the token in the `Authorization` header as `Bearer <token>`.
-    
+
     ### Rate Limiting
     API requests are rate-limited to 100 requests per minute per IP address.
     """,
@@ -177,5 +178,8 @@ async def api_health():
 
 # Mount main API routes under /api to mirror Node structure
 app.include_router(api_router, prefix="/api")
+
+# Mount MirrorGPT routes under /api
+app.include_router(mirrorgpt_router, prefix="/api")
 
 handler = Mangum(app)

@@ -306,18 +306,23 @@ class CognitoService:
         """Refresh access token using refresh token"""
         try:
             logger.info("Starting refresh token operation")
-            
+
             # For refresh token operations, don't include SECRET_HASH as it's not needed
             # and causes "SecretHash does not match" errors
             params: Dict[str, Any] = {
                 "ClientId": self.client_id,
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
-                "AuthParameters": {"REFRESH_TOKEN": refresh_token, "SECRET_HASH": self._get_secret_hash("")},
+                "AuthParameters": {
+                    "REFRESH_TOKEN": refresh_token,
+                    "SECRET_HASH": self._get_secret_hash(""),
+                },
             }
 
             # Note: SECRET_HASH is NOT required for refresh token operations
             # AWS Cognito validates the refresh token itself without needing SECRET_HASH
-            logger.debug(f"Refresh token params (without SECRET_HASH): ClientId={self.client_id}, AuthFlow=REFRESH_TOKEN_AUTH")
+            logger.debug(
+                f"Refresh token params (without SECRET_HASH): ClientId={self.client_id}, AuthFlow=REFRESH_TOKEN_AUTH"
+            )
 
             response = self.client.initiate_auth(**params)
             logger.info("Successfully called initiate_auth for refresh token")
@@ -346,10 +351,12 @@ class CognitoService:
             # Custom error handling for refresh token operations
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"]["Message"]
-            
-            logger.error(f"Cognito refresh_token ClientError: {error_code} - {error_message}")
+
+            logger.error(
+                f"Cognito refresh_token ClientError: {error_code} - {error_message}"
+            )
             logger.error(f"Full error response: {e.response}")
-            
+
             # Specific error mappings for refresh token flow
             if error_code == "NotAuthorizedException":
                 logger.warning("Refresh token is invalid or expired")
@@ -428,28 +435,22 @@ class CognitoService:
         try:
             # Disable the user account
             response = self.client.admin_disable_user(
-                UserPoolId=self.user_pool_id,
-                Username=username
+                UserPoolId=self.user_pool_id, Username=username
             )
 
             logger.info(f"User account soft deleted (disabled): {username}")
 
             # Add custom attributes to mark as deleted with timestamp
             import time
+
             try:
                 self.client.admin_update_user_attributes(
                     UserPoolId=self.user_pool_id,
                     Username=username,
                     UserAttributes=[
-                        {
-                            'Name': 'custom:deleted_at',
-                            'Value': str(int(time.time()))
-                        },
-                        {
-                            'Name': 'custom:account_status',
-                            'Value': 'SOFT_DELETED'
-                        }
-                    ]
+                        {"Name": "custom:deleted_at", "Value": str(int(time.time()))},
+                        {"Name": "custom:account_status", "Value": "SOFT_DELETED"},
+                    ],
                 )
                 logger.info(f"Added soft delete attributes for user: {username}")
             except Exception as attr_error:
@@ -510,8 +511,7 @@ class CognitoService:
         """Admin-level global sign out for a user (signs out from all devices)"""
         try:
             response = self.client.admin_user_global_sign_out(
-                UserPoolId=self.user_pool_id,
-                Username=username
+                UserPoolId=self.user_pool_id, Username=username
             )
 
             logger.info(f"User signed out globally by admin: {username}")
@@ -526,18 +526,20 @@ class CognitoService:
 
     # Note: get_user_by_id method removed for security reasons
     # Use get_user_by_email or get_user with access tokens instead
-    
-    async def get_user_by_id_secure(self, user_id: str, requesting_user_id: str) -> Dict[str, Any]:
+
+    async def get_user_by_id_secure(
+        self, user_id: str, requesting_user_id: str
+    ) -> Dict[str, Any]:
         """
         SECURE: Get user details by Cognito user ID with proper access control
-        
+
         Args:
             user_id: The target user's Cognito sub
             requesting_user_id: The authenticated user making the request
-            
+
         Returns:
             User data if authorized
-            
+
         Raises:
             AuthenticationError: If user cannot access this data
             UserNotFoundError: If user doesn't exist
@@ -545,18 +547,20 @@ class CognitoService:
         try:
             # SECURITY: Only allow users to access their own data
             if user_id != requesting_user_id:
-                logger.warning(f"Unauthorized access attempt: {requesting_user_id} tried to access {user_id}")
+                logger.warning(
+                    f"Unauthorized access attempt: {requesting_user_id} tried to access {user_id}"
+                )
                 raise AuthenticationError("You can only access your own user data")
-            
+
             # SECURITY: Log the access attempt
             logger.info(f"Secure user lookup: {requesting_user_id} accessing own data")
-            
+
             # Implementation would need AWS Cognito admin permissions
             # For now, this is a security-first placeholder that fails safely
             raise CognitoServiceError(
                 "get_user_by_id not implemented - use get_user with access token instead"
             )
-            
+
         except Exception as e:
             logger.exception(f"Error in secure user lookup: {str(e)}")
             raise

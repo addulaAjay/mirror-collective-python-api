@@ -179,3 +179,133 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     timestamp: str
+
+
+# ========================================
+# MIRRORGPT API MODELS
+# ========================================
+
+
+class MirrorGPTChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+    session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    include_archetype_analysis: bool = True
+    use_enhanced_response: bool = True
+
+
+class ArchetypeAnalysisRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+    session_context: Optional[List[str]] = None
+
+
+class ArchetypeAnalysisData(BaseModel):
+    primary_archetype: str
+    secondary_archetype: Optional[str] = None
+    confidence_score: float
+    symbolic_elements: List[str]
+    emotional_markers: Dict[str, Any]
+    narrative_position: Dict[str, Any]
+    active_motifs: List[str]
+    archetype_description: str
+
+
+class ArchetypeAnalysisResponse(BaseModel):
+    success: bool = True
+    data: ArchetypeAnalysisData
+
+
+class EchoSignalData(BaseModel):
+    signal_id: str
+    timestamp: str
+    emotional_resonance: Dict[str, Any]
+    symbolic_language: Dict[str, Any]
+    archetype_blend: Dict[str, Any]
+    narrative_position: Dict[str, Any]
+    motif_loops: Dict[str, Any]
+    confidence_scores: Dict[str, float]
+
+
+class EchoSignalResponse(BaseModel):
+    success: bool = True
+    data: List[EchoSignalData]
+
+
+class MirrorMomentData(BaseModel):
+    moment_id: str
+    triggered_at: str
+    moment_type: str
+    description: str
+    significance_score: float
+    suggested_practice: str
+    acknowledged: bool
+    acknowledged_at: Optional[str] = None
+
+
+class MirrorMomentResponse(BaseModel):
+    success: bool = True
+    data: List[MirrorMomentData]
+
+
+class MirrorGPTChatData(BaseModel):
+    message_id: str
+    response: str
+    archetype_analysis: Dict[str, Any]
+    change_detection: Dict[str, Any]
+    suggested_practice: Optional[str] = None
+    confidence_breakdown: Dict[str, float]
+    session_metadata: Dict[str, Any]
+
+
+class MirrorGPTChatResponse(BaseModel):
+    success: bool = True
+    data: MirrorGPTChatData
+
+
+class PatternLoopData(BaseModel):
+    loop_id: str
+    elements: List[str]
+    strength_score: float
+    trend: str
+    first_seen: str
+    last_seen: str
+    occurrence_count: int
+    transformation_detected: bool
+    archetype_context: str
+
+
+class PatternLoopResponse(BaseModel):
+    success: bool = True
+    data: List[PatternLoopData]
+
+
+class UserInsightsData(BaseModel):
+    archetype_journey: Dict[str, Any]
+    signal_patterns: Dict[str, Any]
+    growth_indicators: Dict[str, Any]
+
+
+class UserInsightsResponse(BaseModel):
+    success: bool = True
+    data: UserInsightsData
+
+
+class ArchetypeProfileData(BaseModel):
+    user_id: str
+    current_profile: Optional[Dict[str, Any]]
+    recent_signals: List[Dict[str, Any]]
+    evolution_summary: Dict[str, Any]
+
+
+class ArchetypeProfileResponse(BaseModel):
+    success: bool = True
+    data: ArchetypeProfileData
+
+
+class AcknowledgeMirrorMomentRequest(BaseModel):
+    moment_id: str = Field(min_length=1)
+
+
+class MirrorMomentAcknowledgeResponse(BaseModel):
+    success: bool = True
+    message: str

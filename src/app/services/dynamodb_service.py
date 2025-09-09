@@ -11,8 +11,8 @@ import aioboto3
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError
-from ..models.user_profile import UserProfile
 from ..models.conversation import Conversation, ConversationMessage
+from ..models.user_profile import UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,24 @@ class DynamoDBService:
         self.region = os.getenv("AWS_REGION", "us-east-1")
         self.users_table = os.getenv("DYNAMODB_USERS_TABLE", "users")
         self.activity_table = os.getenv("DYNAMODB_ACTIVITY_TABLE", "user_activity")
-        self.conversations_table = os.getenv("DYNAMODB_CONVERSATIONS_TABLE", "conversations")
-        self.messages_table = os.getenv("DYNAMODB_MESSAGES_TABLE", "conversation_messages")
+        self.conversations_table = os.getenv(
+            "DYNAMODB_CONVERSATIONS_TABLE", "conversations"
+        )
+        self.messages_table = os.getenv(
+            "DYNAMODB_MESSAGES_TABLE", "conversation_messages"
+        )
         self.endpoint_url = os.getenv("DYNAMODB_ENDPOINT_URL")  # For local DynamoDB
+
+        # MirrorGPT table configuration
+        self.archetype_profiles_table = os.getenv(
+            "DYNAMODB_ARCHETYPE_PROFILES_TABLE", "user_archetype_profiles"
+        )
+        self.mirror_moments_table = os.getenv(
+            "DYNAMODB_MIRROR_MOMENTS_TABLE", "mirror_moments"
+        )
+        self.pattern_loops_table = os.getenv(
+            "DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"
+        )
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -39,6 +54,7 @@ class DynamoDBService:
         logger.info(
             f"DynamoDB service initialized - Target: {target}, Region: {self.region}, Users Table: {self.users_table}"
         )
+        logger.info(f"MirrorGPT tables - Profiles: {self.archetype_profiles_table}")
         if self.endpoint_url:
             logger.info(f"Using local DynamoDB endpoint: {self.endpoint_url}")
 
@@ -361,15 +377,19 @@ class DynamoDBService:
 
                 await table.put_item(
                     Item=item,
-                    ConditionExpression="attribute_not_exists(conversation_id)"
+                    ConditionExpression="attribute_not_exists(conversation_id)",
                 )
 
-                logger.info(f"Created conversation {conversation.conversation_id} for user {conversation.user_id}")
+                logger.info(
+                    f"Created conversation {conversation.conversation_id} for user {conversation.user_id}"
+                )
                 return conversation
 
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                logger.error(f"Conversation {conversation.conversation_id} already exists")
+                logger.error(
+                    f"Conversation {conversation.conversation_id} already exists"
+                )
                 raise InternalServerError("Conversation already exists")
             else:
                 logger.error(f"DynamoDB error creating conversation: {e}")
@@ -378,7 +398,9 @@ class DynamoDBService:
             logger.error(f"Unexpected error creating conversation: {e}")
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
-    async def get_conversation(self, conversation_id: str, user_id: str) -> Optional[Conversation]:
+    async def get_conversation(
+        self, conversation_id: str, user_id: str
+    ) -> Optional[Conversation]:
         """
         Get a conversation by ID and user ID
 
@@ -405,7 +427,9 @@ class DynamoDBService:
                     if conversation.user_id == user_id:
                         return conversation
                     else:
-                        logger.warning(f"User {user_id} attempted to access conversation {conversation_id} owned by {conversation.user_id}")
+                        logger.warning(
+                            f"User {user_id} attempted to access conversation {conversation_id} owned by {conversation.user_id}"
+                        )
                         return None
                 return None
 
@@ -440,14 +464,14 @@ class DynamoDBService:
                     ":updated_at": conversation.updated_at,
                     ":message_count": conversation.message_count,
                     ":total_tokens": conversation.total_tokens,
-                    ":last_message_at": conversation.last_message_at
+                    ":last_message_at": conversation.last_message_at,
                 }
 
                 await table.update_item(
                     Key={"conversation_id": conversation.conversation_id},
                     UpdateExpression=update_expression,
                     ExpressionAttributeNames=expression_attribute_names,
-                    ExpressionAttributeValues=expression_attribute_values
+                    ExpressionAttributeValues=expression_attribute_values,
                 )
 
                 return conversation
@@ -460,10 +484,7 @@ class DynamoDBService:
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
     async def get_user_conversations(
-        self, 
-        user_id: str, 
-        limit: int = 50,
-        include_archived: bool = False
+        self, user_id: str, limit: int = 50, include_archived: bool = False
     ) -> List[Conversation]:
         """
         Get all conversations for a user, sorted by last activity
@@ -488,17 +509,17 @@ class DynamoDBService:
                     KeyConditionExpression="user_id = :user_id",
                     ExpressionAttributeValues={":user_id": user_id},
                     ScanIndexForward=False,  # Sort by last_message_at descending
-                    Limit=limit
+                    Limit=limit,
                 )
 
                 conversations = []
                 for item in response.get("Items", []):
                     conversation = Conversation.from_dynamodb_item(item)
-                    
+
                     # Filter archived conversations if not requested
                     if not include_archived and conversation.is_archived:
                         continue
-                        
+
                     conversations.append(conversation)
 
                 return conversations
@@ -528,13 +549,17 @@ class DynamoDBService:
                 table = await dynamodb.Table(self.conversations_table)
 
                 # First verify the conversation belongs to the user
-                response = await table.get_item(Key={"conversation_id": conversation_id})
+                response = await table.get_item(
+                    Key={"conversation_id": conversation_id}
+                )
                 if "Item" not in response:
                     return False
-                
+
                 conversation_item = response["Item"]
                 if conversation_item.get("user_id") != user_id:
-                    logger.warning(f"User {user_id} attempted to archive conversation {conversation_id} owned by {conversation_item.get('user_id')}")
+                    logger.warning(
+                        f"User {user_id} attempted to archive conversation {conversation_id} owned by {conversation_item.get('user_id')}"
+                    )
                     return False
 
                 await table.update_item(
@@ -542,11 +567,15 @@ class DynamoDBService:
                     UpdateExpression="SET is_archived = :archived, updated_at = :updated_at",
                     ExpressionAttributeValues={
                         ":archived": True,
-                        ":updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                    }
+                        ":updated_at": datetime.now(timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                    },
                 )
 
-                logger.info(f"Archived conversation {conversation_id} for user {user_id}")
+                logger.info(
+                    f"Archived conversation {conversation_id} for user {user_id}"
+                )
                 return True
 
         except ClientError as e:
@@ -571,14 +600,14 @@ class DynamoDBService:
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
-                
+
                 # Delete all messages first
                 messages_table = await dynamodb.Table(self.messages_table)
-                
+
                 # Query all messages for this conversation
                 response = await messages_table.query(
                     KeyConditionExpression="conversation_id = :conversation_id",
-                    ExpressionAttributeValues={":conversation_id": conversation_id}
+                    ExpressionAttributeValues={":conversation_id": conversation_id},
                 )
 
                 # Delete messages in batches
@@ -588,28 +617,34 @@ class DynamoDBService:
                             batch.delete_item(
                                 Key={
                                     "conversation_id": item["conversation_id"],
-                                    "timestamp": item["timestamp"]
+                                    "timestamp": item["timestamp"],
                                 }
                             )
 
                 # Delete the conversation
                 conversations_table = await dynamodb.Table(self.conversations_table)
-                
+
                 # First verify the conversation belongs to the user
-                conversation_response = await conversations_table.get_item(Key={"conversation_id": conversation_id})
+                conversation_response = await conversations_table.get_item(
+                    Key={"conversation_id": conversation_id}
+                )
                 if "Item" not in conversation_response:
                     return False
-                
+
                 conversation_item = conversation_response["Item"]
                 if conversation_item.get("user_id") != user_id:
-                    logger.warning(f"User {user_id} attempted to delete conversation {conversation_id} owned by {conversation_item.get('user_id')}")
+                    logger.warning(
+                        f"User {user_id} attempted to delete conversation {conversation_id} owned by {conversation_item.get('user_id')}"
+                    )
                     return False
-                
+
                 await conversations_table.delete_item(
                     Key={"conversation_id": conversation_id}
                 )
 
-                logger.info(f"Deleted conversation {conversation_id} and its messages for user {user_id}")
+                logger.info(
+                    f"Deleted conversation {conversation_id} and its messages for user {user_id}"
+                )
                 return True
 
         except ClientError as e:
@@ -644,7 +679,9 @@ class DynamoDBService:
 
                 await table.put_item(Item=item)
 
-                logger.debug(f"Created message {message.message_id} in conversation {message.conversation_id}")
+                logger.debug(
+                    f"Created message {message.message_id} in conversation {message.conversation_id}"
+                )
                 return message
 
         except ClientError as e:
@@ -655,10 +692,10 @@ class DynamoDBService:
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
     async def get_conversation_messages(
-        self, 
-        conversation_id: str, 
+        self,
+        conversation_id: str,
         limit: Optional[int] = None,
-        last_evaluated_key: Optional[Dict] = None
+        last_evaluated_key: Optional[Dict] = None,
     ) -> tuple[List[ConversationMessage], Optional[Dict]]:
         """
         Get messages for a conversation with pagination
@@ -680,7 +717,7 @@ class DynamoDBService:
                 query_kwargs = {
                     "KeyConditionExpression": "conversation_id = :conversation_id",
                     "ExpressionAttributeValues": {":conversation_id": conversation_id},
-                    "ScanIndexForward": True  # Sort by timestamp ascending
+                    "ScanIndexForward": True,  # Sort by timestamp ascending
                 }
 
                 if limit:
@@ -708,9 +745,7 @@ class DynamoDBService:
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
     async def get_recent_messages(
-        self, 
-        conversation_id: str, 
-        limit: int = 20
+        self, conversation_id: str, limit: int = 20
     ) -> List[ConversationMessage]:
         """
         Get the most recent messages for a conversation
@@ -732,7 +767,7 @@ class DynamoDBService:
                     KeyConditionExpression="conversation_id = :conversation_id",
                     ExpressionAttributeValues={":conversation_id": conversation_id},
                     ScanIndexForward=False,  # Get newest first
-                    Limit=limit
+                    Limit=limit,
                 )
 
                 messages = []
@@ -749,3 +784,504 @@ class DynamoDBService:
         except Exception as e:
             logger.error(f"Unexpected error getting recent messages: {e}")
             raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    # ========================================
+    # MIRRORGPT ARCHETYPE PROFILE METHODS
+    # ========================================
+
+    async def get_user_archetype_profile(
+        self, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get user's archetype profile
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            Dict containing archetype profile data or None
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.archetype_profiles_table)
+
+                response = await table.get_item(Key={"user_id": user_id})
+
+                if "Item" in response:
+                    return dict(response["Item"])
+                return None
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error getting archetype profile: {e}")
+            raise InternalServerError(f"Failed to get archetype profile: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting archetype profile: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def save_user_archetype_profile(
+        self, profile_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Save user's archetype profile
+
+        Args:
+            profile_data: Complete profile data dictionary
+
+        Returns:
+            The saved profile data
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.archetype_profiles_table)
+
+                await table.put_item(Item=profile_data)
+
+                logger.info(
+                    f"Saved archetype profile for user {profile_data.get('user_id')}"
+                )
+                return profile_data
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error saving archetype profile: {e}")
+            raise InternalServerError(f"Failed to save archetype profile: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving archetype profile: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    # ========================================
+    # MIRROR MOMENTS METHODS
+    # ========================================
+
+    async def save_mirror_moment(self, moment_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Save Mirror Moment
+
+        Args:
+            moment_data: Mirror moment data
+
+        Returns:
+            The saved moment data
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.mirror_moments_table)
+
+                await table.put_item(Item=moment_data)
+
+                logger.info(
+                    f"Saved mirror moment {moment_data.get('moment_id')} for user {moment_data.get('user_id')}"
+                )
+                return moment_data
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error saving mirror moment: {e}")
+            raise InternalServerError(f"Failed to save mirror moment: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving mirror moment: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def get_user_mirror_moments(
+        self, user_id: str, limit: int = 10, acknowledged_only: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Get user's Mirror Moments
+
+        Args:
+            user_id: User ID
+            limit: Maximum number of moments
+            acknowledged_only: Filter for acknowledged moments only
+
+        Returns:
+            List of mirror moments
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.mirror_moments_table)
+
+                query_kwargs: Dict[str, Any] = {
+                    "KeyConditionExpression": "user_id = :user_id",
+                    "ExpressionAttributeValues": {":user_id": user_id},
+                    "ScanIndexForward": False,  # Most recent first
+                    "Limit": limit,
+                }
+
+                if acknowledged_only:
+                    query_kwargs["FilterExpression"] = "acknowledged = :ack"
+                    if "ExpressionAttributeValues" not in query_kwargs:
+                        query_kwargs["ExpressionAttributeValues"] = {}
+                    query_kwargs["ExpressionAttributeValues"][":ack"] = True
+
+                response = await table.query(**query_kwargs)
+
+                return [dict(item) for item in response.get("Items", [])]
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error getting mirror moments: {e}")
+            raise InternalServerError(f"Failed to get mirror moments: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting mirror moments: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def acknowledge_mirror_moment(self, user_id: str, moment_id: str) -> bool:
+        """
+        Acknowledge a Mirror Moment
+
+        Args:
+            user_id: User ID
+            moment_id: Moment ID to acknowledge
+
+        Returns:
+            True if successful
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.mirror_moments_table)
+
+                current_time = (
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+
+                await table.update_item(
+                    Key={"user_id": user_id, "moment_id": moment_id},
+                    UpdateExpression="SET acknowledged = :ack, acknowledged_at = :timestamp",
+                    ExpressionAttributeValues={
+                        ":ack": True,
+                        ":timestamp": current_time,
+                    },
+                )
+
+                logger.info(
+                    f"Acknowledged mirror moment {moment_id} for user {user_id}"
+                )
+                return True
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error acknowledging mirror moment: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error acknowledging mirror moment: {e}")
+            return False
+
+    # ========================================
+    # PATTERN LOOPS METHODS
+    # ========================================
+
+    async def save_pattern_loop(self, loop_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Save pattern loop data
+
+        Args:
+            loop_data: Pattern loop data
+
+        Returns:
+            The saved loop data
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.pattern_loops_table)
+
+                await table.put_item(Item=loop_data)
+
+                logger.debug(
+                    f"Saved pattern loop {loop_data.get('loop_id')} for user {loop_data.get('user_id')}"
+                )
+                return loop_data
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error saving pattern loop: {e}")
+            raise InternalServerError(f"Failed to save pattern loop: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving pattern loop: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def get_user_pattern_loops(
+        self, user_id: str, active_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Get user's pattern loops
+
+        Args:
+            user_id: User ID
+            active_only: Filter for active loops only
+
+        Returns:
+            List of pattern loops
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.pattern_loops_table)
+
+                query_kwargs: Dict[str, Any] = {
+                    "KeyConditionExpression": "user_id = :user_id",
+                    "ExpressionAttributeValues": {":user_id": user_id},
+                    "ScanIndexForward": False,
+                }
+
+                if active_only:
+                    query_kwargs["FilterExpression"] = (
+                        "#trend IN (:rising, :stable) AND #transformed <> :true"
+                    )
+                    query_kwargs["ExpressionAttributeNames"] = {
+                        "#trend": "trend",
+                        "#transformed": "transformation_detected",
+                    }
+                    if "ExpressionAttributeValues" not in query_kwargs:
+                        query_kwargs["ExpressionAttributeValues"] = {}
+                    query_kwargs["ExpressionAttributeValues"].update(
+                        {":rising": "rising", ":stable": "stable", ":true": True}
+                    )
+
+                response = await table.query(**query_kwargs)
+
+                return [dict(item) for item in response.get("Items", [])]
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error getting pattern loops: {e}")
+            raise InternalServerError(f"Failed to get pattern loops: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting pattern loops: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def update_pattern_loop(
+        self, user_id: str, loop_id: str, updates: Dict[str, Any]
+    ) -> bool:
+        """
+        Update a pattern loop
+
+        Args:
+            user_id: User ID
+            loop_id: Loop ID
+            updates: Dictionary of fields to update
+
+        Returns:
+            True if successful
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.pattern_loops_table)
+
+                # Build update expression dynamically
+                update_expressions = []
+                expression_values = {}
+                expression_names = {}
+
+                for field, value in updates.items():
+                    if field in [
+                        "trend",
+                        "strength_score",
+                        "transformation_detected",
+                        "last_seen",
+                        "occurrence_count",
+                    ]:
+                        attr_name = f"#{field}"
+                        attr_value = f":{field}"
+
+                        update_expressions.append(f"{attr_name} = {attr_value}")
+                        expression_names[attr_name] = field
+                        expression_values[attr_value] = value
+
+                if not update_expressions:
+                    return False
+
+                update_expression = "SET " + ", ".join(update_expressions)
+
+                await table.update_item(
+                    Key={"user_id": user_id, "loop_id": loop_id},
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeNames=expression_names,
+                    ExpressionAttributeValues=expression_values,
+                )
+
+                logger.debug(f"Updated pattern loop {loop_id} for user {user_id}")
+                return True
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error updating pattern loop: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error updating pattern loop: {e}")
+            return False
+
+    # ========================================
+    # HELPER METHODS FOR MIRRORGPT
+    # ========================================
+
+    async def get_item(
+        self, table_name: str, key: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Generic get item method
+
+        Args:
+            table_name: DynamoDB table name
+            key: Primary key for item
+
+        Returns:
+            Item data or None
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(table_name)
+
+                response = await table.get_item(Key=key)
+
+                if "Item" in response:
+                    return dict(response["Item"])
+                return None
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error getting item from {table_name}: {e}")
+            raise InternalServerError(f"Failed to get item: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting item from {table_name}: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def put_item(self, table_name: str, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generic put item method
+
+        Args:
+            table_name: DynamoDB table name
+            item: Item data to store
+
+        Returns:
+            The stored item data
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(table_name)
+
+                await table.put_item(Item=item)
+
+                return item
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error putting item to {table_name}: {e}")
+            raise InternalServerError(f"Failed to put item: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error putting item to {table_name}: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def query_items(
+        self,
+        table_name: str,
+        key_condition: str,
+        expression_values: Dict[str, Any],
+        limit: Optional[int] = None,
+        scan_index_forward: bool = True,
+        filter_expression: Optional[str] = None,
+        expression_names: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Generic query method for DynamoDB tables
+
+        Args:
+            table_name: DynamoDB table name
+            key_condition: KeyConditionExpression
+            expression_values: ExpressionAttributeValues
+            limit: Limit number of items
+            scan_index_forward: Sort order
+            filter_expression: FilterExpression
+            expression_names: ExpressionAttributeNames
+
+        Returns:
+            List of items
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(table_name)
+
+                query_kwargs = {
+                    "KeyConditionExpression": key_condition,
+                    "ExpressionAttributeValues": expression_values,
+                    "ScanIndexForward": scan_index_forward,
+                }
+
+                if limit:
+                    query_kwargs["Limit"] = limit
+
+                if filter_expression:
+                    query_kwargs["FilterExpression"] = filter_expression
+
+                if expression_names:
+                    query_kwargs["ExpressionAttributeNames"] = expression_names
+
+                response = await table.query(**query_kwargs)
+
+                return [dict(item) for item in response.get("Items", [])]
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error querying {table_name}: {e}")
+            raise InternalServerError(f"Failed to query items: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error querying {table_name}: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    async def update_item(
+        self,
+        table_name: str,
+        key: Dict[str, Any],
+        update_expression: str,
+        expression_values: Dict[str, Any],
+        expression_names: Optional[Dict[str, str]] = None,
+    ) -> bool:
+        """
+        Generic update item method
+
+        Args:
+            table_name: DynamoDB table name
+            key: Primary key for item
+            update_expression: UpdateExpression
+            expression_values: ExpressionAttributeValues
+            expression_names: ExpressionAttributeNames
+
+        Returns:
+            True if successful
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(table_name)
+
+                update_kwargs = {
+                    "Key": key,
+                    "UpdateExpression": update_expression,
+                    "ExpressionAttributeValues": expression_values,
+                }
+
+                if expression_names:
+                    update_kwargs["ExpressionAttributeNames"] = expression_names
+
+                await table.update_item(**update_kwargs)
+
+                return True
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error updating item in {table_name}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error updating item in {table_name}: {e}")
+            return False

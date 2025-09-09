@@ -42,7 +42,7 @@ def decode_cognito_jwt(token: str) -> Optional[Dict[str, Any]]:
         logger.info(f"🔍 JWT Token Claims: {payload}")
         email_claim = payload.get("email")
         logger.info(f"🔍 Email claim value: {email_claim}")
-        
+
         # Basic validation
         now = datetime.now(timezone.utc)
 
@@ -77,25 +77,29 @@ def decode_cognito_jwt(token: str) -> Optional[Dict[str, Any]]:
 def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Map Cognito JWT claims to user profile format"""
     logger.info(f"🔍 Mapping claims to profile. Input payload: {payload}")
-    
+
     groups: List[str] = payload.get("cognito:groups", []) or []
-    
+
     # Try multiple ways to get email, as it might be in different claims
     email = (
-        payload.get("email") or 
-        payload.get("cognito:username") or  # Sometimes username is the email
-        payload.get("username") or
-        None
+        payload.get("email")
+        or payload.get("cognito:username")
+        or payload.get("username")  # Sometimes username is the email
+        or None
     )
-    
+
     # If we still don't have email and this is an access token, warn about it
     token_use = payload.get("token_use")
-    if not email and token_use == "access":  # nosec B105 - 'access' is a token type, not a password
-        logger.warning("⚠️  No email found in access token. Consider using ID token for user profile endpoints.")
+    if (
+        not email and token_use == "access"
+    ):  # nosec B105 - 'access' is a token type, not a password
+        logger.warning(
+            "⚠️  No email found in access token. Consider using ID token for user profile endpoints."
+        )
         logger.info("💡 Available claims in access token: " + ", ".join(payload.keys()))
-    
+
     logger.info(f"🔍 Extracted email from payload: {email}")
-    
+
     profile = {
         "id": payload.get("sub"),
         "email": email,
@@ -113,7 +117,7 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
         "permissions": [],
         "features": [],
     }
-    
+
     logger.info(f"🔍 Final mapped profile: {profile}")
     return profile
 

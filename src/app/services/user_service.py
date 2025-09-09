@@ -41,7 +41,7 @@ class UserService:
             user_id = cognito_user_data.get("username")
             if not user_id:
                 raise ValueError("No user ID found in Cognito data")
-            
+
             # Extract email from Cognito data to validate it exists
             attributes = cognito_user_data.get("userAttributes", {})
             if "UserAttributes" in cognito_user_data:
@@ -49,31 +49,33 @@ class UserService:
                 for attr in cognito_user_data["UserAttributes"]:
                     attrs_dict[attr["Name"]] = attr["Value"]
                 attributes = attrs_dict
-            
+
             email = attributes.get("email", "").strip()
             if not email:
-                raise ValueError(f"No valid email found in Cognito data for user: {user_id}")
-            
+                raise ValueError(
+                    f"No valid email found in Cognito data for user: {user_id}"
+                )
+
             logger.info(f"Creating user profile from Cognito data for user: {user_id}")
-            
+
             # Check if profile already exists
             existing_profile = await self.dynamodb_service.get_user_profile(user_id)
             if existing_profile:
                 logger.info(f"User profile already exists for user: {user_id}")
                 return existing_profile
-            
+
             # Create new profile from Cognito data
             user_profile = UserProfile.from_cognito_user(cognito_user_data, user_id)
-            
+
             # Double-check email is valid before saving
             if not user_profile.email or not user_profile.email.strip():
                 raise ValueError(f"User profile has invalid email for user: {user_id}")
-            
+
             user_profile = await self.dynamodb_service.create_user_profile(user_profile)
-            
+
             logger.info(f"Successfully created user profile for user: {user_id}")
             return user_profile
-            
+
         except Exception as e:
             logger.error(f"Error creating user profile from Cognito data: {e}")
             raise InternalServerError(f"Failed to create user profile: {str(e)}")
@@ -92,15 +94,13 @@ class UserService:
         try:
             if not user_id:
                 raise ValueError("user_id is required and cannot be None or empty")
-            
+
             logger.debug(f"Getting user profile for user_id: {user_id}")
             return await self.dynamodb_service.get_user_profile(user_id)
-            
+
         except Exception as e:
             logger.error(f"Error getting user profile: {e}")
             return None
-
-
 
     async def update_user_profile(
         self, user_id: str, updates: Dict[str, Any]
@@ -114,7 +114,7 @@ class UserService:
 
         Returns:
             Updated UserProfile
-        
+
         Raises:
             InternalServerError: If user profile doesn't exist
         """
@@ -189,8 +189,6 @@ class UserService:
             logger.error(f"Error recording logout activity: {e}")
             # Don't raise error for activity tracking failures
 
-
-
     async def delete_user_account(self, user_id: str) -> bool:
         """
         Delete user account from both DynamoDB and Cognito
@@ -236,15 +234,15 @@ class UserService:
             if user_profile:
                 # Update profile to mark as deleted
                 updates = {
-                    'status': 'DELETED',
-                    'deleted_at': str(int(time.time())),
-                    'account_status': 'SOFT_DELETED'
+                    "status": "DELETED",
+                    "deleted_at": str(int(time.time())),
+                    "account_status": "SOFT_DELETED",
                 }
-                
+
                 for key, value in updates.items():
                     if hasattr(user_profile, key):
                         setattr(user_profile, key, value)
-                
+
                 await self.dynamodb_service.update_user_profile(user_profile)
                 logger.info(f"User profile marked as deleted in DynamoDB: {user_id}")
             else:

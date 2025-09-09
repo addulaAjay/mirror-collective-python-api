@@ -20,6 +20,10 @@ provider:
     DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
     DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}
     DYNAMODB_MESSAGES_TABLE: ${self:service}-messages-${self:provider.stage}
+    # MirrorGPT Tables
+    DYNAMODB_ARCHETYPE_PROFILES_TABLE: ${self:service}-archetype-profiles-${self:provider.stage}
+    DYNAMODB_MIRROR_MOMENTS_TABLE: ${self:service}-mirror-moments-${self:provider.stage}
+    DYNAMODB_PATTERN_LOOPS_TABLE: ${self:service}-pattern-loops-${self:provider.stage}
   iam:
     role:
       statements:
@@ -48,6 +52,18 @@ provider:
             - Fn::Join:
               - '/'
               - - Fn::GetAtt: [ MessagesTable, Arn ]
+                - 'index/*'
+            # MirrorGPT Tables
+            - Fn::GetAtt: [ ArchetypeProfilesTable, Arn ]
+            - Fn::GetAtt: [ MirrorMomentsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ MirrorMomentsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ PatternLoopsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ PatternLoopsTable, Arn ]
                 - 'index/*'
         - Effect: Allow
           Action:
@@ -104,7 +120,7 @@ resources:
         ProvisionedThroughput:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
-    
+
     ActivityTable:
       Type: AWS::DynamoDB::Table
       Properties:
@@ -138,6 +154,8 @@ resources:
         KeySchema:
           - AttributeName: conversation_id
             KeyType: HASH
+          - AttributeName: user_id
+            KeyType: RANGE
         GlobalSecondaryIndexes:
           - IndexName: user-conversations-index
             KeySchema:
@@ -164,18 +182,114 @@ resources:
             AttributeType: S
           - AttributeName: timestamp
             AttributeType: S
-          - AttributeName: message_id
-            AttributeType: S
         KeySchema:
           - AttributeName: conversation_id
             KeyType: HASH
           - AttributeName: timestamp
             KeyType: RANGE
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    # MirrorGPT Tables
+    ArchetypeProfilesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-archetype-profiles-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    MirrorMomentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-mirror-moments-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: moment_id
+            AttributeType: S
+          - AttributeName: triggered_at
+            AttributeType: S
+          - AttributeName: moment_type
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: moment_id
+            KeyType: RANGE
         GlobalSecondaryIndexes:
-          - IndexName: message-id-index
+          - IndexName: type-index
             KeySchema:
-              - AttributeName: message_id
+              - AttributeName: user_id
                 KeyType: HASH
+              - AttributeName: moment_type
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: time-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: triggered_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    PatternLoopsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-pattern-loops-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: loop_id
+            AttributeType: S
+          - AttributeName: last_seen
+            AttributeType: S
+          - AttributeName: trend
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: loop_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: trend-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: trend
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: activity-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: last_seen
+                KeyType: RANGE
             Projection:
               ProjectionType: ALL
             ProvisionedThroughput:

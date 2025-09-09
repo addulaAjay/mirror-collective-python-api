@@ -4,7 +4,7 @@ OpenAI service for AI chat completions and conversation management
 
 import logging
 import os
-from typing import Dict, List, cast, AsyncGenerator
+from typing import AsyncGenerator, Dict, List, cast
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -51,7 +51,7 @@ class IMirrorChatRepository:
         raise NotImplementedError(
             "send method must be implemented by concrete implementations"
         )
-    
+
     def send_stream(self, messages: List[ChatMessage]) -> AsyncGenerator[str, None]:
         """
         Send conversation messages and return streaming AI-generated response
@@ -64,6 +64,20 @@ class IMirrorChatRepository:
         """
         raise NotImplementedError(
             "send_stream method must be implemented by concrete implementations"
+        )
+
+    async def send_async(self, messages: List[ChatMessage]) -> str:
+        """
+        Send conversation messages asynchronously and return AI-generated response
+
+        Args:
+            messages: List of conversation messages
+
+        Returns:
+            str: AI response content
+        """
+        raise NotImplementedError(
+            "send_async method must be implemented by concrete implementations"
         )
 
 
@@ -85,7 +99,7 @@ class OpenAIService(IMirrorChatRepository):
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
         self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
-        
+
         logger.info(f"OpenAI service initialized with model: {self.model}")
 
     def send(self, messages: List[ChatMessage]) -> str:
@@ -116,7 +130,7 @@ class OpenAIService(IMirrorChatRepository):
                 model=self.model,
                 messages=openai_messages,
                 temperature=self.temperature,  # Configurable creativity
-                max_tokens=self.max_tokens,    # Configurable response length
+                max_tokens=self.max_tokens,  # Configurable response length
                 stream=False,
             )
 
@@ -131,7 +145,9 @@ class OpenAIService(IMirrorChatRepository):
             logger.error(f"OpenAI API error: {str(e)}")
             raise InternalServerError(f"Chat service unavailable: {str(e)}")
 
-    async def send_stream(self, messages: List[ChatMessage]) -> AsyncGenerator[str, None]:
+    async def send_stream(
+        self, messages: List[ChatMessage]
+    ) -> AsyncGenerator[str, None]:
         """
         Generate streaming AI response from conversation messages using OpenAI's chat completion
 
@@ -177,7 +193,7 @@ class OpenAIService(IMirrorChatRepository):
     async def send_async(self, messages: List[ChatMessage]) -> str:
         """
         Async version of send method for better performance
-        
+
         Args:
             messages: List of conversation messages including system prompt and history
 
@@ -185,5 +201,6 @@ class OpenAIService(IMirrorChatRepository):
             str: AI-generated response content
         """
         import asyncio
+
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.send, messages)

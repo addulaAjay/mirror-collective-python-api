@@ -3,27 +3,28 @@ Enhanced chat controller with persistent conversation management
 Production-ready implementation with comprehensive error handling
 """
 
-import logging
 import json
-from typing import Any, Dict, Optional, AsyncGenerator
+import logging
+from typing import Any, AsyncGenerator, Dict, Optional
+
 from fastapi import HTTPException
 
-from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
 from ..api.models import (
-    EnhancedMirrorChatRequest, 
-    EnhancedMirrorChatResponse,
-    ConversationListResponse,
     ConversationDetailResponse,
+    ConversationListResponse,
     ConversationManagementRequest,
-    UpdateConversationTitleRequest
+    EnhancedMirrorChatRequest,
+    EnhancedMirrorChatResponse,
+    UpdateConversationTitleRequest,
 )
+from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
 from ..services.openai_service import OpenAIService
 from ..services.user_service import UserService
+from ..use_cases.enhanced_mirror_chat_use_case import ConversationManagementUseCase
 from ..use_cases.enhanced_mirror_chat_use_case import (
-    EnhancedMirrorChatUseCase, 
-    ConversationManagementUseCase,
-    EnhancedMirrorChatRequest as UseCaseRequest
+    EnhancedMirrorChatRequest as UseCaseRequest,
 )
+from ..use_cases.enhanced_mirror_chat_use_case import EnhancedMirrorChatUseCase
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,7 @@ class EnhancedChatController:
         self.user_service = UserService()
 
     async def handle_enhanced_chat(
-        self, 
-        req: EnhancedMirrorChatRequest, 
-        current_user: Dict[str, Any]
+        self, req: EnhancedMirrorChatRequest, current_user: Dict[str, Any]
     ) -> EnhancedMirrorChatResponse:
         """
         Process enhanced mirror chat requests with conversation management
@@ -64,16 +63,23 @@ class EnhancedChatController:
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
                 logger.error("User ID not found in JWT token")
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Get user profile for personalization
             user_profile = await self.user_service.get_user_profile(user_id)
             if not user_profile:
                 logger.warning(f"User profile not found for user: {user_id}")
-                raise HTTPException(status_code=404, detail=f"User profile not found for user: {user_id}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User profile not found for user: {user_id}",
+                )
 
             # Resolve user name with intelligent fallbacks
-            user_name = self._resolve_user_name(req.userName, user_profile, current_user)
+            user_name = self._resolve_user_name(
+                req.userName, user_profile, current_user
+            )
 
             logger.info(
                 f"Processing enhanced chat request - User: {user_id}, "
@@ -88,17 +94,14 @@ class EnhancedChatController:
                 user_id=user_id,
                 conversation_id=req.conversationId,
                 user_name=user_name,
-                create_new_conversation=req.createNewConversation
+                create_new_conversation=req.createNewConversation,
             )
 
             # Execute enhanced chat use case
             result = await self.chat_use_case.execute(use_case_request)
 
             # Return structured API response
-            return EnhancedMirrorChatResponse(
-                success=True, 
-                data=result.to_dict()
-            )
+            return EnhancedMirrorChatResponse(success=True, data=result.to_dict())
 
         except ValidationError as e:
             logger.warning(f"Validation error in enhanced chat: {e}")
@@ -111,20 +114,18 @@ class EnhancedChatController:
             raise HTTPException(status_code=500, detail="Internal server error")
 
     async def handle_enhanced_chat_stream(
-        self, 
-        req: EnhancedMirrorChatRequest, 
-        current_user: Dict[str, Any]
+        self, req: EnhancedMirrorChatRequest, current_user: Dict[str, Any]
     ) -> AsyncGenerator[str, None]:
         """
         Process enhanced mirror chat requests with REAL-TIME STREAMING
-        
+
         Args:
             req: The validated enhanced chat request from the API layer
             current_user: The authenticated user information from JWT token
-            
+
         Yields:
             str: Streaming AI response chunks
-            
+
         Raises:
             HTTPException: For various error conditions (400, 404, 500)
         """
@@ -133,16 +134,23 @@ class EnhancedChatController:
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
                 logger.error("User ID not found in JWT token")
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Get user profile for personalization
             user_profile = await self.user_service.get_user_profile(user_id)
             if not user_profile:
                 logger.warning(f"User profile not found for user: {user_id}")
-                raise HTTPException(status_code=404, detail=f"User profile not found for user: {user_id}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User profile not found for user: {user_id}",
+                )
 
             # Resolve user name with intelligent fallbacks
-            user_name = self._resolve_user_name(req.userName, user_profile, current_user)
+            user_name = self._resolve_user_name(
+                req.userName, user_profile, current_user
+            )
 
             logger.info(
                 f"Processing STREAMING chat request - User: {user_id}, "
@@ -151,13 +159,16 @@ class EnhancedChatController:
             )
 
             # Create use case request
-            from ..use_cases.enhanced_mirror_chat_use_case import EnhancedMirrorChatRequest as UseCaseRequest
+            from ..use_cases.enhanced_mirror_chat_use_case import (
+                EnhancedMirrorChatRequest as UseCaseRequest,
+            )
+
             use_case_request = UseCaseRequest(
                 message=req.message,
                 user_id=user_id,
                 conversation_id=req.conversationId,
                 user_name=user_name,
-                create_new_conversation=req.createNewConversation
+                create_new_conversation=req.createNewConversation,
             )
 
             # Stream AI response in real-time
@@ -175,10 +186,10 @@ class EnhancedChatController:
             yield f"ERROR: Internal server error"
 
     async def get_user_conversations(
-        self, 
+        self,
         current_user: Dict[str, Any],
         limit: int = 50,
-        include_archived: bool = False
+        include_archived: bool = False,
     ) -> ConversationListResponse:
         """
         Get all conversations for the authenticated user
@@ -198,13 +209,13 @@ class EnhancedChatController:
             # Extract user ID
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Get conversations
             conversations = await self.conversation_use_case.get_user_conversations(
-                user_id, 
-                limit, 
-                include_archived
+                user_id, limit, include_archived
             )
 
             # Convert to API response format
@@ -214,20 +225,22 @@ class EnhancedChatController:
                     "title": conv.title,
                     "lastMessageAt": conv.last_message_at,
                     "messageCount": conv.message_count,
-                    "isArchived": conv.is_archived
+                    "isArchived": conv.is_archived,
                 }
                 for conv in conversations
             ]
 
-            logger.info(f"Retrieved {len(conversations)} conversations for user {user_id}")
+            logger.info(
+                f"Retrieved {len(conversations)} conversations for user {user_id}"
+            )
 
             return ConversationListResponse(
                 success=True,
                 data={
                     "conversations": conversation_data,
                     "totalCount": len(conversations),
-                    "includeArchived": include_archived
-                }
+                    "includeArchived": include_archived,
+                },
             )
 
         except Exception as e:
@@ -235,9 +248,7 @@ class EnhancedChatController:
             raise HTTPException(status_code=500, detail="Internal server error")
 
     async def get_conversation_detail(
-        self, 
-        conversation_id: str,
-        current_user: Dict[str, Any]
+        self, conversation_id: str, current_user: Dict[str, Any]
     ) -> ConversationDetailResponse:
         """
         Get detailed information about a specific conversation
@@ -256,12 +267,13 @@ class EnhancedChatController:
             # Extract user ID
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Get conversation details
             detail = await self.conversation_use_case.get_conversation_detail(
-                conversation_id, 
-                user_id
+                conversation_id, user_id
             )
 
             # Convert to API response format
@@ -277,7 +289,7 @@ class EnhancedChatController:
                     "messageCount": conversation.message_count,
                     "totalTokens": conversation.total_tokens,
                     "isArchived": conversation.is_archived,
-                    "lastMessageAt": conversation.last_message_at
+                    "lastMessageAt": conversation.last_message_at,
                 },
                 "recentMessages": [
                     {
@@ -285,18 +297,15 @@ class EnhancedChatController:
                         "role": msg.role,
                         "content": msg.content,
                         "timestamp": msg.timestamp,
-                        "tokenCount": msg.token_count
+                        "tokenCount": msg.token_count,
                     }
                     for msg in messages
-                ]
+                ],
             }
 
             logger.info(f"Retrieved conversation detail for {conversation_id}")
 
-            return ConversationDetailResponse(
-                success=True,
-                data=response_data
-            )
+            return ConversationDetailResponse(success=True, data=response_data)
 
         except ValidationError as e:
             logger.warning(f"Validation error getting conversation detail: {e}")
@@ -309,9 +318,7 @@ class EnhancedChatController:
             raise HTTPException(status_code=500, detail="Internal server error")
 
     async def archive_conversation(
-        self, 
-        req: ConversationManagementRequest,
-        current_user: Dict[str, Any]
+        self, req: ConversationManagementRequest, current_user: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Archive a conversation
@@ -330,23 +337,25 @@ class EnhancedChatController:
             # Extract user ID
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Archive conversation
             success = await self.conversation_use_case.archive_conversation(
-                req.conversationId, 
-                user_id
+                req.conversationId, user_id
             )
 
             if not success:
-                raise HTTPException(status_code=500, detail="Failed to archive conversation")
+                raise HTTPException(
+                    status_code=500, detail="Failed to archive conversation"
+                )
 
-            logger.info(f"Archived conversation {req.conversationId} for user {user_id}")
+            logger.info(
+                f"Archived conversation {req.conversationId} for user {user_id}"
+            )
 
-            return {
-                "success": True,
-                "message": "Conversation archived successfully"
-            }
+            return {"success": True, "message": "Conversation archived successfully"}
 
         except ValidationError as e:
             logger.warning(f"Validation error archiving conversation: {e}")
@@ -361,9 +370,7 @@ class EnhancedChatController:
             raise HTTPException(status_code=500, detail="Internal server error")
 
     async def delete_conversation(
-        self, 
-        req: ConversationManagementRequest,
-        current_user: Dict[str, Any]
+        self, req: ConversationManagementRequest, current_user: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Delete a conversation permanently
@@ -382,23 +389,23 @@ class EnhancedChatController:
             # Extract user ID
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Delete conversation
             success = await self.conversation_use_case.delete_conversation(
-                req.conversationId, 
-                user_id
+                req.conversationId, user_id
             )
 
             if not success:
-                raise HTTPException(status_code=500, detail="Failed to delete conversation")
+                raise HTTPException(
+                    status_code=500, detail="Failed to delete conversation"
+                )
 
             logger.info(f"Deleted conversation {req.conversationId} for user {user_id}")
 
-            return {
-                "success": True,
-                "message": "Conversation deleted successfully"
-            }
+            return {"success": True, "message": "Conversation deleted successfully"}
 
         except ValidationError as e:
             logger.warning(f"Validation error deleting conversation: {e}")
@@ -413,9 +420,7 @@ class EnhancedChatController:
             raise HTTPException(status_code=500, detail="Internal server error")
 
     async def update_conversation_title(
-        self, 
-        req: UpdateConversationTitleRequest,
-        current_user: Dict[str, Any]
+        self, req: UpdateConversationTitleRequest, current_user: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Update a conversation's title
@@ -434,23 +439,25 @@ class EnhancedChatController:
             # Extract user ID
             user_id = current_user.get("id") or current_user.get("sub")
             if not user_id:
-                raise HTTPException(status_code=400, detail="User ID not found in token")
+                raise HTTPException(
+                    status_code=400, detail="User ID not found in token"
+                )
 
             # Update title
             success = await self.conversation_use_case.update_conversation_title(
-                req.conversationId, 
-                user_id, 
-                req.title
+                req.conversationId, user_id, req.title
             )
 
             if not success:
-                raise HTTPException(status_code=500, detail="Failed to update conversation title")
+                raise HTTPException(
+                    status_code=500, detail="Failed to update conversation title"
+                )
 
             logger.info(f"Updated title for conversation {req.conversationId}")
 
             return {
                 "success": True,
-                "message": "Conversation title updated successfully"
+                "message": "Conversation title updated successfully",
             }
 
         except ValidationError as e:
@@ -466,52 +473,52 @@ class EnhancedChatController:
             raise HTTPException(status_code=500, detail="Internal server error")
 
     def _resolve_user_name(
-        self, 
-        request_user_name: Optional[str], 
-        user_profile, 
-        current_user: Dict[str, Any]
+        self,
+        request_user_name: Optional[str],
+        user_profile,
+        current_user: Dict[str, Any],
     ) -> Optional[str]:
         """
         Resolve user name with intelligent fallbacks
-        
+
         Args:
             request_user_name: User name from request
             user_profile: User profile from database
             current_user: Current user from JWT
-            
+
         Returns:
             Optional[str]: Resolved user name
         """
         # Priority order: request -> profile -> JWT -> email username
-        
+
         # 1. Explicit name from request
         if request_user_name and request_user_name.strip():
             return request_user_name.strip()
-        
+
         # 2. Chat name from user profile
         if user_profile and user_profile.chat_name:
             return user_profile.chat_name
-        
+
         # 3. Display name from user profile
         if user_profile and user_profile.display_name:
             return user_profile.display_name
-        
+
         # 4. First name from user profile
         if user_profile and user_profile.first_name:
             return user_profile.first_name
-        
+
         # 5. Name from JWT token
         jwt_name = (
-            current_user.get("firstName") or 
-            current_user.get("given_name") or 
-            current_user.get("name")
+            current_user.get("firstName")
+            or current_user.get("given_name")
+            or current_user.get("name")
         )
         if jwt_name and jwt_name.strip():
             return jwt_name.strip()
-        
+
         # 6. Username from email as last resort
         email = user_profile.email if user_profile else current_user.get("email")
         if email:
             return email.split("@")[0]
-        
+
         return None

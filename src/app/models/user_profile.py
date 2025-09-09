@@ -17,7 +17,9 @@ class UserStatus(Enum):
     COMPROMISED = "COMPROMISED"
     UNKNOWN = "UNKNOWN"
     RESET_REQUIRED = "RESET_REQUIRED"
-    FORCE_CHANGE_PASSWORD = "FORCE_CHANGE_PASSWORD"  # nosec B105 - Status constant, not password
+    FORCE_CHANGE_PASSWORD = (
+        "FORCE_CHANGE_PASSWORD"  # nosec B105 - Status constant, not password
+    )
 
 
 @dataclass
@@ -90,7 +92,7 @@ class UserProfile:
         """Convert to DynamoDB item format"""
         item = asdict(self)
         item["status"] = self.status.value  # Convert enum to string
-        
+
         # Filter out None values and empty strings for indexed fields
         filtered_item = {}
         for k, v in item.items():
@@ -99,7 +101,7 @@ class UserProfile:
             if k == "email" and (not v or not v.strip()):
                 continue  # Skip empty email values to avoid index errors
             filtered_item[k] = v
-        
+
         return filtered_item
 
     @classmethod
@@ -140,7 +142,9 @@ class UserProfile:
             attributes = cognito_user_data["userAttributes"]
 
         # Map Cognito status to our enum
-        cognito_status = cognito_user_data.get("UserStatus") or cognito_user_data.get("userStatus", "UNKNOWN")
+        cognito_status = cognito_user_data.get("UserStatus") or cognito_user_data.get(
+            "userStatus", "UNKNOWN"
+        )
         try:
             status = UserStatus(cognito_status)
         except ValueError:

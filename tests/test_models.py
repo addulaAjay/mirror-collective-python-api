@@ -1,16 +1,18 @@
 """
 Test Pydantic models
 """
+
 import pytest
 from pydantic import ValidationError
+
 from src.app.api.models import (
-    UserRegistrationRequest,
-    LoginRequest, 
-    MirrorChatRequest,
     ConversationTurn,
+    EmailVerificationRequest,
     ForgotPasswordRequest,
+    LoginRequest,
+    MirrorChatRequest,
     ResetPasswordRequest,
-    EmailVerificationRequest
+    UserRegistrationRequest,
 )
 
 
@@ -19,9 +21,9 @@ def test_user_registration_request_valid():
     data = {
         "email": "test@example.com",
         "password": "ValidPass123!",
-        "fullName": "John Doe"
+        "fullName": "John Doe",
     }
-    
+
     request = UserRegistrationRequest(**data)
     assert request.email == "test@example.com"
     assert request.password == "ValidPass123!"
@@ -33,26 +35,22 @@ def test_user_registration_request_invalid_email():
     data = {
         "email": "invalid-email",
         "password": "ValidPass123!",
-        "fullName": "John Doe"
+        "fullName": "John Doe",
     }
-    
+
     with pytest.raises(ValidationError) as exc_info:
         UserRegistrationRequest(**data)
-    
+
     assert "email" in str(exc_info.value)
 
 
 def test_user_registration_request_short_password():
     """Test user registration with short password"""
-    data = {
-        "email": "test@example.com",
-        "password": "short",
-        "fullName": "John Doe"
-    }
-    
+    data = {"email": "test@example.com", "password": "short", "fullName": "John Doe"}
+
     with pytest.raises(ValidationError) as exc_info:
         UserRegistrationRequest(**data)
-    
+
     assert "password" in str(exc_info.value)
 
 
@@ -61,22 +59,19 @@ def test_user_registration_request_invalid_name():
     data = {
         "email": "test@example.com",
         "password": "ValidPass123!",
-        "fullName": "J"  # Too short
+        "fullName": "J",  # Too short
     }
-    
+
     with pytest.raises(ValidationError) as exc_info:
         UserRegistrationRequest(**data)
-    
+
     assert "fullName" in str(exc_info.value)
 
 
 def test_login_request_valid():
     """Test valid login request"""
-    data = {
-        "email": "test@example.com",
-        "password": "password123"
-    }
-    
+    data = {"email": "test@example.com", "password": "password123"}
+
     request = LoginRequest(**data)
     assert request.email == "test@example.com"
     assert request.password == "password123"
@@ -84,11 +79,8 @@ def test_login_request_valid():
 
 def test_conversation_turn_valid():
     """Test valid conversation turn"""
-    data = {
-        "role": "user",
-        "content": "Hello there"
-    }
-    
+    data = {"role": "user", "content": "Hello there"}
+
     turn = ConversationTurn(**data)
     assert turn.role == "user"
     assert turn.content == "Hello there"
@@ -96,27 +88,21 @@ def test_conversation_turn_valid():
 
 def test_conversation_turn_invalid_role():
     """Test conversation turn with invalid role"""
-    data = {
-        "role": "invalid",
-        "content": "Hello there"
-    }
-    
+    data = {"role": "invalid", "content": "Hello there"}
+
     with pytest.raises(ValidationError) as exc_info:
         ConversationTurn(**data)
-    
+
     assert "role" in str(exc_info.value)
 
 
 def test_conversation_turn_empty_content():
     """Test conversation turn with empty content"""
-    data = {
-        "role": "user",
-        "content": ""
-    }
-    
+    data = {"role": "user", "content": ""}
+
     with pytest.raises(ValidationError) as exc_info:
         ConversationTurn(**data)
-    
+
     assert "content" in str(exc_info.value)
 
 
@@ -124,26 +110,20 @@ def test_mirror_chat_request_valid():
     """Test valid mirror chat request"""
     data = {
         "message": "Hello, how are you?",
-        "conversationHistory": [
-            {
-                "role": "user",
-                "content": "Previous message"
-            }
-        ]
+        "conversationHistory": [{"role": "user", "content": "Previous message"}],
     }
-    
+
     request = MirrorChatRequest(**data)
     assert request.message == "Hello, how are you?"
+    assert request.conversationHistory is not None
     assert len(request.conversationHistory) == 1
     assert request.conversationHistory[0].role == "user"
 
 
 def test_mirror_chat_request_no_history():
     """Test mirror chat request without history"""
-    data = {
-        "message": "Hello, how are you?"
-    }
-    
+    data = {"message": "Hello, how are you?"}
+
     request = MirrorChatRequest(**data)
     assert request.message == "Hello, how are you?"
     assert request.conversationHistory is None
@@ -151,22 +131,18 @@ def test_mirror_chat_request_no_history():
 
 def test_mirror_chat_request_empty_message():
     """Test mirror chat request with empty message"""
-    data = {
-        "message": ""
-    }
-    
+    data = {"message": ""}
+
     with pytest.raises(ValidationError) as exc_info:
         MirrorChatRequest(**data)
-    
+
     assert "message" in str(exc_info.value)
 
 
 def test_forgot_password_request_valid():
     """Test valid forgot password request"""
-    data = {
-        "email": "test@example.com"
-    }
-    
+    data = {"email": "test@example.com"}
+
     request = ForgotPasswordRequest(**data)
     assert request.email == "test@example.com"
 
@@ -176,9 +152,9 @@ def test_reset_password_request_valid():
     data = {
         "email": "test@example.com",
         "resetCode": "123456",
-        "newPassword": "NewPass123!"
+        "newPassword": "NewPass123!",
     }
-    
+
     request = ResetPasswordRequest(**data)
     assert request.email == "test@example.com"
     assert request.resetCode == "123456"
@@ -187,11 +163,8 @@ def test_reset_password_request_valid():
 
 def test_email_verification_request_valid():
     """Test valid email verification request"""
-    data = {
-        "email": "test@example.com",
-        "verificationCode": "123456"
-    }
-    
+    data = {"email": "test@example.com", "verificationCode": "123456"}
+
     request = EmailVerificationRequest(**data)
     assert request.email == "test@example.com"
     assert request.verificationCode == "123456"
@@ -199,37 +172,32 @@ def test_email_verification_request_valid():
 
 def test_password_pattern_validation():
     """Test password pattern validation"""
-    valid_passwords = [
-        "ValidPass123!",
-        "Another1@",
-        "Test123$",
-        "MyPassword2&"
-    ]
-    
+    valid_passwords = ["ValidPass123!", "Another1@", "Test123$", "MyPassword2&"]
+
     invalid_passwords = [
-        "short",          # Too short
+        "short",  # Too short
         "nouppercase1!",  # No uppercase
-        "NOLOWERCASE1!",  # No lowercase  
-        "NoDigits!",      # No digits
-        "NoSpecial123"    # No special chars
+        "NOLOWERCASE1!",  # No lowercase
+        "NoDigits!",  # No digits
+        "NoSpecial123",  # No special chars
     ]
-    
+
     # Test valid passwords
     for password in valid_passwords:
         data = {
             "email": "test@example.com",
             "password": password,
-            "fullName": "Test User"
+            "fullName": "Test User",
         }
         request = UserRegistrationRequest(**data)
         assert request.password == password
-    
+
     # Test invalid passwords
     for password in invalid_passwords:
         data = {
-            "email": "test@example.com", 
+            "email": "test@example.com",
             "password": password,
-            "fullName": "Test User"
+            "fullName": "Test User",
         }
         with pytest.raises(ValidationError):
             UserRegistrationRequest(**data)
@@ -238,16 +206,14 @@ def test_password_pattern_validation():
 def test_user_profile_to_dynamodb_item_empty_email():
     """Test that UserProfile.to_dynamodb_item() properly handles empty email"""
     from src.app.models.user_profile import UserProfile, UserStatus
-    
+
     # Test with empty email string
     profile = UserProfile(
-        user_id="test-user-123",
-        email="",  # Empty string
-        status=UserStatus.CONFIRMED
+        user_id="test-user-123", email="", status=UserStatus.CONFIRMED  # Empty string
     )
-    
+
     item = profile.to_dynamodb_item()
-    
+
     # Empty email should be filtered out to prevent DynamoDB index issues
     assert "email" not in item
     assert item["user_id"] == "test-user-123"
@@ -257,16 +223,14 @@ def test_user_profile_to_dynamodb_item_empty_email():
 def test_user_profile_to_dynamodb_item_valid_email():
     """Test that UserProfile.to_dynamodb_item() preserves valid email"""
     from src.app.models.user_profile import UserProfile, UserStatus
-    
+
     # Test with valid email
     profile = UserProfile(
-        user_id="test-user-123",
-        email="test@example.com",
-        status=UserStatus.CONFIRMED
+        user_id="test-user-123", email="test@example.com", status=UserStatus.CONFIRMED
     )
-    
+
     item = profile.to_dynamodb_item()
-    
+
     # Valid email should be preserved
     assert item["email"] == "test@example.com"
     assert item["user_id"] == "test-user-123"
@@ -276,7 +240,7 @@ def test_user_profile_to_dynamodb_item_valid_email():
 def test_user_profile_from_cognito_user_missing_email():
     """Test creating UserProfile from Cognito data with missing email"""
     from src.app.models.user_profile import UserProfile
-    
+
     cognito_data = {
         "username": "test-user-123",
         "UserStatus": "CONFIRMED",
@@ -284,9 +248,9 @@ def test_user_profile_from_cognito_user_missing_email():
             {"Name": "given_name", "Value": "John"},
             {"Name": "family_name", "Value": "Doe"},
             # Note: no email attribute
-        ]
+        ],
     }
-    
+
     # Should create profile but with empty email
     profile = UserProfile.from_cognito_user(cognito_data, "test-user-123")
     assert profile.user_id == "test-user-123"
@@ -298,19 +262,19 @@ def test_user_profile_from_cognito_user_missing_email():
 def test_user_profile_from_cognito_user_transformed_format():
     """Test creating UserProfile from transformed Cognito data (userAttributes format)"""
     from src.app.models.user_profile import UserProfile
-    
+
     # This is the format returned by CognitoService.get_user_by_email()
     cognito_data = {
         "username": "test-user-123",
         "userStatus": "CONFIRMED",  # Note: lowercase 's' in userStatus
         "userAttributes": {  # Note: flat dict, not array
             "email": "test@example.com",
-            "given_name": "John", 
+            "given_name": "John",
             "family_name": "Doe",
-            "email_verified": "true"
-        }
+            "email_verified": "true",
+        },
     }
-    
+
     # Should create profile with correct email from transformed format
     profile = UserProfile.from_cognito_user(cognito_data, "test-user-123")
     assert profile.user_id == "test-user-123"
@@ -323,24 +287,26 @@ def test_user_profile_from_cognito_user_transformed_format():
 def test_user_profile_cognito_format_mismatch_original_bug():
     """Test that reproduces the original bug: email empty due to format mismatch"""
     from src.app.models.user_profile import UserProfile
-    
+
     # This simulates what was happening before our fix:
     # CognitoService.get_user_by_email() returns userAttributes as a flat dict,
     # but UserProfile.from_cognito_user() was only looking for UserAttributes array
-    
+
     cognito_data_with_wrong_format = {
         "username": "test-user-123",
         "userStatus": "CONFIRMED",
         "userAttributes": {  # Our service returns this format
             "email": "user@example.com",
-            "given_name": "John"
-        }
+            "given_name": "John",
+        },
         # But the UserProfile was only looking for "UserAttributes" (capital U)
     }
-    
+
     # With our fix, this should now work correctly
-    profile = UserProfile.from_cognito_user(cognito_data_with_wrong_format, "test-user-123")
-    
+    profile = UserProfile.from_cognito_user(
+        cognito_data_with_wrong_format, "test-user-123"
+    )
+
     # Before our fix, email would be empty string due to format mismatch
     # After our fix, email should be correctly extracted
     assert profile.email == "user@example.com"

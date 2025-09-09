@@ -183,7 +183,7 @@ curl -X POST https://your-api-gateway-url/api/chat/mirror \
 
 ### **DynamoDB (Pay-per-request)**
 - Read requests: ~$0.25 per million
-- Write requests: ~$1.25 per million  
+- Write requests: ~$1.25 per million
 - Storage: $0.25 per GB/month
 - **Expected small app cost**: <$5/month
 
