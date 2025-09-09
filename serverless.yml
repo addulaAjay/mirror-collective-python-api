@@ -1,21 +1,94 @@
 service: mirror-collective-python-api
-frameworkVersion: '3'
+frameworkVersion: '>=3.38.0 <4.0.0'
 
 provider:
   name: aws
-  runtime: python3.11
+  runtime: python3.12
   region: us-east-1
   stage: ${env:STAGE, 'staging'}
   memorySize: 512
   timeout: 30
   environment:
-    AWS_REGION: ${env:AWS_REGION, 'us-east-1'}
     ALLOWED_ORIGINS: ${env:ALLOWED_ORIGINS, 'http://localhost:3000'}
     COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID, ''}
     COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, ''}
+    COGNITO_CLIENT_SECRET: ${env:COGNITO_CLIENT_SECRET, ''}
     RATE_LIMIT_WINDOW_SECONDS: ${env:RATE_LIMIT_WINDOW_SECONDS, 900}
     RATE_LIMIT_MAX_REQUESTS: ${env:RATE_LIMIT_MAX_REQUESTS, 100}
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
+    DYNAMODB_USERS_TABLE: ${self:service}-users-${self:provider.stage}
+    DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
+    DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}-v2
+    DYNAMODB_MESSAGES_TABLE: ${self:service}-messages-${self:provider.stage}
+    # MirrorGPT Tables
+    DYNAMODB_ARCHETYPE_PROFILES_TABLE: ${self:service}-archetype-profiles-${self:provider.stage}
+    DYNAMODB_MIRROR_MOMENTS_TABLE: ${self:service}-mirror-moments-${self:provider.stage}
+    DYNAMODB_PATTERN_LOOPS_TABLE: ${self:service}-pattern-loops-${self:provider.stage}
+    DYNAMODB_QUIZ_RESULTS_TABLE: ${self:service}-quiz-results-${self:provider.stage}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:DescribeTable
+          Resource:
+            - Fn::GetAtt: [ UsersTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ UsersTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ ActivityTable, Arn ]
+            - Fn::GetAtt: [ ConversationsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ ConversationsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ MessagesTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ MessagesTable, Arn ]
+                - 'index/*'
+            # MirrorGPT Tables
+            - Fn::GetAtt: [ ArchetypeProfilesTable, Arn ]
+            - Fn::GetAtt: [ MirrorMomentsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ MirrorMomentsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ PatternLoopsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ PatternLoopsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ QuizResultsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ QuizResultsTable, Arn ]
+                - 'index/*'
+        - Effect: Allow
+          Action:
+            - cognito-idp:GetUser
+            - cognito-idp:AdminGetUser
+            - cognito-idp:AdminInitiateAuth
+            - cognito-idp:AdminDeleteUser
+            - cognito-idp:DescribeUserPool
+            - cognito-idp:DescribeUserPoolClient
+            - cognito-idp:SignUp
+            - cognito-idp:ConfirmSignUp
+            - cognito-idp:ResendConfirmationCode
+            - cognito-idp:ForgotPassword
+            - cognito-idp:ConfirmForgotPassword
+            - cognito-idp:InitiateAuth
+            - cognito-idp:DeleteUser
+            - cognito-idp:GlobalSignOut
+          Resource:
+            - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
   logs:
     http: true
 
@@ -25,13 +98,258 @@ functions:
     events:
       - httpApi: '*'
 
+resources:
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-users-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: email-index
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    ActivityTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-activity-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: activity_date
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: activity_date
+            KeyType: RANGE
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    # Note: ConversationsTable renamed to -v2 to resolve CloudFormation replacement issue
+    # This allows deployment to proceed without requiring manual table deletion
+    ConversationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-conversations-${self:provider.stage}-v2
+        AttributeDefinitions:
+          - AttributeName: conversation_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: last_message_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversation_id
+            KeyType: HASH
+          - AttributeName: user_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: user-conversations-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: last_message_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    MessagesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-messages-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: conversation_id
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversation_id
+            KeyType: HASH
+          - AttributeName: timestamp
+            KeyType: RANGE
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    # MirrorGPT Tables
+    ArchetypeProfilesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-archetype-profiles-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    MirrorMomentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-mirror-moments-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: moment_id
+            AttributeType: S
+          - AttributeName: triggered_at
+            AttributeType: S
+          - AttributeName: moment_type
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: moment_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: type-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: moment_type
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: time-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: triggered_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    PatternLoopsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-pattern-loops-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: loop_id
+            AttributeType: S
+          - AttributeName: last_seen
+            AttributeType: S
+          - AttributeName: trend
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: loop_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: trend-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: trend
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: activity-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: last_seen
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    QuizResultsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-quiz-results-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: quiz_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: completed_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: quiz_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-quiz-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: completed_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
 plugins:
   - serverless-python-requirements
 
 custom:
   pythonRequirements:
-    slim: true
+    slim: false
     layer: false
+    dockerizePip: true
+    dockerImage: public.ecr.aws/sam/build-python3.12:latest
+    pipCmdExtraArgs:
+      - --no-cache-dir
 
 package:
   patterns:

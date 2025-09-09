@@ -121,7 +121,7 @@ The application outputs structured JSON logs in production:
 
 ### What to Monitor
 - Failed authentication attempts
-- Rate limiting triggers  
+- Rate limiting triggers
 - Unusual API usage patterns
 - Error spikes that could indicate attacks
 
