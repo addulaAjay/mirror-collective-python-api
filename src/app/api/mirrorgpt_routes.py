@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mirrorgpt", tags=["MirrorGPT"])
 
 
-async def get_mirror_orchestrator():
+def get_mirror_orchestrator():
     """Dependency injection for MirrorOrchestrator"""
     dynamodb_service = DynamoDBService()
     openai_service = OpenAIService()
@@ -71,7 +71,7 @@ async def mirror_chat(
         conversation_id = request.conversation_id
 
         result = await orchestrator.process_mirror_chat(
-            user_id=current_user["sub"],
+            user_id=current_user["id"],
             message=request.message,
             session_id=session_id,
             conversation_id=conversation_id,
@@ -168,9 +168,9 @@ async def get_archetype_profile(
     """
 
     try:
-        profile = await orchestrator._get_user_profile(current_user["sub"])
+        profile = await orchestrator._get_user_profile(current_user["id"])
         signals = await orchestrator._get_recent_signals_from_messages(
-            current_user["sub"], limit=10
+            current_user["id"], limit=10
         )
 
         evolution_summary = {
@@ -189,7 +189,7 @@ async def get_archetype_profile(
         }
 
         profile_data = ArchetypeProfileData(
-            user_id=current_user["sub"],
+            user_id=current_user["id"],
             current_profile=profile,
             recent_signals=signals,
             evolution_summary=evolution_summary,
@@ -225,12 +225,12 @@ async def get_echo_signals(
         if archetype_filter:
             # Get signals from conversation messages with archetype filter
             signals = await orchestrator._get_recent_signals_from_messages(
-                user_id=current_user["sub"],
+                user_id=current_user["id"],
                 limit=limit,
             )
         else:
             signals = await orchestrator._get_recent_signals_from_messages(
-                current_user["sub"], limit=limit
+                current_user["id"], limit=limit
             )
 
         # Format signals for response
@@ -275,7 +275,7 @@ async def get_mirror_moments(
 
     try:
         moments = await orchestrator.dynamodb_service.get_user_mirror_moments(
-            user_id=current_user["sub"],
+            user_id=current_user["id"],
             limit=limit,
             acknowledged_only=acknowledged_only,
         )
@@ -319,7 +319,7 @@ async def acknowledge_mirror_moment(
 
     try:
         success = await orchestrator.dynamodb_service.acknowledge_mirror_moment(
-            user_id=current_user["sub"], moment_id=moment_id
+            user_id=current_user["id"], moment_id=moment_id
         )
 
         if not success:
@@ -356,7 +356,7 @@ async def get_pattern_loops(
 
     try:
         loops = await orchestrator.dynamodb_service.get_user_pattern_loops(
-            user_id=current_user["sub"], active_only=active_only
+            user_id=current_user["id"], active_only=active_only
         )
 
         # Format loops for response
@@ -395,7 +395,7 @@ async def get_pattern_insights(
     """
 
     try:
-        insights_data = await orchestrator.get_user_insights(current_user["sub"])
+        insights_data = await orchestrator.get_user_insights(current_user["id"])
 
         if "error" in insights_data:
             raise HTTPException(status_code=500, detail=insights_data["error"])

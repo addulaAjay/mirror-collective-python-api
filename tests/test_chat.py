@@ -14,14 +14,20 @@ def test_mirrorgpt_chat_success(
     client: TestClient, mock_openai_client, sample_chat_data
 ):
     """Test successful MirrorGPT chat"""
-    # Convert old format to MirrorGPT format
+    # Use a proper MirrorGPT format with required fields
     mirrorgpt_data = {
-        "message": sample_chat_data["message"],
+        "message": "I'm seeking truth and meaning in my life. This path feels illuminating.",
         "include_archetype_analysis": True,
         "use_enhanced_response": True,
     }
 
     response = client.post("/api/mirrorgpt/chat", json=mirrorgpt_data)
+
+    # Check what the actual error is if it fails
+    if response.status_code != 200:
+        print(f"Response status: {response.status_code}")
+        print(f"Response body: {response.text}")
+
     assert response.status_code == 200
 
     data = response.json()

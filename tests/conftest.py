@@ -21,6 +21,7 @@ os.environ.update(
         "NODE_ENV": "test",
         "DEBUG": "true",
         "DYNAMODB_TABLE_NAME": "test-user-profiles",
+        "DISABLE_AUTH": "true",  # Disable auth for tests
     }
 )
 
@@ -75,6 +76,16 @@ user_service_patcher = patch("src.app.services.user_service.UserService")
 openai_service_patcher = patch("src.app.services.openai_service.OpenAI")
 # Also patch OpenAI import for health checks
 openai_client_patcher = patch("src.app.core.health_checks.OpenAI")
+# Mock ConversationService for MirrorGPT
+conversation_service_patcher = patch(
+    "src.app.services.conversation_service.ConversationService"
+)
+# Mock authentication
+auth_patcher = patch("src.app.core.security.get_current_user")
+# Mock MirrorOrchestrator dependency
+mirror_orchestrator_patcher = patch(
+    "src.app.api.mirrorgpt_routes.get_mirror_orchestrator"
+)
 
 # Start the patchers
 boto3_patcher.start()
@@ -82,6 +93,55 @@ mock_dynamodb_service = dynamodb_service_patcher.start()
 mock_user_service_class = user_service_patcher.start()
 mock_openai_class = openai_service_patcher.start()
 mock_openai_health_class = openai_client_patcher.start()
+mock_conversation_service_class = conversation_service_patcher.start()
+mock_auth = auth_patcher.start()
+mock_mirror_orchestrator = mirror_orchestrator_patcher.start()
+
+# Mock authentication to return test user
+mock_auth.return_value = {
+    "sub": "test-user-123",
+    "id": "test-user-123",  # Added id field for MirrorGPT routes
+    "email": "test@example.com",
+    "given_name": "Test",
+    "family_name": "User",
+}
+
+# Mock MirrorOrchestrator
+mock_orchestrator_instance = Mock()
+mock_mirror_orchestrator.return_value = mock_orchestrator_instance
+
+# Configure MirrorOrchestrator mock to return successful chat response
+mock_orchestrator_instance.process_mirror_chat = AsyncMock(
+    return_value={
+        "success": True,
+        "response": "Test MirrorGPT response",
+        "archetype_analysis": {
+            "primary_archetype": "Seeker",
+            "secondary_archetype": None,
+            "confidence_score": 0.85,
+            "symbolic_elements": ["light", "path"],
+            "emotional_markers": {"valence": 0.6, "arousal": 0.4},
+            "narrative_position": {"stage": "beginning"},
+            "active_loops": [],
+        },
+        "change_detection": {
+            "change_detected": False,
+            "mirror_moment": False,
+            "changes": [],
+        },
+        "suggested_practice": "Contemplative journaling",
+        "confidence_breakdown": {
+            "overall": 0.85,
+            "archetype": 0.85,
+            "symbol": 0.7,
+            "emotion": 0.6,
+        },
+        "session_metadata": {
+            "session_id": "test-session",
+            "timestamp": "2025-01-01T00:00:00Z",
+        },
+    }
+)
 
 # Configure the mocked services
 mock_user_service_instance = Mock()
@@ -119,6 +179,22 @@ mock_dynamodb_service_instance.update_user_profile = AsyncMock(
 )
 mock_dynamodb_service_instance.record_user_activity = AsyncMock(return_value=None)
 
+# Mock MirrorGPT specific methods
+mock_dynamodb_service_instance.get_user_archetype_profile = AsyncMock(return_value=None)
+mock_dynamodb_service_instance.save_user_archetype_profile = AsyncMock(return_value={})
+mock_dynamodb_service_instance.save_echo_signal = AsyncMock(return_value={})
+mock_dynamodb_service_instance.get_user_mirror_moments = AsyncMock(return_value=[])
+mock_dynamodb_service_instance.get_user_pattern_loops = AsyncMock(return_value=[])
+mock_dynamodb_service_instance.save_mirror_moment = AsyncMock(return_value={})
+mock_dynamodb_service_instance.acknowledge_mirror_moment = AsyncMock(return_value=True)
+
+# Mock ConversationService for MirrorGPT
+mock_conversation_service_instance = Mock()
+mock_conversation_service_class.return_value = mock_conversation_service_instance
+mock_conversation_service_instance.get_user_mirrorgpt_signals = AsyncMock(
+    return_value=[]
+)
+
 # Mock OpenAI service
 mock_openai_instance = Mock()
 mock_openai_class.return_value = mock_openai_instance
@@ -126,6 +202,9 @@ mock_response = Mock()
 mock_response.choices = [Mock()]
 mock_response.choices[0].message.content = "Test AI response from mocked OpenAI"
 mock_openai_instance.chat.completions.create.return_value = mock_response
+
+# Add async methods for MirrorGPT
+mock_openai_instance.send_async = AsyncMock(return_value="Test enhanced AI response")
 
 # Mock OpenAI for health checks
 mock_openai_health_instance = Mock()
@@ -150,6 +229,9 @@ GLOBAL_PATCHES = [
     user_service_patcher,
     openai_service_patcher,
     openai_client_patcher,
+    conversation_service_patcher,
+    auth_patcher,
+    mirror_orchestrator_patcher,
 ]
 
 
