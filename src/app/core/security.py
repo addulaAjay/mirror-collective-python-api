@@ -91,8 +91,8 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
     # If we still don't have email and this is an access token, warn about it
     token_use = payload.get("token_use")
     if (
-        not email and token_use == "access"
-    ):  # nosec B105 - 'access' is a token type, not a password
+        not email and token_use == "access"  # nosec B105
+    ):  # 'access' is a token type, not a password
         logger.warning(
             "⚠️  No email found in access token. Consider using ID token for user profile endpoints."
         )
