@@ -68,12 +68,26 @@ async def mirror_chat(
         session_id = request.session_id or str(uuid.uuid4())
         conversation_id = request.conversation_id
 
+        # Extract user context for personalized response
+        user_context = {
+            "id": current_user["id"],
+            "name": (
+                current_user.get("name")
+                or current_user.get("given_name")
+                or current_user.get("email", "").split("@")[0]
+                if current_user.get("email")
+                else None
+            ),
+            "email": current_user.get("email"),
+        }
+
         result = await orchestrator.process_mirror_chat(
             user_id=current_user["id"],
             message=request.message,
             session_id=session_id,
             conversation_id=conversation_id,
             use_enhanced_response=request.use_enhanced_response,
+            user_context=user_context,
         )
 
         if not result.get("success"):
