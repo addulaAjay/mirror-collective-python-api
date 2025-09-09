@@ -45,6 +45,9 @@ class DynamoDBService:
         self.pattern_loops_table = os.getenv(
             "DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"
         )
+        self.quiz_results_table = os.getenv(
+            "DYNAMODB_QUIZ_RESULTS_TABLE", "archetype_quiz_results"
+        )
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -1285,3 +1288,42 @@ class DynamoDBService:
         except Exception as e:
             logger.error(f"Unexpected error updating item in {table_name}: {e}")
             return False
+
+    async def save_quiz_results(self, quiz_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Save archetype quiz results
+
+        Args:
+            quiz_data: Quiz results data including user_id, answers, and archetype
+
+        Returns:
+            Dict with success status and quiz_id
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.quiz_results_table)
+
+                # Add quiz_id as partition key if not present
+                if "quiz_id" not in quiz_data:
+                    quiz_data["quiz_id"] = (
+                        f"quiz_{quiz_data['user_id']}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+                    )
+
+                await table.put_item(Item=quiz_data)
+
+                logger.info(f"Quiz results saved for user {quiz_data['user_id']}")
+
+                return {
+                    "success": True,
+                    "quiz_id": quiz_data["quiz_id"],
+                    "user_id": quiz_data["user_id"],
+                }
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error saving quiz results: {e}")
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error saving quiz results: {e}")
+            return {"success": False, "error": str(e)}

@@ -24,6 +24,7 @@ provider:
     DYNAMODB_ARCHETYPE_PROFILES_TABLE: ${self:service}-archetype-profiles-${self:provider.stage}
     DYNAMODB_MIRROR_MOMENTS_TABLE: ${self:service}-mirror-moments-${self:provider.stage}
     DYNAMODB_PATTERN_LOOPS_TABLE: ${self:service}-pattern-loops-${self:provider.stage}
+    DYNAMODB_QUIZ_RESULTS_TABLE: ${self:service}-quiz-results-${self:provider.stage}
   iam:
     role:
       statements:
@@ -64,6 +65,11 @@ provider:
             - Fn::Join:
               - '/'
               - - Fn::GetAtt: [ PatternLoopsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ QuizResultsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ QuizResultsTable, Arn ]
                 - 'index/*'
         - Effect: Allow
           Action:
@@ -291,6 +297,37 @@ resources:
               - AttributeName: user_id
                 KeyType: HASH
               - AttributeName: last_seen
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    QuizResultsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-quiz-results-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: quiz_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: completed_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: quiz_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-quiz-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: completed_at
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL

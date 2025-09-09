@@ -768,3 +768,116 @@ class MirrorOrchestrator:
                 opportunities.append("Pattern loop resolution")
 
         return opportunities
+
+    async def create_initial_archetype_profile(
+        self,
+        user_id: str,
+        initial_archetype: str,
+        quiz_answers: List[Dict[str, Any]],
+        quiz_completed_at: str,
+        quiz_version: str = "1.0",
+    ) -> Dict[str, Any]:
+        """
+        Create initial archetype profile from quiz results
+
+        Args:
+            user_id: The user's unique identifier
+            initial_archetype: The archetype determined by the quiz
+            quiz_answers: List of quiz answers for reference
+            quiz_completed_at: When the quiz was completed
+            quiz_version: Version of the quiz taken
+
+        Returns:
+            Dict containing the success status and profile data
+        """
+        try:
+            # Check if user already has a profile
+            existing_profile = await self._get_user_profile(user_id)
+            if existing_profile:
+                logger.info(
+                    f"User {user_id} already has an archetype profile, updating initial archetype"
+                )
+
+            # Get archetype data for the initial archetype
+            archetype_data = self.response_generator.archetypes.get(
+                initial_archetype, {}
+            )
+            if not archetype_data:
+                raise ValueError(f"Unknown archetype: {initial_archetype}")
+
+            # Create the initial profile with high confidence since it's from quiz
+            initial_profile = {
+                "user_id": user_id,
+                "current_archetype_stack": {
+                    "primary": initial_archetype,
+                    "secondary": None,  # Will be determined through conversations
+                    "confidence_score": 0.85,  # High confidence from quiz
+                    "stability_score": 0.8,  # Assumed stable until proven otherwise
+                },
+                "symbolic_signature": {
+                    "threshold": 0.0,
+                    "echo": 0.0,
+                    "light": 0.0,
+                    "wound": 0.0,
+                    "fire": 0.0,
+                    "weave": 0.0,
+                },
+                "emotional_resonance": {
+                    "valence": 0.0,  # Neutral starting point
+                    "arousal": 0.0,  # Will be determined through conversations
+                    "certainty": 0.7,  # Moderate certainty until conversation data
+                },
+                "quiz_data": {
+                    "initial_archetype": initial_archetype,
+                    "quiz_version": quiz_version,
+                    "completed_at": quiz_completed_at,
+                    "answers": quiz_answers[:5],  # Store first 5 answers for reference
+                },
+                "archetype_evolution": [
+                    {
+                        "timestamp": quiz_completed_at,
+                        "primary_archetype": initial_archetype,
+                        "confidence": 0.85,
+                        "trigger_event": "initial_quiz",
+                    }
+                ],
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            # Save the profile to DynamoDB
+            await self.dynamodb_service.save_user_archetype_profile(initial_profile)
+
+            # Store quiz answers separately for analysis
+            quiz_record = {
+                "user_id": user_id,
+                "quiz_id": f"quiz_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
+                "quiz_version": quiz_version,
+                "completed_at": quiz_completed_at,
+                "initial_archetype": initial_archetype,
+                "answers": quiz_answers,
+                "created_at": datetime.utcnow().isoformat(),
+            }
+
+            await self.dynamodb_service.save_quiz_results(quiz_record)
+
+            logger.info(
+                f"Created initial archetype profile for user {user_id} with archetype {initial_archetype}"
+            )
+
+            return {
+                "success": True,
+                "user_id": user_id,
+                "initial_archetype": initial_archetype,
+                "profile_created": True,
+                "quiz_stored": True,
+                "message": f"Initial {initial_archetype} archetype profile created successfully",
+            }
+
+        except Exception as e:
+            logger.error(f"Error creating initial archetype profile: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "message": "Failed to create initial archetype profile",
+            }

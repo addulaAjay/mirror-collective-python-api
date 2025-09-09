@@ -253,3 +253,45 @@ class AcknowledgeMirrorMomentRequest(BaseModel):
 class MirrorMomentAcknowledgeResponse(BaseModel):
     success: bool = True
     message: str
+
+
+# ========================================
+# Archetype Quiz Models
+# ========================================
+
+
+class QuizAnswer(BaseModel):
+    questionId: int
+    question: str
+    answer: str
+    answeredAt: str
+    type: Literal["text", "image", "multiple_choice"] = "text"
+
+
+class ArchetypeResult(BaseModel):
+    id: str
+    name: str
+    title: str
+
+
+class ArchetypeQuizRequest(BaseModel):
+    userId: str
+    answers: List[QuizAnswer]
+    completedAt: str
+    archetypeResult: ArchetypeResult
+    quizVersion: str = "1.0"
+
+
+class ArchetypeQuizData(BaseModel):
+    user_id: str
+    initial_archetype: str
+    quiz_completed_at: str
+    quiz_version: str
+    profile_created: bool = True
+    answers_stored: bool = True
+
+
+class ArchetypeQuizResponse(BaseModel):
+    success: bool = True
+    data: ArchetypeQuizData
+    message: str = "Initial archetype profile created successfully"

@@ -20,6 +20,9 @@ from .models import (
     ArchetypeAnalysisResponse,
     ArchetypeProfileData,
     ArchetypeProfileResponse,
+    ArchetypeQuizData,
+    ArchetypeQuizRequest,
+    ArchetypeQuizResponse,
     EchoSignalData,
     EchoSignalResponse,
     MirrorGPTChatData,
@@ -164,6 +167,138 @@ async def analyze_archetype(
         logger.error(f"Archetype analysis failed: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Archetype analysis failed: {str(e)}"
+        )
+
+
+@router.post("/quiz/submit", response_model=ArchetypeQuizResponse)
+async def submit_archetype_quiz(
+    request: ArchetypeQuizRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
+):
+    """
+    Submit archetype quiz results and create initial user profile
+
+    This endpoint processes the results from the initial archetype quiz and:
+    - Creates the user's base archetype profile
+    - Stores quiz answers for reference
+    - Sets up the foundation for future conversation analysis
+    - Establishes the initial archetype which will evolve through chat interactions
+    """
+
+    try:
+        # Validate that the user from the request matches the authenticated user
+        if request.userId != current_user["id"]:
+            raise HTTPException(
+                status_code=403, detail="Quiz user ID does not match authenticated user"
+            )
+
+        # Convert quiz answers to a format suitable for storage
+        quiz_answers = []
+        for answer in request.answers:
+            quiz_answers.append(
+                {
+                    "question_id": answer.questionId,
+                    "question": answer.question,
+                    "answer": answer.answer,
+                    "answered_at": answer.answeredAt,
+                    "type": answer.type,
+                }
+            )
+
+        # Create initial archetype profile
+        result = await orchestrator.create_initial_archetype_profile(
+            user_id=current_user["id"],
+            initial_archetype=request.archetypeResult.id,
+            quiz_answers=quiz_answers,
+            quiz_completed_at=request.completedAt,
+            quiz_version=request.quizVersion,
+        )
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Failed to create archetype profile"),
+            )
+
+        # Format response data
+        quiz_data = ArchetypeQuizData(
+            user_id=current_user["id"],
+            initial_archetype=request.archetypeResult.id,
+            quiz_completed_at=request.completedAt,
+            quiz_version=request.quizVersion,
+            profile_created=result.get("profile_created", True),
+            answers_stored=result.get("quiz_stored", True),
+        )
+
+        return ArchetypeQuizResponse(
+            success=True,
+            data=quiz_data,
+            message=f"Initial {request.archetypeResult.name} archetype profile created successfully. Your journey with MirrorGPT begins now.",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Quiz submission failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Quiz submission failed: {str(e)}")
+
+
+@router.get("/quiz/history")
+async def get_quiz_history(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
+):
+    """
+    Get user's quiz history and initial archetype setup
+
+    Returns information about when the user completed their initial archetype quiz
+    and what their starting archetype was before any conversation-based evolution.
+    """
+
+    try:
+        # Get user's archetype profile which contains quiz data
+        profile = await orchestrator._get_user_profile(current_user["id"])
+
+        if not profile:
+            return {
+                "success": True,
+                "data": {
+                    "has_completed_quiz": False,
+                    "message": "No archetype quiz found. Please complete the initial quiz.",
+                },
+            }
+
+        quiz_data = profile.get("quiz_data", {})
+
+        if not quiz_data:
+            return {
+                "success": True,
+                "data": {
+                    "has_completed_quiz": False,
+                    "message": "No quiz data found in profile.",
+                },
+            }
+
+        return {
+            "success": True,
+            "data": {
+                "has_completed_quiz": True,
+                "initial_archetype": quiz_data.get("initial_archetype"),
+                "quiz_version": quiz_data.get("quiz_version"),
+                "completed_at": quiz_data.get("completed_at"),
+                "current_archetype": profile.get("current_archetype_stack", {}).get(
+                    "primary"
+                ),
+                "evolution_count": len(profile.get("archetype_evolution", [])),
+                "last_updated": profile.get("updated_at"),
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get quiz history: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get quiz history: {str(e)}"
         )
 
 
