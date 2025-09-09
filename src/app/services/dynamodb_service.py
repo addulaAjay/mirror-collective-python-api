@@ -421,7 +421,7 @@ class DynamoDBService:
                 table = await dynamodb.Table(self.conversations_table)
 
                 response = await table.get_item(
-                    Key={"conversation_id": conversation_id}
+                    Key={"conversation_id": conversation_id, "user_id": user_id}
                 )
 
                 if "Item" in response:

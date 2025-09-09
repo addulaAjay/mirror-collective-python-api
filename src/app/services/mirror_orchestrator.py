@@ -707,7 +707,7 @@ class MirrorOrchestrator:
             return {"trend": "neutral", "valence_change": 0}
 
         recent_valences = [
-            s.get("signal_1_emotional_resonance", {}).get("valence", 0)
+            float(s.get("signal_1_emotional_resonance", {}).get("valence", 0))
             for s in signals[:5]
         ]
 
