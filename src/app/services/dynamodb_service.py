@@ -471,7 +471,10 @@ class DynamoDBService:
                 }
 
                 await table.update_item(
-                    Key={"conversation_id": conversation.conversation_id},
+                    Key={
+                        "conversation_id": conversation.conversation_id,
+                        "user_id": conversation.user_id,
+                    },
                     UpdateExpression=update_expression,
                     ExpressionAttributeNames=expression_attribute_names,
                     ExpressionAttributeValues=expression_attribute_values,
@@ -553,20 +556,15 @@ class DynamoDBService:
 
                 # First verify the conversation belongs to the user
                 response = await table.get_item(
-                    Key={"conversation_id": conversation_id}
+                    Key={"conversation_id": conversation_id, "user_id": user_id}
                 )
                 if "Item" not in response:
                     return False
 
                 conversation_item = response["Item"]
-                if conversation_item.get("user_id") != user_id:
-                    logger.warning(
-                        f"User {user_id} attempted to archive conversation {conversation_id} owned by {conversation_item.get('user_id')}"
-                    )
-                    return False
 
                 await table.update_item(
-                    Key={"conversation_id": conversation_id},
+                    Key={"conversation_id": conversation_id, "user_id": user_id},
                     UpdateExpression="SET is_archived = :archived, updated_at = :updated_at",
                     ExpressionAttributeValues={
                         ":archived": True,
@@ -629,20 +627,15 @@ class DynamoDBService:
 
                 # First verify the conversation belongs to the user
                 conversation_response = await conversations_table.get_item(
-                    Key={"conversation_id": conversation_id}
+                    Key={"conversation_id": conversation_id, "user_id": user_id}
                 )
                 if "Item" not in conversation_response:
                     return False
 
                 conversation_item = conversation_response["Item"]
-                if conversation_item.get("user_id") != user_id:
-                    logger.warning(
-                        f"User {user_id} attempted to delete conversation {conversation_id} owned by {conversation_item.get('user_id')}"
-                    )
-                    return False
 
                 await conversations_table.delete_item(
-                    Key={"conversation_id": conversation_id}
+                    Key={"conversation_id": conversation_id, "user_id": user_id}
                 )
 
                 logger.info(
