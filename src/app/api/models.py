@@ -275,7 +275,6 @@ class ArchetypeResult(BaseModel):
 
 
 class ArchetypeQuizRequest(BaseModel):
-    userId: str
     answers: List[QuizAnswer]
     completedAt: str
     archetypeResult: ArchetypeResult

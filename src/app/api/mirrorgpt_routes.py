@@ -311,18 +311,17 @@ async def submit_archetype_quiz(
     Submit archetype quiz results and create initial user profile
 
     This endpoint processes the results from the initial archetype quiz and:
-    - Creates the user's base archetype profile
+    - Creates the user's base archetype profile using the authenticated user's ID
     - Stores quiz answers for reference
     - Sets up the foundation for future conversation analysis
     - Establishes the initial archetype which will evolve through chat interactions
+
+    Note: User ID is automatically extracted from the authentication token for security.
     """
 
     try:
-        # Validate that the user from the request matches the authenticated user
-        if request.userId != current_user["id"]:
-            raise HTTPException(
-                status_code=403, detail="Quiz user ID does not match authenticated user"
-            )
+        # Get user ID from authenticated token (more secure than request body)
+        user_id = current_user["id"]
 
         # Convert quiz answers to a format suitable for storage
         quiz_answers = []
@@ -339,7 +338,7 @@ async def submit_archetype_quiz(
 
         # Create initial archetype profile
         result = await orchestrator.create_initial_archetype_profile(
-            user_id=current_user["id"],
+            user_id=user_id,
             initial_archetype=request.archetypeResult.id,
             quiz_answers=quiz_answers,
             quiz_completed_at=request.completedAt,
@@ -354,7 +353,7 @@ async def submit_archetype_quiz(
 
         # Format response data
         quiz_data = ArchetypeQuizData(
-            user_id=current_user["id"],
+            user_id=user_id,
             initial_archetype=request.archetypeResult.id,
             quiz_completed_at=request.completedAt,
             quiz_version=request.quizVersion,
