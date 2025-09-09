@@ -361,6 +361,9 @@ class MirrorOrchestrator:
                 "suggested_practice": suggested_practice,
             }
 
+            # Convert float values to Decimal for DynamoDB compatibility
+            mirrorgpt_analysis = self._convert_floats_to_decimal(mirrorgpt_analysis)
+
             # 7. Update user profile
             await self._update_user_profile(
                 user_id, analysis_result, confidence_scores, change_analysis
@@ -547,7 +550,11 @@ class MirrorOrchestrator:
                 # Keep only last 20 evolution entries
                 profile_update["archetype_evolution"] = evolution[-20:]
 
-            await self.dynamodb_service.save_user_archetype_profile(profile_update)
+            # Convert float values to Decimal for DynamoDB compatibility
+            profile_update_converted = self._convert_floats_to_decimal(profile_update)
+            await self.dynamodb_service.save_user_archetype_profile(
+                profile_update_converted
+            )
 
         except Exception as e:
             logger.error(f"Error updating user profile: {e}")
