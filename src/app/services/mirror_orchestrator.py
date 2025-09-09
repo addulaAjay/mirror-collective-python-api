@@ -307,8 +307,7 @@ class MirrorOrchestrator:
                     change_analysis=change_analysis,
                 )
 
-            # 6. Store MirrorGPT analysis in conversation message (NEW APPROACH)
-            # This replaces the old echo_signals storage
+            # 6. Store MirrorGPT analysis in conversation message
             suggested_practice = response_data.get("suggested_practice")
 
             # Return the analysis data to be stored with the user message

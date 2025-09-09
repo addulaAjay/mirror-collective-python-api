@@ -18,7 +18,7 @@ provider:
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     DYNAMODB_USERS_TABLE: ${self:service}-users-${self:provider.stage}
     DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
-    DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}
+    DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}-v2
     DYNAMODB_MESSAGES_TABLE: ${self:service}-messages-${self:provider.stage}
     # MirrorGPT Tables
     DYNAMODB_ARCHETYPE_PROFILES_TABLE: ${self:service}-archetype-profiles-${self:provider.stage}
@@ -140,10 +140,12 @@ resources:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
 
+    # Note: ConversationsTable renamed to -v2 to resolve CloudFormation replacement issue
+    # This allows deployment to proceed without requiring manual table deletion
     ConversationsTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: ${self:service}-conversations-${self:provider.stage}
+        TableName: ${self:service}-conversations-${self:provider.stage}-v2
         AttributeDefinitions:
           - AttributeName: conversation_id
             AttributeType: S
