@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request
 logger = logging.getLogger(__name__)
 
 from ..controllers.auth_controller import AuthController
+from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
 from .models import (
     AuthResponse,
@@ -86,7 +87,7 @@ async def resend_verification_code(
 
 @router.get("/auth/me")
 async def get_current_user_profile(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(get_user_with_profile),
     auth_controller=Depends(get_auth_controller),
 ):
     """Get current authenticated user profile"""
