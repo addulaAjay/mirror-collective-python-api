@@ -5,6 +5,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from dotenv import load_dotenv
+from src.app.services.scheduler import start_scheduler
+
 
 load_dotenv()
 
@@ -163,6 +165,9 @@ async def api_health():
         timestamp=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     )
 
+@app.on_event("startup")
+def startup_event():
+    start_scheduler() 
 
 # Mount main API routes under /api to mirror Node structure
 app.include_router(api_router, prefix='/api')

@@ -88,3 +88,11 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     timestamp: str
+
+class NotificationRequest(BaseModel):
+    title: str
+    body: str
+
+class DeviceRegistrationRequest(BaseModel):
+    user_id: str
+    device_token: str 
