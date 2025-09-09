@@ -6,6 +6,7 @@ Coordinates all MirrorGPT functionality including archetype analysis, response g
 import logging
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from ..utils.archetype_data import ArchetypeDefinitions
@@ -550,7 +551,8 @@ class MirrorOrchestrator:
                 "acknowledged": False,
             }
 
-            await self.dynamodb_service.save_mirror_moment(moment_item)
+            moment_item_converted = self._convert_floats_to_decimal(moment_item)
+            await self.dynamodb_service.save_mirror_moment(moment_item_converted)
 
         except Exception as e:
             logger.error(f"Error creating mirror moment: {e}")
@@ -845,8 +847,11 @@ class MirrorOrchestrator:
                 "updated_at": datetime.utcnow().isoformat(),
             }
 
-            # Save the profile to DynamoDB
-            await self.dynamodb_service.save_user_archetype_profile(initial_profile)
+            # Save the profile to DynamoDB (convert floats to Decimal first)
+            initial_profile_converted = self._convert_floats_to_decimal(initial_profile)
+            await self.dynamodb_service.save_user_archetype_profile(
+                initial_profile_converted
+            )
 
             # Store quiz answers separately for analysis
             quiz_record = {
@@ -859,7 +864,8 @@ class MirrorOrchestrator:
                 "created_at": datetime.utcnow().isoformat(),
             }
 
-            await self.dynamodb_service.save_quiz_results(quiz_record)
+            quiz_record_converted = self._convert_floats_to_decimal(quiz_record)
+            await self.dynamodb_service.save_quiz_results(quiz_record_converted)
 
             logger.info(
                 f"Created initial archetype profile for user {user_id} with archetype {initial_archetype}"
@@ -881,3 +887,25 @@ class MirrorOrchestrator:
                 "error": str(e),
                 "message": "Failed to create initial archetype profile",
             }
+
+    def _convert_floats_to_decimal(self, data: Any) -> Any:
+        """
+        Recursively convert float values to Decimal for DynamoDB compatibility
+
+        Args:
+            data: The data structure to convert
+
+        Returns:
+            Data structure with floats converted to Decimal
+        """
+        if isinstance(data, float):
+            return Decimal(str(data))
+        elif isinstance(data, dict):
+            return {
+                key: self._convert_floats_to_decimal(value)
+                for key, value in data.items()
+            }
+        elif isinstance(data, list):
+            return [self._convert_floats_to_decimal(item) for item in data]
+        else:
+            return data

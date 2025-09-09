@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
-from ..models.user_profile import UserProfile
 from ..services.dynamodb_service import DynamoDBService
 from ..services.mirror_orchestrator import MirrorOrchestrator
 from ..services.openai_service import OpenAIService
