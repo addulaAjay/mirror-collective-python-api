@@ -6,11 +6,12 @@ import logging
 import time
 import traceback
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from .exceptions import BaseAPIException
 
@@ -65,10 +66,13 @@ def sanitize_error(error: Exception, is_development: bool = False) -> Dict[str, 
     }
 
 
-async def base_api_exception_handler(
-    request: Request, exc: BaseAPIException
-) -> JSONResponse:
+async def base_api_exception_handler(request: Request, exc: Exception) -> Response:
     """Handler for BaseAPIException and its subclasses"""
+    # Type check - ensure we're dealing with a BaseAPIException
+    if not isinstance(exc, BaseAPIException):
+        # Fallback to general handler
+        return await general_exception_handler(request, exc)
+
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     is_development = request.app.debug or False
 
@@ -103,8 +107,13 @@ async def base_api_exception_handler(
     return JSONResponse(status_code=exc.status_code, content=response_data)
 
 
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+async def http_exception_handler(request: Request, exc: Exception) -> Response:
     """Handler for HTTPException"""
+    # Type check - ensure we're dealing with an HTTPException
+    if not isinstance(exc, HTTPException):
+        # Fallback to general handler
+        return await general_exception_handler(request, exc)
+
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
 
     logger.warning(
@@ -128,10 +137,13 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
-async def validation_exception_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
+async def validation_exception_handler(request: Request, exc: Exception) -> Response:
     """Handler for Pydantic validation errors"""
+    # Type check - ensure we're dealing with a RequestValidationError
+    if not isinstance(exc, RequestValidationError):
+        # Fallback to general handler
+        return await general_exception_handler(request, exc)
+
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
 
     # Convert Pydantic errors to our format
@@ -165,7 +177,7 @@ async def validation_exception_handler(
     )
 
 
-async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+async def general_exception_handler(request: Request, exc: Exception) -> Response:
     """Handler for unexpected exceptions"""
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     is_development = request.app.debug or False

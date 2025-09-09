@@ -21,6 +21,7 @@ from .models import (
     ArchetypeAnalysisResponse,
     ArchetypeProfileData,
     ArchetypeProfileResponse,
+    EchoSignalData,
     EchoSignalResponse,
     GeneralApiResponse,
     MirrorGPTChatData,
@@ -235,20 +236,17 @@ async def get_echo_signals(
         # Format signals for response
         formatted_signals = []
         for signal in signals:
-            formatted_signals.append(
-                {
-                    "signal_id": signal.get("message_id", ""),
-                    "timestamp": signal.get("timestamp", ""),
-                    "emotional_resonance": signal.get(
-                        "signal_1_emotional_resonance", {}
-                    ),
-                    "symbolic_language": signal.get("signal_2_symbolic_language", {}),
-                    "archetype_blend": signal.get("signal_3_archetype_blend", {}),
-                    "narrative_position": signal.get("signal_4_narrative_position", {}),
-                    "motif_loops": signal.get("signal_5_motif_loops", {}),
-                    "confidence_scores": signal.get("confidence_scores", {}),
-                }
+            echo_signal = EchoSignalData(
+                signal_id=signal.get("message_id", ""),
+                timestamp=signal.get("timestamp", ""),
+                emotional_resonance=signal.get("signal_1_emotional_resonance", {}),
+                symbolic_language=signal.get("signal_2_symbolic_language", {}),
+                archetype_blend=signal.get("signal_3_archetype_blend", {}),
+                narrative_position=signal.get("signal_4_narrative_position", {}),
+                motif_loops=signal.get("signal_5_motif_loops", {}),
+                confidence_scores=signal.get("confidence_scores", {}),
             )
+            formatted_signals.append(echo_signal)
 
         return EchoSignalResponse(success=True, data=formatted_signals)
 
