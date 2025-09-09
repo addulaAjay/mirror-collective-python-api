@@ -4,6 +4,7 @@ Conversation models for persistent chat history management
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
@@ -87,9 +88,23 @@ class ConversationMessage:
             or self.signal_3_archetype_blend is not None
         )
 
+    def _convert_decimals_to_float(self, data: Any) -> Any:
+        """Convert Decimal values to float for compatibility with calculations"""
+        if isinstance(data, Decimal):
+            return float(data)
+        elif isinstance(data, dict):
+            return {
+                key: self._convert_decimals_to_float(value)
+                for key, value in data.items()
+            }
+        elif isinstance(data, list):
+            return [self._convert_decimals_to_float(item) for item in data]
+        else:
+            return data
+
     def get_analysis_data(self) -> Dict[str, Any]:
-        """Extract just the MirrorGPT analysis data as a dictionary"""
-        return {
+        """Extract just the MirrorGPT analysis data as a dictionary with Decimal values converted to float"""
+        raw_data = {
             "signal_1_emotional_resonance": self.signal_1_emotional_resonance,
             "signal_2_symbolic_language": self.signal_2_symbolic_language,
             "signal_3_archetype_blend": self.signal_3_archetype_blend,
@@ -102,6 +117,9 @@ class ConversationMessage:
             "archetype_context": self.archetype_context,
             "analysis_version": self.analysis_version,
         }
+
+        # Convert any Decimal values to float
+        return self._convert_decimals_to_float(raw_data)
 
     def add_mirrorgpt_analysis(
         self,
