@@ -326,15 +326,43 @@ async def submit_archetype_quiz(
         # Convert quiz answers to a format suitable for storage
         quiz_answers = []
         for answer in request.answers:
-            quiz_answers.append(
-                {
-                    "question_id": answer.questionId,
-                    "question": answer.question,
-                    "answer": answer.answer,
-                    "answered_at": answer.answeredAt,
-                    "type": answer.type,
+            # Handle both text and image answers
+            answer_data = {
+                "question_id": answer.questionId,
+                "question": answer.question,
+                "answered_at": answer.answeredAt,
+                "type": answer.type,
+            }
+
+            # Store answer based on type
+            if answer.type == "image" and isinstance(answer.answer, dict):
+                # Image answer with label and image file
+                answer_data["answer"] = {
+                    "label": answer.answer.get("label", ""),
+                    "image": answer.answer.get("image", ""),
                 }
-            )
+            else:
+                # Text or multiple choice answer
+                answer_data["answer"] = str(answer.answer)
+
+            quiz_answers.append(answer_data)
+
+        # Prepare detailed result data if provided
+        detailed_result = None
+        confidence_score = None
+
+        if request.detailedResult:
+            detailed_result = {
+                "scores": request.detailedResult.scores,
+                "primary_archetype": request.detailedResult.primaryArchetype,
+                "confidence": request.detailedResult.confidence,
+                "analysis": {
+                    "strengths": request.detailedResult.analysis.strengths,
+                    "challenges": request.detailedResult.analysis.challenges,
+                    "recommendations": request.detailedResult.analysis.recommendations,
+                },
+            }
+            confidence_score = request.detailedResult.confidence
 
         # Create initial archetype profile
         result = await orchestrator.create_initial_archetype_profile(
@@ -343,6 +371,7 @@ async def submit_archetype_quiz(
             quiz_answers=quiz_answers,
             quiz_completed_at=request.completedAt,
             quiz_version=request.quizVersion,
+            detailed_result=detailed_result,
         )
 
         if not result.get("success"):
@@ -359,6 +388,10 @@ async def submit_archetype_quiz(
             quiz_version=request.quizVersion,
             profile_created=result.get("profile_created", True),
             answers_stored=result.get("quiz_stored", True),
+            detailed_result_stored=result.get(
+                "detailed_result_stored", bool(detailed_result)
+            ),
+            confidence_score=confidence_score,
         )
 
         return ArchetypeQuizResponse(

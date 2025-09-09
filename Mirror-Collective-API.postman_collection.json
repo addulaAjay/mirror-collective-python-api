@@ -1,808 +1,757 @@
 {
-	"info": {
-		"_postman_id": "mirror-collective-api-collection",
-		"name": "Mirror Collective Python API",
-		"description": "Complete API collection for Mirror Collective Python API with authentication, chat, and health endpoints",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-		"_exporter_id": "mirror-collective-api"
-	},
-	"item": [
-		{
-			"name": "Health & Info",
-			"item": [
-				{
-					"name": "Basic Health Check",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/health",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"health"
-							]
-						},
-						"description": "Basic health check endpoint"
-					},
-					"response": []
-				},
-				{
-					"name": "Detailed Health Check",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/health/detailed",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"health",
-								"detailed"
-							]
-						},
-						"description": "Detailed health check with dependency validation"
-					},
-					"response": []
-				},
-				{
-					"name": "API Health Check",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/api/health",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"health"
-							]
-						},
-						"description": "API health check endpoint"
-					},
-					"response": []
-				},
-				{
-					"name": "API Information",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/api",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api"
-							]
-						},
-						"description": "API information and service discovery"
-					},
-					"response": []
-				}
-			],
-			"description": "Health checks and API information endpoints"
-		},
-		{
-			"name": "Authentication - Public",
-			"item": [
-				{
-					"name": "Register User",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"if (pm.response.code === 201) {",
-									"    const responseJson = pm.response.json();",
-									"    if (responseJson.data && responseJson.data.userSub) {",
-									"        pm.environment.set('user_sub', responseJson.data.userSub);",
-									"    }",
-									"}"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\",\n  \"fullName\": \"{{test_full_name}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/register",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"register"
-							]
-						},
-						"description": "Register a new user account"
-					},
-					"response": []
-				},
-				{
-					"name": "Login User",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"if (pm.response.code === 200) {",
-									"    const responseJson = pm.response.json();",
-									"    if (responseJson.data && responseJson.data.tokens) {",
-									"        pm.environment.set('access_token', responseJson.data.tokens.accessToken);",
-									"        pm.environment.set('refresh_token', responseJson.data.tokens.refreshToken);",
-									"        pm.environment.set('id_token', responseJson.data.tokens.idToken);",
-									"    }",
-									"}"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/login",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"login"
-							]
-						},
-						"description": "Authenticate user and return tokens"
-					},
-					"response": []
-				},
-				{
-					"name": "Confirm Email",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"email\": \"{{test_email}}\",\n  \"verificationCode\": \"{{verification_code}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/confirm-email",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"confirm-email"
-							]
-						},
-						"description": "Confirm email address with verification code"
-					},
-					"response": []
-				},
-				{
-					"name": "Resend Verification Code",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"email\": \"{{test_email}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/resend-verification-code",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"resend-verification-code"
-							]
-						},
-						"description": "Resend email verification code"
-					},
-					"response": []
-				},
-				{
-					"name": "Forgot Password",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"email\": \"{{test_email}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/forgot-password",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"forgot-password"
-							]
-						},
-						"description": "Initiate password reset process"
-					},
-					"response": []
-				},
-				{
-					"name": "Reset Password",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"email\": \"{{test_email}}\",\n  \"resetCode\": \"{{reset_code}}\",\n  \"newPassword\": \"{{new_password}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/reset-password",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"reset-password"
-							]
-						},
-						"description": "Reset password using verification code"
-					},
-					"response": []
-				},
-				{
-					"name": "Refresh Token",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"if (pm.response.code === 200) {",
-									"    const responseJson = pm.response.json();",
-									"    if (responseJson.data && responseJson.data.accessToken) {",
-									"        pm.environment.set('access_token', responseJson.data.accessToken);",
-									"        if (responseJson.data.refreshToken) {",
-									"            pm.environment.set('refresh_token', responseJson.data.refreshToken);",
-									"        }",
-									"    }",
-									"}"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/auth/refresh",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"refresh"
-							]
-						},
-						"description": "Refresh access token using refresh token"
-					},
-					"response": []
-				}
-			],
-			"description": "Public authentication endpoints"
-		},
-		{
-			"name": "Authentication - Protected",
-			"item": [
-				{
-					"name": "Get Current User Profile",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{base_url}}/api/auth/me",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"me"
-							]
-						},
-						"description": "Get current authenticated user profile"
-					},
-					"response": []
-				},
-				{
-					"name": "Logout User",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{base_url}}/api/auth/logout",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"logout"
-							]
-						},
-						"description": "Logout current user and invalidate tokens"
-					},
-					"response": []
-				},
-				{
-					"name": "Delete Account",
-					"request": {
-						"method": "DELETE",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{base_url}}/api/auth/account",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"auth",
-								"account"
-							]
-						},
-						"description": "Delete current user account"
-					},
-					"response": []
-				}
-			],
-			"description": "Protected authentication endpoints that require JWT token"
-		},
-		{
-			"name": "Chat",
-			"item": [
-				{
-					"name": "Mirror Chat (Legacy)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"message\": \"{{chat_message}}\",\n  \"userName\": \"{{test_full_name}}\",\n  \"conversationHistory\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello there!\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hi! How can I help you today?\"\n    }\n  ]\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/chat/mirror",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"mirror"
-							]
-						},
-						"description": "Legacy mirror chat endpoint (stateless)"
-					},
-					"response": []
-				},
-				{
-					"name": "Enhanced Mirror Chat",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"message\": \"{{chat_message}}\",\n  \"conversationId\": null,\n  \"userName\": \"{{test_full_name}}\",\n  \"createNewConversation\": true\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/chat/enhanced",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"enhanced"
-							]
-						},
-						"description": "Enhanced chat with persistent conversation management"
-					},
-					"response": []
-				},
-				{
-					"name": "Enhanced Chat - Continue Conversation",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"message\": \"Continue our previous discussion\",\n  \"conversationId\": \"{{conversation_id}}\",\n  \"userName\": \"{{test_full_name}}\",\n  \"createNewConversation\": false\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/chat/enhanced",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"enhanced"
-							]
-						},
-						"description": "Continue an existing conversation"
-					},
-					"response": []
-				},
-				{
-					"name": "Get User Conversations",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{base_url}}/api/chat/conversations?limit=50&include_archived=false",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"conversations"
-							],
-							"query": [
-								{
-									"key": "limit",
-									"value": "50",
-									"description": "Maximum number of conversations to return (1-100)"
-								},
-								{
-									"key": "include_archived",
-									"value": "false",
-									"description": "Include archived conversations"
-								}
-							]
-						},
-						"description": "Get all conversations for the authenticated user"
-					},
-					"response": []
-				},
-				{
-					"name": "Get Conversation Detail",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{base_url}}/api/chat/conversations/{{conversation_id}}",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"conversations",
-								"{{conversation_id}}"
-							]
-						},
-						"description": "Get detailed information about a specific conversation including recent messages"
-					},
-					"response": []
-				},
-				{
-					"name": "Archive Conversation",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"conversationId\": \"{{conversation_id}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/chat/conversations/archive",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"conversations",
-								"archive"
-							]
-						},
-						"description": "Archive a conversation (soft delete)"
-					},
-					"response": []
-				},
-				{
-					"name": "Delete Conversation",
-					"request": {
-						"method": "DELETE",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"conversationId\": \"{{conversation_id}}\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/chat/conversations",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"conversations"
-							]
-						},
-						"description": "Permanently delete a conversation and all its messages (cannot be undone)"
-					},
-					"response": []
-				},
-				{
-					"name": "Update Conversation Title",
-					"request": {
-						"method": "PUT",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{access_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"conversationId\": \"{{conversation_id}}\",\n  \"title\": \"Updated Conversation Title\"\n}"
-						},
-						"url": {
-							"raw": "{{base_url}}/api/chat/conversations/title",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"chat",
-								"conversations",
-								"title"
-							]
-						},
-						"description": "Update the title of a conversation"
-					},
-					"response": []
-				}
-			],
-			"description": "Chat endpoints for AI conversations including enhanced conversation management"
-		}
-	],
-	"event": [
-		{
-			"listen": "prerequest",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					""
-				]
-			}
-		},
-		{
-			"listen": "test",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					""
-				]
-			}
-		}
-	],
-	"variable": [
-		{
-			"key": "base_url",
-			"value": "https://f8lzhthj1l.execute-api.us-east-1.amazonaws.com",
-			"type": "string"
-		},
-		{
-			"key": "test_email",
-			"value": "test@example.com",
-			"type": "string"
-		},
-		{
-			"key": "test_password",
-			"value": "TestPass123!",
-			"type": "string"
-		},
-		{
-			"key": "test_full_name",
-			"value": "Test User",
-			"type": "string"
-		},
-		{
-			"key": "new_password",
-			"value": "NewPass123!",
-			"type": "string"
-		},
-		{
-			"key": "chat_message",
-			"value": "Hello, how are you doing today?",
-			"type": "string"
-		},
-		{
-			"key": "verification_code",
-			"value": "123456",
-			"type": "string",
-			"description": "Replace with actual verification code from email"
-		},
-		{
-			"key": "reset_code",
-			"value": "123456",
-			"type": "string",
-			"description": "Replace with actual reset code from email"
-		},
-		{
-			"key": "access_token",
-			"value": "",
-			"type": "string",
-			"description": "JWT access token - automatically set by login request"
-		},
-		{
-			"key": "refresh_token",
-			"value": "",
-			"type": "string",
-			"description": "JWT refresh token - automatically set by login request"
-		},
-		{
-			"key": "id_token",
-			"value": "",
-			"type": "string",
-			"description": "JWT ID token - automatically set by login request"
-		},
-		{
-			"key": "user_sub",
-			"value": "",
-			"type": "string",
-			"description": "User Cognito sub ID - automatically set by registration"
-		},
-		{
-			"key": "conversation_id",
-			"value": "",
-			"type": "string",
-			"description": "Conversation ID for testing - set manually or from Enhanced Mirror Chat response"
-		}
-	]
+  "info": {
+    "_postman_id": "mirror-collective-api-collection",
+    "name": "Mirror Collective Python API - MirrorGPT",
+    "description": "Complete API collection for Mirror Collective Python API with MirrorGPT 5-signal archetype analysis, authentication, and health endpoints. This collection includes automatic token management and comprehensive testing documentation.\n\n## Quick Start Guide\n1. Update environment variables in the Mirror Collective API Environment\n2. Run 'Register User' to create an account\n3. Run 'Login User' to get authentication tokens (automatically stored)\n4. Submit archetype quiz results with 'Submit Archetype Quiz'\n5. Get personalized greeting with 'Get Session Greeting'\n6. Start chatting with 'MirrorGPT Chat'\n\n## Authentication\nThe collection automatically handles JWT token management. Login will set access_token, refresh_token, and id_token environment variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "mirror-collective-api"
+  },
+  "item": [
+    {
+      "name": "Health & Info",
+      "item": [
+        {
+          "name": "Basic Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Basic health check endpoint"
+          },
+          "response": []
+        },
+        {
+          "name": "Detailed Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/detailed",
+              "host": ["{{base_url}}"],
+              "path": ["health", "detailed"]
+            },
+            "description": "Detailed health check with dependency validation"
+          },
+          "response": []
+        },
+        {
+          "name": "API Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health"]
+            },
+            "description": "API health check endpoint"
+          },
+          "response": []
+        },
+        {
+          "name": "API Information",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api",
+              "host": ["{{base_url}}"],
+              "path": ["api"]
+            },
+            "description": "API information and service discovery"
+          },
+          "response": []
+        }
+      ],
+      "description": "Health checks and API information endpoints"
+    },
+    {
+      "name": "Authentication - Public",
+      "item": [
+        {
+          "name": "Register User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const responseJson = pm.response.json();",
+                  "    if (responseJson.data && responseJson.data.userSub) {",
+                  "        pm.environment.set('user_sub', responseJson.data.userSub);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\",\n  \"fullName\": \"{{test_full_name}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "register"]
+            },
+            "description": "Register a new user account"
+          },
+          "response": []
+        },
+        {
+          "name": "Login User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Automatically extract and store authentication tokens",
+                  "if (pm.response.code === 200) {",
+                  "    const responseJson = pm.response.json();",
+                  "    if (responseJson.success && responseJson.data && responseJson.data.tokens) {",
+                  "        pm.environment.set('access_token', responseJson.data.tokens.accessToken);",
+                  "        pm.environment.set('refresh_token', responseJson.data.tokens.refreshToken);",
+                  "        pm.environment.set('id_token', responseJson.data.tokens.idToken);",
+                  "        ",
+                  "        // Also store user info for reference",
+                  "        if (responseJson.data.user) {",
+                  "            pm.environment.set('user_id', responseJson.data.user.id);",
+                  "            pm.environment.set('user_email', responseJson.data.user.email);",
+                  "            pm.environment.set('user_name', responseJson.data.user.fullName);",
+                  "        }",
+                  "        ",
+                  "        console.log('✅ Authentication tokens successfully stored');",
+                  "        console.log('Access Token:', responseJson.data.tokens.accessToken.substring(0, 20) + '...');",
+                  "    } else {",
+                  "        console.log('❌ Login failed - no tokens in response');",
+                  "    }",
+                  "} else {",
+                  "    console.log('❌ Login failed with status:', pm.response.code);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "## Login User\n\n**Purpose:** Authenticate user and automatically store JWT tokens in environment variables.\n\n**Prerequisites:** \n- Valid user account (use Register User first)\n- Update `test_email` and `test_password` in environment\n\n**What this does:**\n- Authenticates user with email/password\n- Automatically stores `access_token`, `refresh_token`, and `id_token` in environment\n- Stores user info (`user_id`, `user_email`, `user_name`) for reference\n\n**Testing Steps:**\n1. Update `test_email` and `test_password` in environment\n2. Send this request\n3. Check that tokens are automatically stored in environment\n4. Verify subsequent authenticated requests work\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"tokens\": {\n      \"accessToken\": \"eyJhbGciOiJSUzI1NiIs...\",\n      \"refreshToken\": \"eyJjdHkiOiJKV1QiLCJlb...\",\n      \"idToken\": \"eyJraWQiOiJUODB6bTNCV...\"\n    },\n    \"user\": {\n      \"id\": \"user-uuid\",\n      \"email\": \"test@example.com\",\n      \"fullName\": \"Test User\",\n      \"isVerified\": true\n    }\n  }\n}\n```\n\n**Notes:**\n- Access token expires in 1 hour\n- Refresh token expires in 30 days\n- Use Refresh Token request if access token expires"
+          },
+          "response": []
+        },
+        {
+          "name": "Confirm Email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"verificationCode\": \"{{verification_code}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/confirm-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "confirm-email"]
+            },
+            "description": "Confirm email address with verification code"
+          },
+          "response": []
+        },
+        {
+          "name": "Resend Verification Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/resend-verification-code",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "resend-verification-code"]
+            },
+            "description": "Resend email verification code"
+          },
+          "response": []
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/forgot-password",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "forgot-password"]
+            },
+            "description": "Initiate password reset process"
+          },
+          "response": []
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"resetCode\": \"{{reset_code}}\",\n  \"newPassword\": \"{{new_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/reset-password",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "reset-password"]
+            },
+            "description": "Reset password using verification code"
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const responseJson = pm.response.json();",
+                  "    if (responseJson.data && responseJson.data.accessToken) {",
+                  "        pm.environment.set('access_token', responseJson.data.accessToken);",
+                  "        if (responseJson.data.refreshToken) {",
+                  "            pm.environment.set('refresh_token', responseJson.data.refreshToken);",
+                  "        }",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "refresh"]
+            },
+            "description": "Refresh access token using refresh token"
+          },
+          "response": []
+        }
+      ],
+      "description": "Public authentication endpoints"
+    },
+    {
+      "name": "Authentication - Protected",
+      "item": [
+        {
+          "name": "Get Current User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Get current authenticated user profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Logout User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "logout"]
+            },
+            "description": "Logout current user and invalidate tokens"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Account",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/account",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "account"]
+            },
+            "description": "Delete current user account"
+          },
+          "response": []
+        }
+      ],
+      "description": "Protected authentication endpoints that require JWT token"
+    },
+    {
+      "name": "MirrorGPT - Archetype System",
+      "item": [
+        {
+          "name": "Submit Archetype Quiz",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Store quiz submission results for reference",
+                  "if (pm.response.code === 200) {",
+                  "    const responseJson = pm.response.json();",
+                  "    if (responseJson.success && responseJson.data) {",
+                  "        pm.environment.set('initial_archetype', responseJson.data.initial_archetype);",
+                  "        pm.environment.set('quiz_completed_at', responseJson.data.quiz_completed_at);",
+                  "        console.log('✅ Archetype quiz submitted successfully');",
+                  "        console.log('Initial Archetype:', responseJson.data.initial_archetype);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"answers\": [\n    {\n      \"questionId\": 1,\n      \"question\": \"What drives you most in life?\",\n      \"answer\": \"Seeking deeper understanding and wisdom\",\n      \"answeredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"text\"\n    },\n    {\n      \"questionId\": 2,\n      \"question\": \"How do you approach challenges?\",\n      \"answer\": \"Through careful analysis and learning\",\n      \"answeredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"text\"\n    },\n    {\n      \"questionId\": 3,\n      \"question\": \"What brings you the most fulfillment?\",\n      \"answer\": \"Sharing knowledge and helping others grow\",\n      \"answeredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"text\"\n    },\n    {\n      \"questionId\": 4,\n      \"question\": \"Which image represents your ideal environment?\",\n      \"answer\": {\n        \"label\": \"Serene Library\",\n        \"image\": \"https://example.com/images/library.jpg\"\n      },\n      \"answeredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"image\"\n    }\n  ],\n  \"completedAt\": \"{{$isoTimestamp}}\",\n  \"archetypeResult\": {\n    \"id\": \"sage\",\n    \"name\": \"The Sage\",\n    \"title\": \"Wisdom Seeker\"\n  },\n  \"detailedResult\": {\n    \"scores\": {\n      \"sage\": 85,\n      \"innocent\": 12,\n      \"explorer\": 25,\n      \"hero\": 18,\n      \"caregiver\": 30\n    },\n    \"confidence\": 0.85,\n    \"analysis\": {\n      \"strengths\": [\"Deep analytical thinking\", \"Natural wisdom sharing\", \"Patient learning approach\"],\n      \"challenges\": [\"May overthink decisions\", \"Can be too theoretical\"],\n      \"recommendations\": [\"Balance analysis with action\", \"Practice expressing ideas simply\"]\n    }\n  },\n  \"quizVersion\": \"2.0\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/quiz/submit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "quiz", "submit"]
+            },
+            "description": "## Submit Archetype Quiz\n\n**Purpose:** Submit quiz results and create initial archetype profile for the user with enhanced scoring and analysis.\n\n**Prerequisites:**\n- User must be authenticated (login first)\n- User should complete archetype quiz in your app\n\n**What this does:**\n- Creates initial archetype profile based on quiz results\n- Stores detailed quiz answers including image responses\n- Saves comprehensive scoring breakdown for all archetypes\n- Records confidence levels and detailed analysis\n- Sets up foundation for MirrorGPT analysis with enhanced precision\n\n**Testing Steps:**\n1. Ensure you're logged in (access_token is set)\n2. Modify the sample quiz answers in the request body\n3. Update both simple and detailed results\n4. Include image answers if your quiz has visual components\n5. Send the request and verify enhanced data storage\n\n**Enhanced Request Body Fields:**\n- `answers`: Array of quiz responses supporting both text and image answers\n  - Text answers: `{\"questionId\": 1, \"answer\": \"text response\", \"type\": \"text\"}`\n  - Image answers: `{\"questionId\": 4, \"answer\": {\"label\": \"Choice Name\", \"image\": \"url\"}, \"type\": \"image\"}`\n- `completedAt`: When the quiz was completed (ISO timestamp)\n- `archetypeResult`: The determined primary archetype (id, name, title)\n- `detailedResult`: Enhanced scoring and analysis data\n  - `scores`: Numeric scores for all evaluated archetypes\n  - `confidence`: Confidence level (0.0 to 1.0) in primary archetype\n  - `analysis`: Detailed insights with strengths, challenges, and recommendations\n- `quizVersion`: Quiz version for tracking changes (use \"2.0\" for enhanced format)\n\n**Answer Types:**\n- **Text Answers**: Standard text responses for open-ended questions\n- **Image Answers**: Visual selection answers with label and image URL\n  - Supports quiz questions with visual components\n  - Enables richer personality assessment through visual preferences\n\n**Sample Archetypes:**\n- `sage` - The Wisdom Seeker\n- `innocent` - The Pure Spirit\n- `explorer` - The Freedom Seeker\n- `rebel` - The Revolutionary\n- `hero` - The Warrior\n- `lover` - The Romantic\n- `creator` - The Artist\n- `jester` - The Entertainer\n- `caregiver` - The Nurturer\n- `ruler` - The Leader\n- `magician` - The Transformer\n- `everyman` - The Realist\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"user_id\": \"user-uuid\",\n    \"initial_archetype\": \"sage\",\n    \"quiz_completed_at\": \"2025-09-09T14:20:30Z\",\n    \"quiz_version\": \"2.0\",\n    \"confidence_score\": 0.85,\n    \"detailed_analysis_stored\": true,\n    \"profile_created\": true,\n    \"answers_stored\": true\n  },\n  \"message\": \"Enhanced The Sage archetype profile created with detailed analysis. Your journey with MirrorGPT begins now.\"\n}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Session Greeting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Store session information for chat requests",
+                  "if (pm.response.code === 200) {",
+                  "    const responseJson = pm.response.json();",
+                  "    if (responseJson.success && responseJson.data) {",
+                  "        pm.environment.set('session_id', responseJson.data.session_id);",
+                  "        pm.environment.set('current_archetype', responseJson.data.user_archetype);",
+                  "        pm.environment.set('archetype_confidence', responseJson.data.archetype_confidence);",
+                  "        console.log('✅ Session greeting retrieved');",
+                  "        console.log('Session ID:', responseJson.data.session_id);",
+                  "        console.log('Current Archetype:', responseJson.data.user_archetype);",
+                  "        console.log('Greeting:', responseJson.data.greeting_message);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/session/greeting",
+              "host": ["{{base_url}}"],
+              "path": ["api", "session", "greeting"]
+            },
+            "description": "## Get Session Greeting\n\n**Purpose:** Get personalized welcome message and start new MirrorGPT session.\n\n**Prerequisites:**\n- User must be authenticated\n- Ideally user has completed archetype quiz (but not required)\n\n**What this does:**\n- Generates personalized greeting based on user's archetype profile\n- Creates new session ID for chat conversations\n- Provides current archetype and confidence information\n- Sets up context for MirrorGPT interactions\n\n**When to use:**\n- Every time user enters MirrorGPT chat screen\n- At the start of each new conversation session\n- After completing archetype quiz for the first time\n\n**Testing Steps:**\n1. Ensure you're logged in (access_token is set)\n2. Optionally complete archetype quiz first for personalized greeting\n3. Send this request\n4. Check that session_id is automatically stored\n5. Use the greeting message to welcome user in your UI\n\n**Expected Response (with archetype profile):**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"greeting_message\": \"Welcome back, soul traveler. The Sage consciousness stirs within you as you return to the Field. What ancient wisdom seeks expression through you today?\",\n    \"session_id\": \"session_12345-67890-abcdef\",\n    \"timestamp\": \"2025-09-09T14:20:30Z\",\n    \"user_archetype\": \"sage\",\n    \"archetype_confidence\": 0.85\n  }\n}\n```\n\n**Expected Response (new user, no quiz):**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"greeting_message\": \"Welcome, soul traveler. The Field recognizes your presence. What calls to be explored in this moment of connection?\",\n    \"session_id\": \"session_12345-67890-abcdef\",\n    \"timestamp\": \"2025-09-09T14:20:30Z\",\n    \"user_archetype\": null,\n    \"archetype_confidence\": null\n  }\n}\n```\n\n**Notes:**\n- Session ID is required for subsequent chat requests\n- Greeting adapts based on user's archetype evolution\n- Can be called multiple times (generates new session each time)"
+          },
+          "response": []
+        },
+        {
+          "name": "MirrorGPT Chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Store conversation ID and useful response data",
+                  "if (pm.response.code === 200) {",
+                  "    const responseJson = pm.response.json();",
+                  "    if (responseJson.success && responseJson.data) {",
+                  "        // Store conversation ID for subsequent messages",
+                  "        if (responseJson.data.session_metadata && responseJson.data.session_metadata.conversation_id) {",
+                  "            pm.environment.set('conversation_id', responseJson.data.session_metadata.conversation_id);",
+                  "        }",
+                  "        ",
+                  "        // Log key insights",
+                  "        console.log('✅ MirrorGPT response received');",
+                  "        console.log('Response:', responseJson.data.response);",
+                  "        ",
+                  "        if (responseJson.data.archetype_analysis) {",
+                  "            const analysis = responseJson.data.archetype_analysis;",
+                  "            if (analysis.signal_3_archetype_blend) {",
+                  "                console.log('Primary Archetype:', analysis.signal_3_archetype_blend.primary);",
+                  "                console.log('Confidence:', analysis.signal_3_archetype_blend.confidence);",
+                  "            }",
+                  "        }",
+                  "        ",
+                  "        if (responseJson.data.suggested_practice) {",
+                  "            console.log('Suggested Practice:', responseJson.data.suggested_practice);",
+                  "        }",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"I've been feeling disconnected from my purpose lately. How can I reconnect with what truly matters to me?\",\n  \"session_id\": \"{{session_id}}\",\n  \"conversation_id\": {{conversation_id}},\n  \"include_archetype_analysis\": true,\n  \"use_enhanced_response\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "## MirrorGPT Chat\n\n**Purpose:** Send message to MirrorGPT and receive archetype-informed response with 5-signal analysis.\n\n**Prerequisites:**\n- User must be authenticated\n- Must have session_id (from Get Session Greeting)\n- Optionally have conversation_id for continuing conversations\n\n**What this does:**\n- Analyzes message through 5-signal archetype detection system\n- Generates personalized response based on user's archetype profile\n- Tracks archetype evolution and change detection\n- Provides suggested practices for growth\n- Maintains conversation continuity\n\n**The 5 Signals:**\n1. **Emotional Resonance**: Sentiment, valence, arousal analysis\n2. **Symbolic Language**: Metaphors, symbols, deeper meanings\n3. **Archetype Blend**: Primary/secondary archetype detection\n4. **Narrative Position**: Role in personal story/journey\n5. **Motif Loops**: Recurring patterns and themes\n\n**Testing Steps:**\n1. First get session greeting to obtain session_id\n2. For first message: set conversation_id to `null`\n3. Modify the message content to test different scenarios\n4. Send request and observe archetype analysis\n5. For follow-up messages: use stored conversation_id\n\n**Message Scenarios to Test:**\n- **Purpose/Direction**: \"I feel lost about my life direction\"\n- **Relationships**: \"I'm struggling to connect with others\"\n- **Growth/Learning**: \"I want to understand myself better\"\n- **Creativity**: \"I feel blocked creatively\"\n- **Career**: \"I'm not fulfilled in my work\"\n- **Spirituality**: \"I'm seeking deeper meaning\"\n\n**Request Body Fields:**\n- `message`: User's message (1-5000 characters)\n- `session_id`: From session greeting (required)\n- `conversation_id`: null for first message, then use returned ID\n- `include_archetype_analysis`: true to get full analysis\n- `use_enhanced_response`: true for MirrorGPT style responses\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"message_id\": \"msg_98765-43210-fedcba\",\n    \"response\": \"I sense the Sage within you questioning...\",\n    \"archetype_analysis\": {\n      \"signal_1_emotional_resonance\": {\n        \"dominant_emotion\": \"contemplative\",\n        \"valence\": -0.2,\n        \"arousal\": 0.3\n      },\n      \"signal_2_symbolic_language\": {\n        \"extracted_symbols\": [\"disconnection\", \"purpose\"]\n      },\n      \"signal_3_archetype_blend\": {\n        \"primary\": \"sage\",\n        \"secondary\": \"seeker\",\n        \"confidence\": 0.87\n      },\n      \"signal_4_narrative_position\": {\n        \"role\": \"questioner\",\n        \"stage\": \"contemplation\"\n      },\n      \"signal_5_motif_loops\": {\n        \"current_motifs\": [\"seeking\", \"wisdom\"],\n        \"dominant_patterns\": [\"introspection\"]\n      }\n    },\n    \"change_detection\": {\n      \"archetype_shift_detected\": false,\n      \"stability_score\": 0.92\n    },\n    \"suggested_practice\": \"Spend 10 minutes in quiet reflection...\",\n    \"confidence_breakdown\": {\n      \"overall\": 0.87,\n      \"emotional\": 0.85,\n      \"symbolic\": 0.89,\n      \"archetype\": 0.87\n    },\n    \"session_metadata\": {\n      \"conversation_id\": \"conv_abcdef-123456\",\n      \"session_id\": \"session_12345-67890\",\n      \"message_count\": 1\n    }\n  }\n}\n```\n\n**Notes:**\n- First message creates conversation_id automatically\n- Subsequent messages should use the same conversation_id\n- Analysis adapts and evolves based on conversation history\n- Suggested practices provide actionable guidance"
+          },
+          "response": []
+        },
+        {
+          "name": "Continue MirrorGPT Conversation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"That resonates deeply with me. Can you help me understand what specific steps I can take to reconnect with my inner wisdom?\",\n  \"session_id\": \"{{session_id}}\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"include_archetype_analysis\": true,\n  \"use_enhanced_response\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "## Continue MirrorGPT Conversation\n\n**Purpose:** Continue an existing conversation with context and archetype evolution tracking.\n\n**Prerequisites:**\n- Previous MirrorGPT Chat request completed\n- session_id and conversation_id stored from previous requests\n\n**What this does:**\n- Continues conversation with full context of previous messages\n- Tracks archetype evolution over the conversation\n- Detects patterns and changes in user's responses\n- Provides contextual and evolving guidance\n\n**Testing Steps:**\n1. First complete initial MirrorGPT Chat request\n2. Ensure conversation_id is stored from previous response\n3. Modify message to follow up on previous topics\n4. Send request and observe how analysis builds on previous context\n5. Compare archetype analysis with previous messages\n\n**Follow-up Message Ideas:**\n- Build on previous topic: \"That resonates with me. Can you elaborate?\"\n- Shift direction: \"I want to explore something different now\"\n- Request clarification: \"What did you mean by that metaphor?\"\n- Share progress: \"I tried your suggestion and here's what happened\"\n- Express resistance: \"I'm struggling to accept that perspective\"\n\n**Notes:**\n- Uses same conversation_id to maintain context\n- Archetype analysis becomes more accurate with more messages\n- Change detection tracks evolution over time\n- Session maintains until user leaves or starts new session"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Archetype Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/profile",
+              "host": ["{{base_url}}"],
+              "path": ["api", "profile"]
+            },
+            "description": "## Get Archetype Profile\n\n**Purpose:** Retrieve user's complete archetype profile including evolution history.\n\n**Prerequisites:**\n- User must be authenticated\n- User should have completed quiz and/or had some chat conversations\n\n**What this does:**\n- Returns current archetype profile and confidence scores\n- Shows archetype evolution over time\n- Provides recent signal patterns and analysis\n- Includes growth indicators and insights\n\n**Testing Steps:**\n1. Ensure user has completed quiz and/or chat conversations\n2. Send this request to see current profile state\n3. Compare results after more conversations to see evolution\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"user_id\": \"user-uuid\",\n    \"current_profile\": {\n      \"current_archetype_stack\": {\n        \"primary\": \"sage\",\n        \"secondary\": \"seeker\",\n        \"confidence_score\": 0.87,\n        \"stability_score\": 0.92\n      },\n      \"quiz_data\": {\n        \"initial_archetype\": \"sage\",\n        \"completed_at\": \"2025-09-09T10:00:00Z\"\n      },\n      \"archetype_evolution\": [\n        {\n          \"archetype\": \"sage\",\n          \"confidence\": 0.87,\n          \"detected_at\": \"2025-09-09T10:00:00Z\"\n        }\n      ]\n    },\n    \"recent_signals\": [...],\n    \"evolution_summary\": {\n      \"total_conversations\": 5,\n      \"archetype_stability\": \"high\",\n      \"growth_trajectory\": \"deepening\"\n    }\n  }\n}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Echo Signals",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/signals?limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["api", "signals"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Number of recent signals to return (1-50)"
+                }
+              ]
+            },
+            "description": "## Get Echo Signals\n\n**Purpose:** Retrieve recent 5-signal analysis data from user's conversations.\n\n**Prerequisites:**\n- User must have had at least one MirrorGPT chat conversation\n\n**What this does:**\n- Returns recent signal analysis from conversations\n- Shows patterns in emotional resonance, symbols, archetypes\n- Provides insight into user's communication patterns\n- Useful for tracking changes over time\n\n**Testing Steps:**\n1. Have at least one MirrorGPT conversation first\n2. Send this request to see signal history\n3. Adjust limit parameter to see more/fewer signals\n\n**Use Cases:**\n- Analyze user's communication patterns\n- Track emotional states over time\n- Identify recurring symbols and themes\n- Monitor archetype evolution\n- Debug signal detection accuracy"
+          },
+          "response": []
+        }
+      ],
+      "description": "MirrorGPT archetype system endpoints including quiz, session management, chat with 5-signal analysis, and profile insights"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://f8lzhthj1l.execute-api.us-east-1.amazonaws.com",
+      "type": "string"
+    },
+    {
+      "key": "test_email",
+      "value": "test@example.com",
+      "type": "string"
+    },
+    {
+      "key": "test_password",
+      "value": "TestPass123!",
+      "type": "string"
+    },
+    {
+      "key": "test_full_name",
+      "value": "Test User",
+      "type": "string"
+    },
+    {
+      "key": "new_password",
+      "value": "NewPass123!",
+      "type": "string"
+    },
+    {
+      "key": "verification_code",
+      "value": "123456",
+      "type": "string",
+      "description": "Replace with actual verification code from email"
+    },
+    {
+      "key": "reset_code",
+      "value": "123456",
+      "type": "string",
+      "description": "Replace with actual reset code from email"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string",
+      "description": "JWT access token - automatically set by login request"
+    },
+    {
+      "key": "refresh_token",
+      "value": "",
+      "type": "string",
+      "description": "JWT refresh token - automatically set by login request"
+    },
+    {
+      "key": "id_token",
+      "value": "",
+      "type": "string",
+      "description": "JWT ID token - automatically set by login request"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "type": "string",
+      "description": "User ID - automatically set by login request"
+    },
+    {
+      "key": "user_email",
+      "value": "",
+      "type": "string",
+      "description": "User email - automatically set by login request"
+    },
+    {
+      "key": "user_name",
+      "value": "",
+      "type": "string",
+      "description": "User name - automatically set by login request"
+    },
+    {
+      "key": "session_id",
+      "value": "",
+      "type": "string",
+      "description": "MirrorGPT session ID - automatically set by session greeting"
+    },
+    {
+      "key": "conversation_id",
+      "value": null,
+      "type": "string",
+      "description": "MirrorGPT conversation ID - automatically set by first chat message"
+    },
+    {
+      "key": "initial_archetype",
+      "value": "",
+      "type": "string",
+      "description": "User's initial archetype - automatically set by quiz submission"
+    },
+    {
+      "key": "current_archetype",
+      "value": "",
+      "type": "string",
+      "description": "User's current archetype - automatically set by session greeting"
+    },
+    {
+      "key": "archetype_confidence",
+      "value": "",
+      "type": "string",
+      "description": "Archetype confidence score - automatically set by session greeting"
+    },
+    {
+      "key": "quiz_completed_at",
+      "value": "",
+      "type": "string",
+      "description": "Quiz completion timestamp - automatically set by quiz submission"
+    }
+  ]
 }

@@ -600,7 +600,9 @@ class ChangeDetector:
     """Detect archetype changes and Mirror Moments"""
 
     def __init__(self):
-        self.confidence_threshold = 0.75
+        self.confidence_threshold = (
+            0.5  # Further lowered to detect more archetype shifts
+        )
         self.significant_change_threshold = 0.3
         self.archetype_relationships = (
             ArchetypeDefinitions.get_archetype_relationships()

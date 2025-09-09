@@ -805,6 +805,7 @@ class MirrorOrchestrator:
         quiz_answers: List[Dict[str, Any]],
         quiz_completed_at: str,
         quiz_version: str = "1.0",
+        detailed_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create initial archetype profile from quiz results
@@ -815,6 +816,7 @@ class MirrorOrchestrator:
             quiz_answers: List of quiz answers for reference
             quiz_completed_at: When the quiz was completed
             quiz_version: Version of the quiz taken
+            detailed_result: Optional detailed quiz results with scores and analysis
 
         Returns:
             Dict containing the success status and profile data
@@ -834,13 +836,18 @@ class MirrorOrchestrator:
             if not archetype_data:
                 raise ValueError(f"Unknown archetype: {initial_archetype}")
 
-            # Create the initial profile with high confidence since it's from quiz
+            # Use confidence from detailed result if available, otherwise default
+            confidence_score = 0.85  # Default high confidence from quiz
+            if detailed_result and "confidence" in detailed_result:
+                confidence_score = detailed_result["confidence"]
+
+            # Create the initial profile with quiz-based confidence
             initial_profile = {
                 "user_id": user_id,
                 "current_archetype_stack": {
                     "primary": initial_archetype,
                     "secondary": None,  # Will be determined through conversations
-                    "confidence_score": 0.85,  # High confidence from quiz
+                    "confidence_score": confidence_score,
                     "stability_score": 0.8,  # Assumed stable until proven otherwise
                 },
                 "symbolic_signature": {
@@ -861,12 +868,13 @@ class MirrorOrchestrator:
                     "quiz_version": quiz_version,
                     "completed_at": quiz_completed_at,
                     "answers": quiz_answers[:5],  # Store first 5 answers for reference
+                    "detailed_result": detailed_result,  # Store detailed quiz analysis
                 },
                 "archetype_evolution": [
                     {
                         "timestamp": quiz_completed_at,
                         "primary_archetype": initial_archetype,
-                        "confidence": 0.85,
+                        "confidence": confidence_score,
                         "trigger_event": "initial_quiz",
                     }
                 ],
@@ -888,6 +896,7 @@ class MirrorOrchestrator:
                 "completed_at": quiz_completed_at,
                 "initial_archetype": initial_archetype,
                 "answers": quiz_answers,
+                "detailed_result": detailed_result,  # Store detailed analysis
                 "created_at": datetime.utcnow().isoformat(),
             }
 
@@ -904,6 +913,7 @@ class MirrorOrchestrator:
                 "initial_archetype": initial_archetype,
                 "profile_created": True,
                 "quiz_stored": True,
+                "detailed_result_stored": bool(detailed_result),
                 "message": f"Initial {initial_archetype} archetype profile created successfully",
             }
 
