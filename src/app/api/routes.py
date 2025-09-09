@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Request
 logger = logging.getLogger(__name__)
 
 from ..controllers.auth_controller import AuthController
-from ..controllers.chat_controller import ChatController
 from ..core.security import get_current_user
 from .models import (
     AuthResponse,
@@ -15,8 +14,6 @@ from .models import (
     GeneralApiResponse,
     LoginRequest,
     LoginResponse,
-    MirrorChatRequest,
-    MirrorChatResponse,
     RefreshTokenRequest,
     ResendVerificationCodeRequest,
     ResetPasswordRequest,
@@ -30,11 +27,6 @@ router = APIRouter()
 def get_auth_controller():
     """Get auth controller instance (lazy initialization)"""
     return AuthController()
-
-
-def get_chat_controller():
-    """Get chat controller instance (lazy initialization)"""
-    return ChatController()
 
 
 # Auth endpoints
@@ -119,29 +111,5 @@ async def delete_account(
     return await auth_controller.delete_account(current_user)
 
 
-# Chat endpoints
-@router.post("/chat", response_model=MirrorChatResponse)
-async def mirror_chat(
-    req: MirrorChatRequest,
-    request: Request,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-    chat_controller=Depends(get_chat_controller),
-):
-    """Handle mirror chat requests"""
-    # Log request headers for debugging token passing
-    logger.info(f"Request headers: {dict(request.headers)}")
-    auth_header = request.headers.get("authorization")
-    logger.info(f"Authorization header: '{auth_header}'")
-
-    return await chat_controller.handle_chat(req, current_user)
-
-
-# Include enhanced routes after the main router is defined
-try:
-    from .enhanced_routes import enhanced_chat_router
-
-    router.include_router(enhanced_chat_router)
-    logger.info("Enhanced chat routes included successfully")
-except Exception as e:
-    logger.warning(f"Could not include enhanced routes: {e}")
-    # Continue without enhanced routes for now
+# Note: Chat functionality has been moved to MirrorGPT routes at /api/mirrorgpt/chat
+# This provides the full MirrorGPT experience with 5-signal analysis and archetype guidance

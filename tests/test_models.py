@@ -6,11 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from src.app.api.models import (
-    ConversationTurn,
     EmailVerificationRequest,
     ForgotPasswordRequest,
     LoginRequest,
-    MirrorChatRequest,
+    MirrorGPTChatRequest,
     ResetPasswordRequest,
     UserRegistrationRequest,
 )
@@ -77,64 +76,36 @@ def test_login_request_valid():
     assert request.password == "password123"
 
 
-def test_conversation_turn_valid():
-    """Test valid conversation turn"""
-    data = {"role": "user", "content": "Hello there"}
-
-    turn = ConversationTurn(**data)
-    assert turn.role == "user"
-    assert turn.content == "Hello there"
-
-
-def test_conversation_turn_invalid_role():
-    """Test conversation turn with invalid role"""
-    data = {"role": "invalid", "content": "Hello there"}
-
-    with pytest.raises(ValidationError) as exc_info:
-        ConversationTurn(**data)
-
-    assert "role" in str(exc_info.value)
-
-
-def test_conversation_turn_empty_content():
-    """Test conversation turn with empty content"""
-    data = {"role": "user", "content": ""}
-
-    with pytest.raises(ValidationError) as exc_info:
-        ConversationTurn(**data)
-
-    assert "content" in str(exc_info.value)
-
-
-def test_mirror_chat_request_valid():
-    """Test valid mirror chat request"""
+def test_mirrorgpt_chat_request_valid():
+    """Test valid MirrorGPT chat request"""
     data = {
         "message": "Hello, how are you?",
-        "conversationHistory": [{"role": "user", "content": "Previous message"}],
+        "session_id": "test-session",
+        "include_archetype_analysis": True,
     }
 
-    request = MirrorChatRequest(**data)
+    request = MirrorGPTChatRequest(**data)
     assert request.message == "Hello, how are you?"
-    assert request.conversationHistory is not None
-    assert len(request.conversationHistory) == 1
-    assert request.conversationHistory[0].role == "user"
+    assert request.session_id == "test-session"
+    assert request.include_archetype_analysis is True
 
 
-def test_mirror_chat_request_no_history():
-    """Test mirror chat request without history"""
+def test_mirrorgpt_chat_request_minimal():
+    """Test MirrorGPT chat request with only required fields"""
     data = {"message": "Hello, how are you?"}
 
-    request = MirrorChatRequest(**data)
+    request = MirrorGPTChatRequest(**data)
     assert request.message == "Hello, how are you?"
-    assert request.conversationHistory is None
+    assert request.session_id is None
+    assert request.include_archetype_analysis is True  # Default value
 
 
-def test_mirror_chat_request_empty_message():
-    """Test mirror chat request with empty message"""
+def test_mirrorgpt_chat_request_empty_message():
+    """Test MirrorGPT chat request with empty message"""
     data = {"message": ""}
 
     with pytest.raises(ValidationError) as exc_info:
-        MirrorChatRequest(**data)
+        MirrorGPTChatRequest(**data)
 
     assert "message" in str(exc_info.value)
 

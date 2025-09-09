@@ -30,9 +30,7 @@ def test_imports():
 
         print("✅ MirrorOrchestrator import successful")
 
-        import app.use_cases.enhanced_mirror_chat_use_case
-
-        print("✅ EnhancedMirrorChatUseCase import successful")
+        # Note: Enhanced mirror chat use case has been removed in favor of MirrorGPT integration
 
         return True
 
