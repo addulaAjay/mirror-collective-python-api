@@ -80,12 +80,10 @@ openai_client_patcher = patch("src.app.core.health_checks.OpenAI")
 conversation_service_patcher = patch(
     "src.app.services.conversation_service.ConversationService"
 )
-# Mock authentication
-auth_patcher = patch("src.app.core.security.get_current_user")
-# Mock MirrorOrchestrator dependency
-mirror_orchestrator_patcher = patch(
-    "src.app.api.mirrorgpt_routes.get_mirror_orchestrator"
-)
+# Patch OpenAI in MirrorOrchestrator dependency
+openai_orchestrator_patcher = patch("src.app.api.mirrorgpt_routes.OpenAIService")
+# Patch DynamoDB in MirrorOrchestrator dependency
+dynamodb_orchestrator_patcher = patch("src.app.api.mirrorgpt_routes.DynamoDBService")
 
 # Start the patchers
 boto3_patcher.start()
@@ -94,21 +92,28 @@ mock_user_service_class = user_service_patcher.start()
 mock_openai_class = openai_service_patcher.start()
 mock_openai_health_class = openai_client_patcher.start()
 mock_conversation_service_class = conversation_service_patcher.start()
-mock_auth = auth_patcher.start()
-mock_mirror_orchestrator = mirror_orchestrator_patcher.start()
+mock_openai_orchestrator_class = openai_orchestrator_patcher.start()
+mock_dynamodb_orchestrator_class = dynamodb_orchestrator_patcher.start()
+
 
 # Mock authentication to return test user
-mock_auth.return_value = {
-    "sub": "test-user-123",
-    "id": "test-user-123",  # Added id field for MirrorGPT routes
-    "email": "test@example.com",
-    "given_name": "Test",
-    "family_name": "User",
-}
+async def mock_get_current_user(*args, **kwargs):
+    return {
+        "sub": "test-user-123",
+        "id": "test-user-123",  # Added id field for MirrorGPT routes
+        "email": "test@example.com",
+        "given_name": "Test",
+        "family_name": "User",
+    }
+
 
 # Mock MirrorOrchestrator
 mock_orchestrator_instance = Mock()
-mock_mirror_orchestrator.return_value = mock_orchestrator_instance
+
+
+def mock_get_mirror_orchestrator():
+    return mock_orchestrator_instance
+
 
 # Configure MirrorOrchestrator mock to return successful chat response
 mock_orchestrator_instance.process_mirror_chat = AsyncMock(
@@ -219,8 +224,18 @@ mock_models_response.data = [
 ]
 mock_openai_health_instance.models.list.return_value = mock_models_response
 
+from src.app.api.mirrorgpt_routes import get_mirror_orchestrator
+
+# Override dependencies using FastAPI's built-in mechanism
+from src.app.core.security import get_current_user
+
 # Now import app after mocking
 from src.app.handler import app
+
+# Clear any existing overrides and set clean ones
+app.dependency_overrides = {}
+app.dependency_overrides[get_current_user] = mock_get_current_user
+app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
 
 # Store references for test cleanup
 GLOBAL_PATCHES = [
@@ -230,8 +245,8 @@ GLOBAL_PATCHES = [
     openai_service_patcher,
     openai_client_patcher,
     conversation_service_patcher,
-    auth_patcher,
-    mirror_orchestrator_patcher,
+    openai_orchestrator_patcher,
+    dynamodb_orchestrator_patcher,
 ]
 
 
@@ -312,6 +327,17 @@ def reset_rate_limiter():
     rate_limiter.requests.clear()
     yield
     rate_limiter.requests.clear()
+
+
+@pytest.fixture(autouse=True)
+def clean_dependency_overrides():
+    """Ensure dependency overrides are properly set for each test"""
+    # Re-establish clean dependency overrides before each test
+    app.dependency_overrides = {}
+    app.dependency_overrides[get_current_user] = mock_get_current_user
+    app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
+    yield
+    # Keep overrides for consistency
 
 
 # Cleanup function to stop global patches
