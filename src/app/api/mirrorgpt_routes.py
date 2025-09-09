@@ -6,12 +6,16 @@ Extends existing API structure with MirrorGPT-specific endpoints
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+if TYPE_CHECKING:
+    from ..services.conversation_service import ConversationService
+
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
+from ..models.user_profile import UserProfile
 from ..services.dynamodb_service import DynamoDBService
 from ..services.mirror_orchestrator import MirrorOrchestrator
 from ..services.openai_service import OpenAIService
@@ -122,16 +126,24 @@ def generate_conversation_title(message: str, max_length: int = 50) -> str:
 router = APIRouter(prefix="/mirrorgpt", tags=["MirrorGPT"])
 
 
-def get_mirror_orchestrator():
+def get_mirror_orchestrator() -> MirrorOrchestrator:
     """Dependency injection for MirrorOrchestrator"""
     dynamodb_service = DynamoDBService()
     openai_service = OpenAIService()
     return MirrorOrchestrator(dynamodb_service, openai_service)
 
 
+def get_conversation_service() -> "ConversationService":
+    """Dependency injection for ConversationService"""
+    from ..services.conversation_service import ConversationService
+
+    return ConversationService()
+
+
 @router.post("/chat", response_model=MirrorGPTChatResponse)
-async def mirror_chat(
+async def mirrorgpt_chat(
     request: MirrorGPTChatRequest,
+    conversation_service: "ConversationService" = Depends(get_conversation_service),
     current_user: Dict[str, Any] = Depends(get_user_with_profile),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
@@ -149,11 +161,6 @@ async def mirror_chat(
     try:
         session_id = request.session_id or str(uuid.uuid4())
         conversation_id = request.conversation_id
-
-        # Import conversation service here to avoid circular imports
-        from ..services.conversation_service import ConversationService
-
-        conversation_service = ConversationService()
 
         # Create or get existing conversation
         if not conversation_id:

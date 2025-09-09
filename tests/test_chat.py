@@ -41,6 +41,21 @@ def get_clean_test_client():
             "family_name": "User",
         }
 
+    async def mock_get_user_with_profile():
+        """Mock the enhanced user dependency with complete profile data"""
+        return {
+            "id": "test-user-123",
+            "email": "test@example.com",
+            "firstName": "Test",
+            "lastName": "User",
+            "name": "Test User",  # This is what the enhanced profile provides
+            "emailVerified": True,
+            "cognitoUsername": "testuser",
+            "userStatus": "CONFIRMED",
+            "provider": "cognito",
+            "roles": ["basic_user"],
+        }
+
     def mock_get_mirror_orchestrator():
         mock_orchestrator = Mock()
         mock_orchestrator.process_mirror_chat = AsyncMock(
@@ -77,14 +92,39 @@ def get_clean_test_client():
         return mock_orchestrator
 
     # Override dependencies
-    from src.app.api.mirrorgpt_routes import get_mirror_orchestrator
+    from src.app.api.mirrorgpt_routes import (
+        get_conversation_service,
+        get_mirror_orchestrator,
+    )
+    from src.app.core.enhanced_auth import get_user_with_profile
     from src.app.core.security import get_current_user
 
     app.dependency_overrides = {}
     app.dependency_overrides[get_current_user] = mock_get_current_user
+    app.dependency_overrides[get_user_with_profile] = mock_get_user_with_profile
     app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
+    app.dependency_overrides[get_conversation_service] = (
+        lambda: get_conversation_service_mock()
+    )
 
     return TestClient(app)
+
+
+def get_conversation_service_mock():
+    """Helper function to create ConversationService mock"""
+    mock_conversation_result = Mock()
+    mock_conversation_result.conversation_id = "test-conversation-123"
+
+    mock_conversation_service = Mock()
+    mock_conversation_service.create_conversation = AsyncMock(
+        return_value=mock_conversation_result
+    )
+    mock_conversation_service.add_message_with_mirrorgpt_analysis = AsyncMock(
+        return_value={"success": True}
+    )
+    mock_conversation_service.add_message = AsyncMock(return_value={"success": True})
+
+    return mock_conversation_service
 
 
 def test_mirrorgpt_chat_success():
