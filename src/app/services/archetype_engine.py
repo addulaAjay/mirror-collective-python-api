@@ -690,10 +690,10 @@ class ChangeDetector:
     def _detect_confidence_shift(self, current: Dict, previous: Dict) -> Dict[str, Any]:
         """Detect confidence level changes"""
 
-        prev_confidence = previous.get("current_archetype_stack", {}).get(
-            "confidence_score", 0
+        prev_confidence = float(
+            previous.get("current_archetype_stack", {}).get("confidence_score", 0)
         )
-        curr_confidence = current["signal_3_archetype_blend"]["confidence"]
+        curr_confidence = float(current["signal_3_archetype_blend"]["confidence"])
 
         confidence_delta = abs(curr_confidence - prev_confidence)
 

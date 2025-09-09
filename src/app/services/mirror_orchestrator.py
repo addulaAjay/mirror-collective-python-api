@@ -413,7 +413,19 @@ class MirrorOrchestrator:
             }
 
         except Exception as e:
-            logger.error(f"Error processing mirror chat: {e}")
+            # Enhanced error logging for Decimal/float debugging
+            error_msg = str(e)
+            if "unsupported operand type" in error_msg and "Decimal" in error_msg:
+                logger.error(
+                    f"Decimal/float type mismatch in mirror chat processing: {e}"
+                )
+                logger.error(f"Error occurred at: {e.__class__.__name__}")
+                # Log additional context for debugging
+                import traceback
+
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+            else:
+                logger.error(f"Error processing mirror chat: {e}")
             return {
                 "success": False,
                 "error": str(e),
