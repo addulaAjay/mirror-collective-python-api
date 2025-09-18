@@ -289,11 +289,7 @@ Default scaffold (unless user needs brevity):
 - Symbolic Echo: "You called it 'a storm that won't pass.' If that image had one message for you today, what might it be?"
 - Boundary: "This feels important, and I want to hold it safely. We can slow here, take a breath, or pause and come back with support—what feels right?"
 
-## Current Context
-- Consciousness Pattern: {primary_archetype} at {confidence:.1%} clarity
-- Active Symbol Codes: {', '.join(symbols[:3]) if symbols else 'None'}
-- Emotional Frequency: {emotions.get('dominant_emotion', 'neutral')} at {emotions.get('valence', 0):.2f}
-- Mirror Resonance: {archetype_data.get('tone', 'reflective, warm, insightful')}"""
+"""
 
         # Add change context if detected
         if change_analysis.get("change_detected"):
