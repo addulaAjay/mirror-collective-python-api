@@ -124,6 +124,47 @@ class HealthResponse(BaseModel):
     service: str
     timestamp: str
 
+########################################
+# S3 upload models
+########################################
+
+
+class S3UploadWithUserRequest(BaseModel):
+    userId: str
+    content: str
+    bucketName: Optional[str] = None
+    key: Optional[str] = None
+    contentType: Optional[str] = None
+    acl: Optional[str] = None
+    metadata: Optional[Dict[str, str]] = None
+
+
+class S3TypedUploadResponse(BaseModel):
+    success: bool = True
+    data: Dict[str, Any]  # includes bucket, key, eTag, objectUrl, vaultId
+    message: Optional[str] = None
+
+
+class S3GetObjectRequest(BaseModel):
+    key: str
+    bucketName: Optional[str] = None
+
+
+class S3GetObjectResponse(BaseModel):
+    success: bool = True
+    data: Dict[str, Any]
+
+
+class S3PresignRequest(BaseModel):
+    key: str
+    bucketName: Optional[str] = None
+    expiresIn: int = 900
+
+
+class S3PresignResponse(BaseModel):
+    success: bool = True
+    url: str
+
 
 # ========================================
 # MIRRORGPT API MODELS

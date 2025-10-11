@@ -3,6 +3,7 @@ DynamoDB service for user profile management
 """
 
 import logging
+import uuid
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -48,6 +49,7 @@ class DynamoDBService:
         self.quiz_results_table = os.getenv(
             "DYNAMODB_QUIZ_RESULTS_TABLE", "archetype_quiz_results"
         )
+        self.echo_vault_table = os.getenv("DYNAMODB_ECHO_VAULT_TABLE", "echo_vault")
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -76,6 +78,47 @@ class DynamoDBService:
             )
 
         return kwargs
+
+    async def record_echo_vault_entry(
+        self,
+        *,
+        user_id: str,
+        media_type: str,
+        s3_bucket: str,
+        s3_key: str,
+        object_url: str,
+        content_type: str,
+    ) -> Dict[str, Any]:
+        """Insert an Echo Vault entry linking a user with stored media."""
+        item = {
+            "user_id": user_id,
+            "vault_id": f"{int(datetime.now(timezone.utc).timestamp()*1000)}-{uuid.uuid4().hex[:8]}",
+            "media_type": media_type,
+            "s3_bucket": s3_bucket,
+            "s3_key": s3_key,
+            "object_url": object_url,
+            "content_type": content_type,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.echo_vault_table)
+                await table.put_item(Item=item)
+                logger.info(
+                    f"EchoVault entry created: user={user_id}, type={media_type}, key={s3_key}"
+                )
+                return item
+        except ClientError as e:
+            logger.error(f"DynamoDB error writing echo_vault: {e}")
+            raise InternalServerError(f"Failed to record echo_vault entry: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error writing echo_vault: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
+    
 
     async def get_user_profile(self, user_id: str) -> Optional[UserProfile]:
         """
