@@ -7,6 +7,9 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
+# Triggering reload to pick up new ENVs
+
+
 load_dotenv()
 
 from .api.mirrorgpt_routes import router as mirrorgpt_router

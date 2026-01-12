@@ -20,6 +20,8 @@ from ..api.models import (
     UserRegistrationRequest,
 )
 from ..services.cognito_service import CognitoService
+from ..services.dynamodb_service import DynamoDBService
+from ..services.user_linking_service import UserLinkingService
 from ..services.user_service import UserService
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,8 @@ class AuthController:
     def __init__(self):
         self.cognito_service = CognitoService()
         self.user_service = UserService()
+        dynamodb_service = DynamoDBService()
+        self.linking_service = UserLinkingService(dynamodb_service)
 
     async def register(self, payload: UserRegistrationRequest) -> AuthResponse:
         """Register a new user account"""
@@ -46,6 +50,12 @@ class AuthController:
             first_name=first_name,
             last_name=last_name,
         )
+
+        # Store anonymousId temporarily for linking after email verification
+        # (We'll retrieve it from the registration request during confirm_email)
+        if payload.anonymousId:
+            # TODO: Store in cache/session for email confirmation flow
+            logger.info(f"Registration with anonymousId: {payload.anonymousId}")
 
         user = UserBasic(
             id=signup_result["userSub"],
@@ -190,6 +200,20 @@ class AuthController:
                 logger.info(
                     f"Created user profile in DynamoDB for user: {user_profile.user_id}"
                 )
+
+                # Link anonymous quiz data if anonymousId was provided
+                if payload.anonymousId:
+                    try:
+                        anon_id = f"anon_{payload.anonymousId}"
+                        link_results = await self.linking_service.link_anonymous_data(
+                            anonymous_id=anon_id, user_id=user_profile.user_id
+                        )
+                        logger.info(
+                            f"Anonymous data linking completed for {user_profile.user_id}: {link_results}"
+                        )
+                    except Exception as link_error:
+                        logger.error(f"Failed to link anonymous data: {link_error}")
+                        # Don't fail email confirmation if linking fails
 
             except Exception as e:
                 # Log the error but don't fail the email confirmation

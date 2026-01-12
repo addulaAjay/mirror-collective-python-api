@@ -96,7 +96,7 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "moment_type", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
+                    "Projection": {"ProjectionType": "ALL"},
                 },
                 {
                     "IndexName": "time-index",
@@ -105,7 +105,7 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "triggered_at", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
+                    "Projection": {"ProjectionType": "ALL"},
                 },
             ],
             "BillingMode": "PAY_PER_REQUEST",
@@ -138,7 +138,7 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "trend", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
+                    "Projection": {"ProjectionType": "ALL"},
                 },
                 {
                     "IndexName": "activity-index",
@@ -147,13 +147,53 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "last_seen", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
+                    "Projection": {"ProjectionType": "ALL"},
                 },
             ],
             "BillingMode": "PAY_PER_REQUEST",
             "Tags": [
                 {"Key": "Service", "Value": "MirrorGPT"},
                 {"Key": "Component", "Value": "PatternLoops"},
+                {
+                    "Key": "Environment",
+                    "Value": os.getenv("ENVIRONMENT", "development"),
+                },
+            ],
+        },
+        {
+            "TableName": os.getenv("DYNAMODB_QUIZ_QUESTIONS_TABLE", "quiz_questions"),
+            "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}],
+            "AttributeDefinitions": [{"AttributeName": "id", "AttributeType": "N"}],
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
+                {"Key": "Service", "Value": "MirrorGPT"},
+                {"Key": "Component", "Value": "QuizQuestions"},
+                {
+                    "Key": "Environment",
+                    "Value": os.getenv("ENVIRONMENT", "development"),
+                },
+            ],
+        },
+        {
+            "TableName": os.getenv(
+                "DYNAMODB_QUIZ_RESULTS_TABLE", "archetype_quiz_results"
+            ),
+            "KeySchema": [{"AttributeName": "quiz_id", "KeyType": "HASH"}],
+            "AttributeDefinitions": [
+                {"AttributeName": "quiz_id", "AttributeType": "S"},
+                {"AttributeName": "user_id", "AttributeType": "S"},
+            ],
+            "GlobalSecondaryIndexes": [
+                {
+                    "IndexName": "user-index",
+                    "KeySchema": [{"AttributeName": "user_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
+                {"Key": "Service", "Value": "MirrorGPT"},
+                {"Key": "Component", "Value": "QuizResults"},
                 {
                     "Key": "Environment",
                     "Value": os.getenv("ENVIRONMENT", "development"),
@@ -239,6 +279,7 @@ def verify_tables():
         os.getenv("DYNAMODB_ARCHETYPE_PROFILES_TABLE", "user_archetype_profiles"),
         os.getenv("DYNAMODB_MIRROR_MOMENTS_TABLE", "mirror_moments"),
         os.getenv("DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"),
+        os.getenv("DYNAMODB_QUIZ_QUESTIONS_TABLE", "quiz_questions"),
     ]
 
     logger.info("\n" + "=" * 50)
@@ -301,6 +342,7 @@ def delete_mirrorgpt_tables():
         os.getenv("DYNAMODB_ARCHETYPE_PROFILES_TABLE", "user_archetype_profiles"),
         os.getenv("DYNAMODB_MIRROR_MOMENTS_TABLE", "mirror_moments"),
         os.getenv("DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"),
+        os.getenv("DYNAMODB_QUIZ_QUESTIONS_TABLE", "quiz_questions"),
     ]
 
     for table_name in table_names:

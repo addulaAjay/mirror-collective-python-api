@@ -8,6 +8,7 @@ class UserRegistrationRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
     fullName: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z\s\'-]+$")
+    anonymousId: Optional[str] = None  # For linking anonymous quiz data
 
     @field_validator("password")
     @classmethod
@@ -62,6 +63,7 @@ class RefreshTokenRequest(BaseModel):
 class EmailVerificationRequest(BaseModel):
     email: EmailStr
     verificationCode: str = Field(min_length=1)
+    anonymousId: Optional[str] = None  # For linking anonymous quiz data
 
 
 class ResendVerificationCodeRequest(BaseModel):
@@ -265,6 +267,21 @@ class ImageAnswer(BaseModel):
     image: str
 
 
+class QuizOption(BaseModel):
+    text: Optional[str] = None
+    label: Optional[str] = None
+    image: Optional[str] = None
+    archetype: str
+
+
+class QuizQuestion(BaseModel):
+    id: int
+    question: str
+    options: List[QuizOption]
+    type: Literal["text", "image"]
+    core: bool = False
+
+
 class QuizAnswer(BaseModel):
     questionId: int
     question: str
@@ -321,6 +338,7 @@ class ArchetypeQuizRequest(BaseModel):
     archetypeResult: ArchetypeResult
     quizVersion: str = "1.0"
     detailedResult: Optional[DetailedResult] = None  # Enhanced quiz results
+    anonymousId: Optional[str] = None  # For unauthenticated submissions
 
 
 class ArchetypeQuizData(BaseModel):

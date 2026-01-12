@@ -11,8 +11,8 @@ services:
       - "./docker/dynamodb:/home/dynamodblocal/data"
     working_dir: /home/dynamodblocal
     environment:
-      - AWS_ACCESS_KEY_ID=dummy
-      - AWS_SECRET_ACCESS_KEY=dummy
+      - AWS_ACCESS_KEY_ID=local-development-key
+      - AWS_SECRET_ACCESS_KEY=local-development-secret-key
     networks:
       - local-dev
 
@@ -21,12 +21,12 @@ services:
     image: aaronshaf/dynamodb-admin
     container_name: dynamodb-admin
     ports:
-      - "8001:8001"
+      - "8002:8001"
     environment:
       - DYNAMO_ENDPOINT=http://dynamodb-local:8000
       - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=dummy
-      - AWS_SECRET_ACCESS_KEY=dummy
+      - AWS_ACCESS_KEY_ID=local-development-key
+      - AWS_SECRET_ACCESS_KEY=local-development-secret-key
     depends_on:
       - dynamodb-local
     networks:

@@ -48,6 +48,11 @@ class DynamoDBService:
         self.quiz_results_table = os.getenv(
             "DYNAMODB_QUIZ_RESULTS_TABLE", "archetype_quiz_results"
         )
+        self.quiz_questions_table = os.getenv(
+            "DYNAMODB_QUIZ_QUESTIONS_TABLE", "quiz_questions"
+        )
+
+        # Initialize aioboto3 session
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -785,6 +790,35 @@ class DynamoDBService:
     # MIRRORGPT ARCHETYPE PROFILE METHODS
     # ========================================
 
+    async def get_quiz_questions(self) -> List[Dict[str, Any]]:
+        """
+        Get all active quiz questions from DynamoDB
+
+        Returns:
+            List of question objects
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.quiz_questions_table)
+
+                # Scan table to get all questions (dataset is small)
+                response = await table.scan()
+                questions = response.get("Items", [])
+
+                # Sort by ID
+                questions.sort(key=lambda x: x.get("id", 0))
+
+                return questions
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error getting quiz questions: {e}")
+            raise InternalServerError(f"Failed to get quiz questions: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting quiz questions: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
     async def get_user_archetype_profile(
         self, user_id: str
     ) -> Optional[Dict[str, Any]]:
@@ -1282,6 +1316,39 @@ class DynamoDBService:
             logger.error(f"Unexpected error updating item in {table_name}: {e}")
             return False
 
+    async def get_user_quiz_results(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all quiz results for a specific user
+
+        Args:
+            user_id: User ID (Cognito sub or anon_ID)
+
+        Returns:
+            List of quiz results
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.quiz_results_table)
+
+                # Query by user_id
+                # Based on create_mirrorgpt_tables.py, archetype_quiz_results has user-index
+                response = await table.query(
+                    IndexName="user-index",
+                    KeyConditionExpression="user_id = :uid",
+                    ExpressionAttributeValues={":uid": user_id},
+                )
+
+                return [dict(item) for item in response.get("Items", [])]
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error getting quiz results for {user_id}: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error getting quiz results for {user_id}: {e}")
+            return []
+
     async def save_quiz_results(self, quiz_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Save archetype quiz results
@@ -1320,3 +1387,24 @@ class DynamoDBService:
         except Exception as e:
             logger.error(f"Unexpected error saving quiz results: {e}")
             return {"success": False, "error": str(e)}
+
+    async def delete_user_archetype_profile(self, user_id: str) -> bool:
+        """
+        Delete user archetype profile
+
+        Args:
+            user_id: User ID to delete
+
+        Returns:
+            True if deleted successfully
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.archetype_profiles_table)
+                await table.delete_item(Key={"user_id": user_id})
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting archetype profile for {user_id}: {e}")
+            return False

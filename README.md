@@ -1,57 +1,85 @@
-# Mirror Collective Python API (Serverless FastAPI)
+# Mirror Collective Python API (MirrorGPT & Core Services)
 
-This is a parity FastAPI implementation of the core Node.js API pieces (auth placeholder + chat mirror + health) deployable via Serverless Framework on AWS Lambda + HTTP API.
+A high-performance FastAPI back-end providing the intelligence behind the Mirror Collective app. Built for serverless deployment on AWS Lambda but highly optimized for local development.
 
-## Features Implemented
-- /health endpoint
-- /api/auth/login (stub implementation - NOT secure; replace with Cognito SRP flow)
-- /api/auth/me (decodes unverified JWT claims for parity; add JWKS verification for production)
-- /api/chat/mirror with request validation and simple echo response
-- CORS, security headers, structured models
-- In-memory rate limit placeholder (can be extended with DynamoDB/Redis)
+## 🌟 Key Features
 
-## Project Structure
-```
-python_api/
-  serverless.yml
-  requirements.txt
-  src/
-    app/
-      handler.py          # Lambda entry (Mangum)
-      api/
-        routes.py         # Routes
-        models.py         # Pydantic models
-      core/
-        security.py       # JWT decode helpers
-```
+- **MirrorGPT Orchestrator**: Multi-stage intelligence flow using OpenAI to analyze user data and generate archetypes.
+- **Dynamic Quiz Engine**: Managed quiz results and user archetype profiles.
+- **Anonymous Linking**: Seamlessly migrate anonymous quiz data to authenticated accounts.
+- **Health Monitoring**: Detailed system health checks including DynamoDB connectivity and AI service status.
+- **Serverless Ready**: Native Mangum integration for AWS Lambda deployment.
 
-## Local Development
-Install dependencies:
-```
-pip install -r requirements.txt
-```
-Run locally:
-```
-uvicorn src.app.handler:app --reload --port 8001
-```
-Test:
-```
-curl http://localhost:8001/health
-curl -X POST http://localhost:8001/api/chat/mirror -H 'Content-Type: application/json' -d '{"message":"Hello"}'
-```
+---
 
-## Deployment
-Prerequisites: Serverless Framework with Python requirements plugin.
+## 💻 Local Development Setup
+
+The easiest way to get started is using the provided automated setup script.
+
+### Prerequisites
+- Python 3.12+
+- Docker (for DynamoDB Local)
+- AWS CLI (for local table management)
+
+### Quick Start (One Command)
+```bash
+./setup-local.sh
 ```
-cd python_api
+*This script will: create your virtual environment, install dependencies, start DynamoDB Local in Docker, and initialize all required tables.*
+
+### Manual Setup
+If you prefer to perform steps individually:
+1. **Environment**: `cp .env.example .env.local` and add your `OPENAI_API_KEY`.
+2. **Dependencies**: `pip install -r requirements.txt`
+3. **Database**: Start DynamoDB Local and run table creation scripts:
+   ```bash
+   python scripts/create_dynamodb_tables.py
+   python scripts/create_conversation_tables.py
+   python scripts/create_mirrorgpt_tables_clean.py
+   ```
+4. **Run Server**:
+   ```bash
+   export $(cat .env.local | xargs)
+   uvicorn src.app.handler:app --reload --port 8001
+   ```
+
+---
+
+## 🚀 Environment Deployment
+
+The API uses the **Serverless Framework** for cloud deployments.
+
+### Initial Configuration
+Ensure you have the Serverless Framework installed and AWS credentials configured.
+
+### Deploying to a Specific Environment
+Use the `STAGE` variable to target different environments:
+
+```bash
+# Deploy to Staging
 STAGE=staging serverless deploy
+
+# Deploy to Production
+STAGE=production serverless deploy
 ```
 
-## Security TODOs
-- Implement real Cognito auth (InitiateAuth + RespondToAuthChallenge)
-- Verify JWT signatures using Cognito JWKS (instead of unverified decode)
-- Replace stub tokens
-- Persistent rate limiting store
+### Environment Variables (.env)
+Each environment should have a corresponding configuration. Reference `.env.example` for required keys:
+- `DYNAMODB_ENDPOINT_URL`: (Optional) Only used for local dev.
+- `OPENAI_API_KEY`: Required for MirrorGPT functions.
+- `AWS_REGION`: Target region (e.g., `us-east-1`).
+- `ENVIRONMENT`: set to `production`, `staging`, or `development`.
 
-## Notes
-This is a starting point for migration or dual-runtime support alongside the existing Node.js API.
+---
+
+## 🛠 Project Structure
+
+- `src/app/api/`: API route definitions and Pydantic models.
+- `src/app/services/`: Business logic (DynamoDB, User Linking, MirrorGPT).
+- `src/app/core/`: Security, config, and health check logic.
+- `scripts/`: Database migrations and utility scripts.
+- `tests/`: Integration and unit tests.
+
+## 🔗 Related Documentation
+- [Local Development Deep Dive](LOCAL_DEVELOPMENT.md)
+- [Postman Testing Guide](POSTMAN_TESTING_GUIDE.md)

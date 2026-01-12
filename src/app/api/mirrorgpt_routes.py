@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ..services.conversation_service import ConversationService
 
 from ..core.enhanced_auth import get_user_with_profile
-from ..core.security import get_current_user
+from ..core.security import get_current_user, get_current_user_optional
 from ..services.dynamodb_service import DynamoDBService
 from ..services.mirror_orchestrator import MirrorOrchestrator
 from ..services.openai_service import OpenAIService
@@ -37,6 +37,7 @@ from .models import (
     MirrorMomentResponse,
     PatternLoopData,
     PatternLoopResponse,
+    QuizQuestion,
     UserInsightsData,
     UserInsightsResponse,
 )
@@ -301,27 +302,49 @@ async def analyze_archetype(
         )
 
 
+@router.get("/quiz/questions")
+async def get_quiz_questions(
+    orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
+):
+    """
+    Get all active quiz questions
+    """
+    try:
+        # For now, we'll return the questions from DynamoDB
+        # If not found, we could fallback to a hardcoded list or return empty
+        questions = await orchestrator.dynamodb_service.get_quiz_questions()
+        return {"success": True, "data": questions}
+    except Exception as e:
+        logger.error(f"Failed to get quiz questions: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get quiz questions: {str(e)}"
+        )
+
+
 @router.post("/quiz/submit", response_model=ArchetypeQuizResponse)
 async def submit_archetype_quiz(
     request: ArchetypeQuizRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
     Submit archetype quiz results and create initial user profile
 
-    This endpoint processes the results from the initial archetype quiz and:
-    - Creates the user's base archetype profile using the authenticated user's ID
-    - Stores quiz answers for reference
-    - Sets up the foundation for future conversation analysis
-    - Establishes the initial archetype which will evolve through chat interactions
-
-    Note: User ID is automatically extracted from the authentication token for security.
+    Supports both authenticated users and anonymous submissions via anonymousId.
     """
 
     try:
-        # Get user ID from authenticated token (more secure than request body)
-        user_id = current_user["id"]
+        user_id = None
+        if current_user:
+            user_id = current_user["id"]
+        elif request.anonymousId:
+            # Use anonymous ID as temporary user ID
+            user_id = f"anon_{request.anonymousId}"
+        else:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required or anonymousId must be provided",
+            )
 
         # Convert quiz answers to a format suitable for storage
         quiz_answers = []
@@ -405,6 +428,51 @@ async def submit_archetype_quiz(
     except Exception as e:
         logger.error(f"Quiz submission failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Quiz submission failed: {str(e)}")
+
+
+@router.get("/quiz/results")
+async def get_my_quiz_results(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
+):
+    """
+    Get authenticated user's quiz results and archetype profile
+
+    Used for cross-device sync after login
+    """
+    try:
+        user_id = current_user["id"]
+
+        # Access DynamoDBService through orchestrator
+        dynamodb = orchestrator.dynamodb_service
+
+        # Get archetype profile
+        profile = await dynamodb.get_user_archetype_profile(user_id)
+
+        # Get quiz results
+        quiz_results = await dynamodb.get_user_quiz_results(user_id)
+
+        if not profile and not quiz_results:
+            return {
+                "success": True,
+                "data": None,
+                "message": "No quiz data found for this user",
+            }
+
+        return {
+            "success": True,
+            "data": {
+                "profile": profile,
+                "quiz_results": quiz_results,
+            },
+            "message": "Quiz data retrieved successfully",
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching quiz results: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch quiz results: {str(e)}"
+        )
 
 
 @router.get("/quiz/history")

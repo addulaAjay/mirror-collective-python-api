@@ -40,7 +40,6 @@ def create_users_table(dynamodb, table_name):
                     "IndexName": "email-index",
                     "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 }
             ],
             BillingMode="PAY_PER_REQUEST",
@@ -127,7 +126,6 @@ def create_conversations_table(dynamodb, table_name):
                         {"AttributeName": "last_message_at", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 }
             ],
             BillingMode="PAY_PER_REQUEST",
@@ -180,7 +178,6 @@ def create_messages_table(dynamodb, table_name):
                     "IndexName": "message-id-index",
                     "KeySchema": [{"AttributeName": "message_id", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 }
             ],
             BillingMode="PAY_PER_REQUEST",
