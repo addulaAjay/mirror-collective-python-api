@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
-from dotenv import load_dotenv
-from src.app.services.scheduler import start_scheduler
 
 
 load_dotenv()
+
+from src.app.services.scheduler import start_scheduler
 
 from .api.mirrorgpt_routes import router as mirrorgpt_router
 from .api.models import HealthResponse

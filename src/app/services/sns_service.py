@@ -31,7 +31,17 @@ class SNSService:
             "priority": "high",
             "android_channel_id": "general"
         }
-        message = {"default": body, "GCM": json.dumps(gcm_payload)}
+        apns_payload = {
+            "aps": {
+                "alert": {"title": title, "body": body},
+                "sound": "default"
+            }
+        }
+        message = {
+            "default": body,
+            "GCM": json.dumps(gcm_payload),
+            "APNS": json.dumps(apns_payload)
+        }
 
         response = self.sns.publish(
             TopicArn=self.topic_arn,
@@ -46,7 +56,17 @@ class SNSService:
             "priority": "high",
             "android_channel_id": "general"
         }
-        message = {"default": body, "GCM": json.dumps(gcm_payload)}
+        apns_payload = {
+            "aps": {
+                "alert": {"title": title, "body": body},
+                "sound": "default"
+            }
+        }
+        message = {
+            "default": body,
+            "GCM": json.dumps(gcm_payload),
+            "APNS": json.dumps(apns_payload)
+        }
 
         response = self.sns.publish(
             TargetArn=endpoint_arn,

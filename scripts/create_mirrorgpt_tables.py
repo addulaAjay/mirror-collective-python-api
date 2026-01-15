@@ -10,6 +10,10 @@ import sys
 
 import boto3
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 # Add src to path to import config
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -96,7 +100,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "moment_type", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 },
                 {
                     "IndexName": "time-index",
@@ -105,7 +108,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "triggered_at", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 },
             ],
             "BillingMode": "PAY_PER_REQUEST",
@@ -138,7 +140,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "trend", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 },
                 {
                     "IndexName": "activity-index",
@@ -147,7 +148,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "last_seen", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "BillingMode": "PAY_PER_REQUEST",
                 },
             ],
             "BillingMode": "PAY_PER_REQUEST",
