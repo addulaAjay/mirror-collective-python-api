@@ -21,6 +21,10 @@ import sys
 
 import boto3
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 
 
 def create_users_table(dynamodb, table_name):
@@ -252,7 +256,14 @@ def main():
             )
             # Test local connection
             try:
-                list(dynamodb.tables.all())
+                dynamodb_client = boto3.client(
+                    "dynamodb",
+                    endpoint_url=endpoint_url,
+                    region_name=region,
+                    aws_access_key_id="dummy",
+                    aws_secret_access_key="dummy",
+                )
+                dynamodb_client.list_tables()
                 print("✅ Connected to local DynamoDB")
             except Exception as e:
                 print("❌ Cannot connect to local DynamoDB. Make sure it's running:")
