@@ -1,5 +1,5 @@
 import re
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -8,6 +8,7 @@ class UserRegistrationRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
     fullName: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z\s\'-]+$")
+    anonymousId: Optional[str] = None  # For linking anonymous quiz data
 
     @field_validator("password")
     @classmethod
@@ -62,6 +63,7 @@ class RefreshTokenRequest(BaseModel):
 class EmailVerificationRequest(BaseModel):
     email: EmailStr
     verificationCode: str = Field(min_length=1)
+    anonymousId: Optional[str] = None  # For linking anonymous quiz data
 
 
 class ResendVerificationCodeRequest(BaseModel):
@@ -267,12 +269,68 @@ class MirrorMomentAcknowledgeResponse(BaseModel):
 # ========================================
 
 
+class ImageAnswer(BaseModel):
+    label: str
+    image: str
+
+
+class QuizOption(BaseModel):
+    text: Optional[str] = None
+    label: Optional[str] = None
+    image: Optional[str] = None
+    archetype: str
+
+
+class QuizQuestion(BaseModel):
+    id: int
+    question: str
+    options: List[QuizOption]
+    type: Literal["text", "image"]
+    core: bool = False
+
+
 class QuizAnswer(BaseModel):
     questionId: int
     question: str
-    answer: str
+    answer: Union[str, ImageAnswer]  # Can be text string or image object
     answeredAt: str
     type: Literal["text", "image", "multiple_choice"] = "text"
+
+
+class ArchetypeScores(BaseModel):
+    """Detailed archetype scoring breakdown"""
+
+    Seeker: Optional[int] = 0
+    Guardian: Optional[int] = 0
+    Flamebearer: Optional[int] = 0
+    Weaver: Optional[int] = 0
+    WoundedExplorer: Optional[int] = 0
+    Magician: Optional[int] = 0
+    Innocent: Optional[int] = 0
+    Sage: Optional[int] = 0
+    Hero: Optional[int] = 0
+    Outlaw: Optional[int] = 0
+    Lover: Optional[int] = 0
+    Jester: Optional[int] = 0
+    Caregiver: Optional[int] = 0
+    Ruler: Optional[int] = 0
+
+
+class ArchetypeAnalysis(BaseModel):
+    """Detailed archetype analysis and recommendations"""
+
+    strengths: List[str]
+    challenges: List[str]
+    recommendations: List[str]
+
+
+class DetailedResult(BaseModel):
+    """Enhanced quiz result with detailed breakdown"""
+
+    scores: Dict[str, int]  # Flexible scoring for any archetype names
+    primaryArchetype: str
+    confidence: float
+    analysis: ArchetypeAnalysis
 
 
 class ArchetypeResult(BaseModel):
@@ -286,6 +344,8 @@ class ArchetypeQuizRequest(BaseModel):
     completedAt: str
     archetypeResult: ArchetypeResult
     quizVersion: str = "1.0"
+    detailedResult: Optional[DetailedResult] = None  # Enhanced quiz results
+    anonymousId: Optional[str] = None  # For unauthenticated submissions
 
 
 class ArchetypeQuizData(BaseModel):
@@ -295,6 +355,8 @@ class ArchetypeQuizData(BaseModel):
     quiz_version: str
     profile_created: bool = True
     answers_stored: bool = True
+    detailed_result_stored: bool = True
+    confidence_score: Optional[float] = None
 
 
 class ArchetypeQuizResponse(BaseModel):

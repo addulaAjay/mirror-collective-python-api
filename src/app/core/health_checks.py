@@ -186,10 +186,20 @@ class DatabaseHealthCheck(HealthCheck):
                     "error": "Missing DynamoDB table configuration",
                 }
 
-            # Create DynamoDB client
-            dynamodb = boto3.client(
-                "dynamodb", region_name=os.getenv("AWS_REGION", "us-east-1")
-            )
+            # Create DynamoDB client with endpoint_url for local development
+            region_name = os.getenv("AWS_REGION", "us-east-1")
+            endpoint_url = os.getenv("DYNAMODB_ENDPOINT_URL")
+
+            if endpoint_url:
+                dynamodb = boto3.client(
+                    "dynamodb",
+                    region_name=region_name,
+                    endpoint_url=endpoint_url,
+                    aws_access_key_id="dummy",
+                    aws_secret_access_key="dummy",
+                )
+            else:
+                dynamodb = boto3.client("dynamodb", region_name=region_name)
 
             # Check if tables exist and are active
             table_statuses = {}
@@ -275,7 +285,20 @@ class HealthCheckService:
             elif isinstance(result, dict):
                 # Ensure the result is JSON serializable by converting to basic types
                 serializable_result = self._make_json_serializable(result)
+
+                # Check for errors in the individual health check result (including nested details)
+                details = serializable_result.get("details", {})
+                has_error = (
+                    serializable_result.get("error") is not None
+                    or details.get("error") is not None
+                    or details.get("connection_error") is not None
+                )
+
+                if has_error:
+                    serializable_result["status"] = HealthStatus.UNHEALTHY.value
+
                 check_results.append(serializable_result)
+
                 if serializable_result.get("status") == HealthStatus.UNHEALTHY.value:
                     overall_status = HealthStatus.UNHEALTHY
                 elif (

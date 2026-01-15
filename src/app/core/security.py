@@ -230,3 +230,7 @@ async def get_optional_user(
         return await get_current_user(request, credentials)
     except (AuthenticationError, InvalidTokenError, TokenExpiredError):
         return None
+
+
+# Alias for consistency
+get_current_user_optional = get_optional_user
