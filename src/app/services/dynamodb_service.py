@@ -51,6 +51,9 @@ class DynamoDBService:
         self.quiz_questions_table = os.getenv(
             "DYNAMODB_QUIZ_QUESTIONS_TABLE", "quiz_questions"
         )
+        self.device_tokens_table = os.getenv(
+            "DYNAMODB_DEVICE_TOKENS_TABLE", "user_device_tokens"
+        )
 
         # Initialize aioboto3 session
 
@@ -802,22 +805,191 @@ class DynamoDBService:
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
                 table = await dynamodb.Table(self.quiz_questions_table)
-
-                # Scan table to get all questions (dataset is small)
                 response = await table.scan()
-                questions = response.get("Items", [])
-
-                # Sort by ID
-                questions.sort(key=lambda x: x.get("id", 0))
-
-                return questions
-
-        except ClientError as e:
-            logger.error(f"DynamoDB error getting quiz questions: {e}")
-            raise InternalServerError(f"Failed to get quiz questions: {str(e)}")
+                return response.get("Items", [])
         except Exception as e:
-            logger.error(f"Unexpected error getting quiz questions: {e}")
-            raise InternalServerError(f"Unexpected error: {str(e)}")
+            logger.error(f"Error getting quiz questions: {e}")
+            return []
+
+    # ========================================
+    # PUSH NOTIFICATION DEVICE TOKEN METHODS
+    # ========================================
+
+    async def save_device_token(
+        self, user_id: str, device_token: str, endpoint_arn: str, platform: str
+    ) -> bool:
+        """
+        Save or update a device token for a user
+
+        Args:
+            user_id: Cognito sub (UUID)
+            device_token: FCM/APNs token
+            endpoint_arn: SNS platform endpoint ARN
+            platform: 'android' or 'ios'
+
+        Returns:
+            bool: True if saved successfully
+        """
+        try:
+            from ..models.device_token import DeviceToken
+
+            token_obj = DeviceToken(
+                user_id=user_id,
+                device_token=device_token,
+                endpoint_arn=endpoint_arn,
+                platform=platform,
+            )
+
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.device_tokens_table)
+                await table.put_item(Item=token_obj.to_dynamodb_item())
+
+                logger.info(
+                    f"Saved device token for user {user_id} on {platform}. Endpoint: {endpoint_arn}"
+                )
+                return True
+        except Exception as e:
+            logger.error(f"Error saving device token for user {user_id}: {e}")
+            return False
+
+    async def get_user_device_tokens(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all registered device tokens for a user
+
+        Args:
+            user_id: Cognito sub (UUID)
+
+        Returns:
+            List of device token records
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.device_tokens_table)
+                response = await table.query(
+                    KeyConditionExpression="user_id = :user_id",
+                    ExpressionAttributeValues={":user_id": user_id},
+                )
+                return response.get("Items", [])
+        except Exception as e:
+            logger.error(f"Error getting device tokens for user {user_id}: {e}")
+            return []
+
+    async def get_device_token(
+        self, user_id: str, device_token: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific device token record
+
+        Args:
+            user_id: Cognito sub (UUID)
+            device_token: The FCM/APNs token
+
+        Returns:
+            Device token record if found
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.device_tokens_table)
+                response = await table.get_item(
+                    Key={"user_id": user_id, "device_token": device_token}
+                )
+                return response.get("Item")
+        except Exception as e:
+            logger.error(
+                f"Error getting device token {device_token} for user {user_id}: {e}"
+            )
+            return None
+
+    async def deidentify_device_token(self, user_id: str, device_token: str) -> bool:
+        """
+        Move a device token from a specific user to 'GUEST' status.
+        This provides privacy for the user while maintaining the SNS endpoint
+        for broadcast/retention notifications.
+
+        Args:
+            user_id: The ID of the user logging out
+            device_token: The FCM/APNs token
+        """
+        try:
+            # 1. Get existing registration
+            reg = await self.get_device_token(user_id, device_token)
+            if not reg:
+                logger.info(f"No registration found to de-identify for user {user_id}")
+                return True
+
+            # 2. Create the GUEST record
+            from ..models.device_token import DeviceToken
+
+            guest_token = DeviceToken(
+                user_id="GUEST",
+                device_token=device_token,
+                endpoint_arn=reg["endpoint_arn"],
+                platform=reg["platform"],
+            )
+
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.device_tokens_table)
+
+                # Save as GUEST
+                await table.put_item(Item=guest_token.to_dynamodb_item())
+
+                # Delete the user-specific record
+                await table.delete_item(
+                    Key={"user_id": user_id, "device_token": device_token}
+                )
+
+            logger.info(
+                f"De-identified device {device_token} for user {user_id} (moved to GUEST)"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error de-identifying device token for user {user_id}: {e}")
+            return False
+
+    async def delete_device_token(self, user_id: str, device_token: str) -> bool:
+        """
+        Hard delete a device token record (e.g., on token invalidation)
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.device_tokens_table)
+                await table.delete_item(
+                    Key={"user_id": user_id, "device_token": device_token}
+                )
+                logger.info(f"Deleted device token {device_token} for user {user_id}")
+                return True
+        except Exception as e:
+            logger.error(
+                f"Error deleting device token {device_token} for user {user_id}: {e}"
+            )
+            return False
+
+    async def cleanup_guest_registration(self, device_token: str) -> None:
+        """
+        Remove any 'GUEST' registration for this device token.
+        Called when a real user registers the device.
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.device_tokens_table)
+                await table.delete_item(
+                    Key={"user_id": "GUEST", "device_token": device_token}
+                )
+                logger.info(f"Cleaned up guest registration for device {device_token}")
+        except Exception as e:
+            logger.debug(f"Guest cleanup failed (likely didn't exist): {e}")
 
     async def get_user_archetype_profile(
         self, user_id: str

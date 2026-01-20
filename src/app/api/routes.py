@@ -1,15 +1,18 @@
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from jose import jwt
 
 from ..controllers.auth_controller import AuthController
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
+from ..services.dynamodb_service import DynamoDBService
 from ..services.sns_service import SNSService
 from .models import (
     AuthResponse,
     DeviceRegistrationRequest,
+    DeviceUnregistrationRequest,
     EmailVerificationRequest,
     ForgotPasswordRequest,
     GeneralApiResponse,
@@ -29,6 +32,7 @@ router = APIRouter()
 # Initialize controllers
 auth_controller = AuthController()
 sns_service = SNSService()
+dynamodb_service = DynamoDBService()
 
 
 # Dependency injection for controllers
@@ -121,60 +125,115 @@ async def delete_account(
 
 # push notification endpoint
 @router.post("/send-notification")
-async def send_notification(request: NotificationRequest):
+async def send_notification(
+    request: NotificationRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Admin/Dev endpoint to send broadcast notifications (Requires Auth)"""
+    logger.info(f"User {current_user['id']} triggered a broadcast notification")
     msg_id = sns_service.publish_to_topic(request.title, request.body)
-    return {"status": "sent", "message_id": msg_id}
+    return {
+        "success": True,
+        "data": {"message_id": msg_id},
+        "message": "Notification broadcast initiated",
+    }
 
-# this is the FCM token you get from the mobile app
+
+# device registration endpoint
 @router.post("/register-device")
-def register_device(request: DeviceRegistrationRequest):
-    # Step 1: Try to find an existing endpoint for this token
+async def register_device(
+    request: DeviceRegistrationRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Register a device for push notifications (Requires Auth)"""
+    user_id = current_user["id"]
+    device_token = request.device_token
+    platform = request.platform
+
     try:
-        response = sns_service.sns.list_endpoints_by_platform_application(
-            PlatformApplicationArn=sns_service.platform_app_arn
+        # Step 1: Check if we already have this registration in DB
+        existing_registration = await dynamodb_service.get_device_token(
+            user_id, device_token
         )
 
-        existing_endpoint = None
-        for endpoint in response["Endpoints"]:
-            if endpoint["Attributes"].get("Token") == request.device_token:
-                existing_endpoint = endpoint["EndpointArn"]
-                break
-
-        # Step 2: If endpoint exists, return it
-        if existing_endpoint:
+        if existing_registration:
+            logger.info(
+                f"Device already registered for user {user_id}. Returning existing ARN."
+            )
             return {
-                "status": "already_registered",
-                "endpoint_arn": existing_endpoint
+                "success": True,
+                "data": {
+                    "status": "already_registered",
+                    "endpoint_arn": existing_registration["endpoint_arn"],
+                },
             }
 
-        # Step 3: If not, create a new one and subscribe it to the topic
+        # Step 2: Create new endpoint in SNS
         endpoint_arn = sns_service.create_platform_endpoint(
-            fcm_token=request.device_token,
-            user_id=request.user_id
+            token=device_token, platform=platform, user_id=user_id
         )
 
+        # Step 3: Subscribe to the main topic
         try:
             subscription_arn = sns_service.subscribe_to_topic(endpoint_arn)
         except Exception as subscribe_error:
-            return {
-                "status": "error",
-                "message": f"Endpoint created but subscription failed: {subscribe_error}",
-                "endpoint_arn": endpoint_arn,
-            }
+            logger.error(f"Endpoint created but subscription failed: {subscribe_error}")
+            subscription_arn = None
+
+        # Step 4: Persist in DynamoDB for O(1) lookups in the future
+        # First, cleanup any existing 'GUEST' entry for this device
+        await dynamodb_service.cleanup_guest_registration(device_token)
+
+        saved = await dynamodb_service.save_device_token(
+            user_id=user_id,
+            device_token=device_token,
+            endpoint_arn=endpoint_arn,
+            platform=platform,
+        )
+
+        if not saved:
+            logger.warning(
+                f"Registration succeeded but DB persistence failed for user {user_id}"
+            )
 
         return {
-            "status": "registered",
-            "endpoint_arn": endpoint_arn,
-            "subscription_arn": subscription_arn,
+            "success": True,
+            "data": {
+                "status": "registered",
+                "endpoint_arn": endpoint_arn,
+                "subscription_arn": subscription_arn,
+            },
+            "message": "Device registered successfully",
         }
 
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.error(f"Error in register_device: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/unregister-device")
+async def unregister_device(
+    request: DeviceUnregistrationRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """De-identify a device on logout (keep in DB as GUEST, do not delete SNS)"""
+    user_id = current_user["id"]
+    device_token = request.device_token
+
+    try:
+        # Step 1: De-identify the device in DynamoDB
+        # This clears the user_id link but keeps the record (as GUEST) for retention broadcasts.
+        # We do NOT delete the SNS endpoint to allow for future re-engagement.
+        success = await dynamodb_service.deidentify_device_token(user_id, device_token)
+
+        if success:
+            return {"success": True, "message": "Device de-identified successfully"}
+        else:
+            return {"success": False, "message": "Failed to de-identify device"}
+    except Exception as e:
+        logger.error(f"Error in unregister_device: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Note: Chat functionality has been moved to MirrorGPT routes at /api/mirrorgpt/chat
 # This provides the full MirrorGPT experience with 5-signal analysis and archetype guidance
-

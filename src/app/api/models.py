@@ -126,13 +126,20 @@ class HealthResponse(BaseModel):
     service: str
     timestamp: str
 
+
 class NotificationRequest(BaseModel):
     title: str
     body: str
 
+
 class DeviceRegistrationRequest(BaseModel):
-    user_id: str
-    device_token: str 
+    device_token: str
+    platform: str = "android"  # Default to android for backward compatibility
+
+
+class DeviceUnregistrationRequest(BaseModel):
+    device_token: str
+
 
 # ========================================
 # MIRRORGPT API MODELS
@@ -363,4 +370,3 @@ class ArchetypeQuizResponse(BaseModel):
     success: bool = True
     data: ArchetypeQuizData
     message: str = "Initial archetype profile created successfully"
-
