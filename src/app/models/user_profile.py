@@ -18,7 +18,7 @@ class UserStatus(Enum):
     UNKNOWN = "UNKNOWN"
     RESET_REQUIRED = "RESET_REQUIRED"
     FORCE_CHANGE_PASSWORD = (
-        "FORCE_CHANGE_PASSWORD"  # nosec B105 - Status constant, not password
+        "FORCE_CHANGE_PASSWORD"  # nosec B105  # Status constant, not a password
     )
 
 
