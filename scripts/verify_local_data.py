@@ -13,8 +13,8 @@ def get_dynamodb_resource():
         "dynamodb",
         region_name="us-east-1",
         endpoint_url="http://localhost:8000",
-        aws_access_key_id="dummy",
-        aws_secret_access_key="dummy",
+        aws_access_key_id="dummy",  # nosec
+        aws_secret_access_key="dummy",  # nosec
     )
 
 
@@ -36,12 +36,11 @@ def scan_table(table_name):
 
             for item in items:
                 # Try to guess the PK
-                pk = (
-                    item.get("user_id")
-                    or item.get("quiz_id")
-                    or item.get("id")
-                    or "Unknown"
-                )
+                pk = "Unknown"
+                for k in ["user_id", "quiz_id", "id"]:
+                    if item.get(k):
+                        pk = item.get(k)
+                        break
                 t.add_row(str(pk), str(item)[:100] + "...")
 
             console.print(t)

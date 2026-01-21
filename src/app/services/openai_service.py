@@ -21,9 +21,11 @@ class ChatMessage:
 
     def __init__(self, role: str, content: str):
         if role not in ["system", "user", "assistant"]:
-            raise ValueError(
-                f"Invalid message role: {role}. Must be 'system', 'user', or 'assistant'"
+            msg = (
+                f"Invalid message role: {role}. "
+                f"Must be 'system', 'user', or 'assistant'"
             )
+            raise ValueError(msg)
         self.role = role
         self.content = content
 
@@ -95,7 +97,8 @@ class OpenAIService(IMirrorChatRepository):
             raise ValueError("OPENAI_API_KEY environment variable is required")
 
         self.client = OpenAI(api_key=api_key)
-        # High-performance model selection - gpt-4o for better quality and faster response
+        # High-performance model selection - gpt-4o for better quality
+        # and faster response
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
         self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
@@ -122,7 +125,8 @@ class OpenAIService(IMirrorChatRepository):
             ]
 
             logger.debug(
-                f"Generating AI response from {len(openai_messages)} conversation messages using {self.model}"
+                f"Generating AI response from {len(openai_messages)} "
+                f"conversations using {self.model}"
             )
 
             # Call OpenAI chat completion API with optimized settings (non-streaming)
@@ -149,7 +153,8 @@ class OpenAIService(IMirrorChatRepository):
         self, messages: List[ChatMessage]
     ) -> AsyncGenerator[str, None]:
         """
-        Generate streaming AI response from conversation messages using OpenAI's chat completion
+        Generate streaming AI response from messages using OpenAI's
+        chat completion
 
         Args:
             messages: List of conversation messages including system prompt and history
@@ -167,7 +172,8 @@ class OpenAIService(IMirrorChatRepository):
             ]
 
             logger.debug(
-                f"Generating streaming AI response from {len(openai_messages)} messages using {self.model}"
+                f"Generating streaming AI response from "
+                f"{len(openai_messages)} messages using {self.model}"
             )
 
             # Call OpenAI chat completion API with streaming enabled

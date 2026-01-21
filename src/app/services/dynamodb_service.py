@@ -62,9 +62,11 @@ class DynamoDBService:
 
         # Log configuration
         target = "Local DynamoDB" if self.endpoint_url else "AWS DynamoDB"
-        logger.info(
-            f"DynamoDB service initialized - Target: {target}, Region: {self.region}, Users Table: {self.users_table}"
+        msg = (
+            f"DynamoDB service initialized - Target: {target}, "
+            f"Region: {self.region}, Users Table: {self.users_table}"
         )
+        logger.info(msg)
         logger.info(f"MirrorGPT tables - Profiles: {self.archetype_profiles_table}")
         if self.endpoint_url:
             logger.info(f"Using local DynamoDB endpoint: {self.endpoint_url}")
@@ -147,7 +149,8 @@ class DynamoDBService:
                 existing_profile = await self.get_user_profile(user_profile.user_id)
                 if existing_profile is None:
                     raise InternalServerError(
-                        f"User profile should exist but could not be retrieved: {user_profile.user_id}"
+                        f"User profile should exist but could not be retrieved: "
+                        f"{user_profile.user_id}"
                     )
                 return existing_profile
             else:
@@ -273,13 +276,17 @@ class DynamoDBService:
                 if activity_type == "chat":
                     await table.update_item(
                         Key=key,
-                        UpdateExpression="ADD chat_messages :inc SET last_chat_at = :time",
+                        UpdateExpression=(
+                            "ADD chat_messages :inc SET last_chat_at = :time"
+                        ),
                         ExpressionAttributeValues={":inc": 1, ":time": current_time},
                     )
                 elif activity_type == "login":
                     await table.update_item(
                         Key=key,
-                        UpdateExpression="ADD login_count :inc SET last_login_at = :time",
+                        UpdateExpression=(
+                            "ADD login_count :inc SET last_login_at = :time"
+                        ),
                         ExpressionAttributeValues={":inc": 1, ":time": current_time},
                     )
 
@@ -288,7 +295,9 @@ class DynamoDBService:
                     users_table = await dynamodb.Table(self.users_table)
                     await users_table.update_item(
                         Key={"user_id": user_id},
-                        UpdateExpression="ADD conversation_count :inc SET updated_at = :time",
+                        UpdateExpression=(
+                            "ADD conversation_count :inc SET updated_at = :time"
+                        ),
                         ExpressionAttributeValues={":inc": 1, ":time": current_time},
                     )
 
@@ -392,7 +401,8 @@ class DynamoDBService:
                 )
 
                 logger.info(
-                    f"Created conversation {conversation.conversation_id} for user {conversation.user_id}"
+                    f"Created conversation {conversation.conversation_id} "
+                    f"for user {conversation.user_id}"
                 )
                 return conversation
 
@@ -439,7 +449,8 @@ class DynamoDBService:
                         return conversation
                     else:
                         logger.warning(
-                            f"User {user_id} attempted to access conversation {conversation_id} owned by {conversation.user_id}"
+                            f"User {user_id} attempted to access conversation "
+                            f"{conversation_id} owned by {conversation.user_id}"
                         )
                         return None
                 return None
@@ -468,7 +479,11 @@ class DynamoDBService:
                 table = await dynamodb.Table(self.conversations_table)
 
                 # Update only specific fields to avoid overwriting
-                update_expression = "SET #title = :title, updated_at = :updated_at, message_count = :message_count, total_tokens = :total_tokens, last_message_at = :last_message_at"
+                update_expression = (
+                    "SET #title = :title, updated_at = :updated_at, "
+                    "message_count = :message_count, total_tokens = :total_tokens, "
+                    "last_message_at = :last_message_at"
+                )
                 expression_attribute_names = {"#title": "title"}
                 expression_attribute_values = {
                     ":title": conversation.title,
@@ -569,11 +584,10 @@ class DynamoDBService:
                 if "Item" not in response:
                     return False
 
-                conversation_item = response["Item"]
-
+                update_expr = "SET is_archived = :archived, updated_at = :updated_at"
                 await table.update_item(
                     Key={"conversation_id": conversation_id, "user_id": user_id},
-                    UpdateExpression="SET is_archived = :archived, updated_at = :updated_at",
+                    UpdateExpression=update_expr,
                     ExpressionAttributeValues={
                         ":archived": True,
                         ":updated_at": datetime.now(timezone.utc)
@@ -640,14 +654,13 @@ class DynamoDBService:
                 if "Item" not in conversation_response:
                     return False
 
-                conversation_item = conversation_response["Item"]
-
                 await conversations_table.delete_item(
                     Key={"conversation_id": conversation_id, "user_id": user_id}
                 )
 
                 logger.info(
-                    f"Deleted conversation {conversation_id} and its messages for user {user_id}"
+                    f"Deleted conversation {conversation_id} and its messages "
+                    f"for user {user_id}"
                 )
                 return True
 
@@ -684,7 +697,8 @@ class DynamoDBService:
                 await table.put_item(Item=item)
 
                 logger.debug(
-                    f"Created message {message.message_id} in conversation {message.conversation_id}"
+                    f"Created message {message.message_id} in conversation "
+                    f"{message.conversation_id}"
                 )
                 return message
 
@@ -847,7 +861,8 @@ class DynamoDBService:
                 await table.put_item(Item=token_obj.to_dynamodb_item())
 
                 logger.info(
-                    f"Saved device token for user {user_id} on {platform}. Endpoint: {endpoint_arn}"
+                    f"Saved device token for user {user_id} on {platform}. "
+                    f"Endpoint: {endpoint_arn}"
                 )
                 return True
         except Exception as e:
@@ -947,7 +962,8 @@ class DynamoDBService:
                 )
 
             logger.info(
-                f"De-identified device {device_token} for user {user_id} (moved to GUEST)"
+                f"De-identified device {device_token} for user {user_id} "
+                f"(moved to GUEST)"
             )
             return True
         except Exception as e:
@@ -1077,7 +1093,8 @@ class DynamoDBService:
                 await table.put_item(Item=moment_data)
 
                 logger.info(
-                    f"Saved mirror moment {moment_data.get('moment_id')} for user {moment_data.get('user_id')}"
+                    f"Saved mirror moment {moment_data.get('moment_id')} "
+                    f"for user {moment_data.get('user_id')}"
                 )
                 return moment_data
 
@@ -1153,9 +1170,10 @@ class DynamoDBService:
                     datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 )
 
+                update_expr = "SET acknowledged = :ack, acknowledged_at = :timestamp"
                 await table.update_item(
                     Key={"user_id": user_id, "moment_id": moment_id},
-                    UpdateExpression="SET acknowledged = :ack, acknowledged_at = :timestamp",
+                    UpdateExpression=update_expr,
                     ExpressionAttributeValues={
                         ":ack": True,
                         ":timestamp": current_time,
@@ -1197,7 +1215,8 @@ class DynamoDBService:
                 await table.put_item(Item=loop_data)
 
                 logger.debug(
-                    f"Saved pattern loop {loop_data.get('loop_id')} for user {loop_data.get('user_id')}"
+                    f"Saved pattern loop {loop_data.get('loop_id')} "
+                    f"for user {loop_data.get('user_id')}"
                 )
                 return loop_data
 
@@ -1493,7 +1512,7 @@ class DynamoDBService:
         Get all quiz results for a specific user
 
         Args:
-            user_id: User ID (Cognito sub or anon_ID)
+            user_id: User ID (Cognito sub or anonymous ID)
 
         Returns:
             List of quiz results
@@ -1504,8 +1523,8 @@ class DynamoDBService:
             ) as dynamodb:
                 table = await dynamodb.Table(self.quiz_results_table)
 
-                # Query by user_id
-                # Based on create_mirrorgpt_tables.py, archetype_quiz_results has user-index
+                # Query by user_id. Based on create_mirrorgpt_tables.py,
+                # archetype_quiz_results has user-index
                 response = await table.query(
                     IndexName="user-index",
                     KeyConditionExpression="user_id = :uid",
@@ -1526,7 +1545,7 @@ class DynamoDBService:
         Save archetype quiz results
 
         Args:
-            quiz_data: Quiz results data including user_id, answers, and archetype
+            quiz_data: Quiz results data including user_id and archetype
 
         Returns:
             Dict with success status and quiz_id
@@ -1539,9 +1558,8 @@ class DynamoDBService:
 
                 # Add quiz_id as partition key if not present
                 if "quiz_id" not in quiz_data:
-                    quiz_data["quiz_id"] = (
-                        f"quiz_{quiz_data['user_id']}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-                    )
+                    now_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                    quiz_data["quiz_id"] = f"quiz_{quiz_data['user_id']}_{now_str}"
 
                 await table.put_item(Item=quiz_data)
 

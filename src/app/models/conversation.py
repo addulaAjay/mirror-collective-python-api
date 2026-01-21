@@ -83,10 +83,9 @@ class ConversationMessage:
 
     def has_mirrorgpt_analysis(self) -> bool:
         """Check if this message has MirrorGPT analysis data"""
-        return (
-            self.signal_1_emotional_resonance is not None
-            or self.signal_3_archetype_blend is not None
-        )
+        if self.signal_1_emotional_resonance is not None:
+            return True
+        return self.signal_3_archetype_blend is not None
 
     def _convert_decimals_to_float(self, data: Any) -> Any:
         """Convert Decimal values to float for compatibility with calculations"""
@@ -103,7 +102,10 @@ class ConversationMessage:
             return data
 
     def get_analysis_data(self) -> Dict[str, Any]:
-        """Extract just the MirrorGPT analysis data as a dictionary with Decimal values converted to float"""
+        """
+        Extract MirrorGPT analysis data as a dictionary.
+        Converts Decimal values to float for compatibility.
+        """
         raw_data = {
             "signal_1_emotional_resonance": self.signal_1_emotional_resonance,
             "signal_2_symbolic_language": self.signal_2_symbolic_language,

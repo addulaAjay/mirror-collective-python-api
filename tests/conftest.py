@@ -3,7 +3,7 @@ Test configuration and fixtures
 """
 
 import os
-from typing import Any, Generator
+from typing import Generator
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -224,13 +224,9 @@ mock_models_response.data = [
 ]
 mock_openai_health_instance.models.list.return_value = mock_models_response
 
-from src.app.api.mirrorgpt_routes import get_mirror_orchestrator
-
-# Override dependencies using FastAPI's built-in mechanism
-from src.app.core.security import get_current_user
-
-# Now import app after mocking
-from src.app.handler import app
+from src.app.api.mirrorgpt_routes import get_mirror_orchestrator  # noqa: E402
+from src.app.core.security import get_current_user  # noqa: E402
+from src.app.handler import app  # noqa: E402
 
 # Clear any existing overrides and set clean ones
 app.dependency_overrides = {}
@@ -316,7 +312,11 @@ def sample_chat_data():
 @pytest.fixture
 def mock_jwt_token():
     """Mock JWT token for authentication tests"""
-    return "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJleHAiOjk5OTk5OTk5OTl9.test-signature"
+    return (
+        "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9."
+        "eyJzdWIiOiJ0ZXN0LXVzZXIiLCJleHAiOjk5OTk5OTk5OTl9."
+        "test-signature"
+    )
 
 
 @pytest.fixture(autouse=True)

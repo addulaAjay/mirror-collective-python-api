@@ -7,12 +7,6 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
-# Triggering reload to pick up new ENVs
-
-
-
-load_dotenv()
-
 from src.app.services.scheduler import start_scheduler
 
 from .api.mirrorgpt_routes import router as mirrorgpt_router
@@ -20,6 +14,9 @@ from .api.models import HealthResponse
 from .api.routes import router as api_router
 from .core.error_handlers import setup_error_handlers
 from .core.logging_config import setup_logging
+
+# Triggering reload to pick up new ENVs
+load_dotenv()
 
 # Setup logging first
 setup_logging()
@@ -32,7 +29,8 @@ app = FastAPI(
     description="""
     ## Mirror Collective Python API
 
-    RESTful API for Mirror Collective platform with comprehensive authentication and chat capabilities.
+    RESTful API for Mirror Collective platform with comprehensive
+    authentication and chat capabilities.
 
     ### Features
     - 🔐 AWS Cognito Authentication
@@ -43,7 +41,8 @@ app = FastAPI(
     - 🔄 Password Reset Functionality
 
     ### Authentication
-    Most endpoints require authentication via JWT tokens obtained from the `/api/auth/login` endpoint.
+    Most endpoints require authentication via JWT tokens obtained
+    from the `/api/auth/login` endpoint.
     Include the token in the `Authorization` header as `Bearer <token>`.
 
     ### Rate Limiting
@@ -84,7 +83,8 @@ async def request_logging_middleware(request: Request, call_next):
 
     duration = time.time() - start_time
     logger.info(
-        f"{request.method} {request.url.path} - {response.status_code} ({duration:.3f}s)"
+        f"{request.method} {request.url.path} - "
+        f"{response.status_code} ({duration:.3f}s)"
     )
 
     return response
@@ -110,7 +110,10 @@ async def security_headers(request: Request, call_next):
         "X-XSS-Protection": "1; mode=block",
         "Referrer-Policy": "no-referrer",
         "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
-        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'"
+        ),
         "X-API-Version": "1.0.0",
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
@@ -131,7 +134,10 @@ async def api_info():
     """API information endpoint"""
     return {
         "message": "Mirror Collective API v1.0.0",
-        "description": "RESTful API for Mirror Collective platform with comprehensive authentication",
+        "description": (
+            "RESTful API for Mirror Collective platform "
+            "with comprehensive authentication"
+        ),
         "version": "1.0.0",
         "features": [
             "User Authentication with AWS Cognito",
@@ -181,9 +187,11 @@ async def api_health():
         timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     )
 
+
 @app.on_event("startup")
 def startup_event():
-    start_scheduler() 
+    start_scheduler()
+
 
 # Mount main API routes under /api to mirror Node structure
 app.include_router(api_router, prefix="/api")

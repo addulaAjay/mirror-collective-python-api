@@ -2,7 +2,6 @@
 Test security features
 """
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -147,7 +146,7 @@ def test_no_sensitive_data_in_logs(client: TestClient, caplog):
     sensitive_data = {"email": "test@example.com", "password": "secret123"}
 
     with caplog.at_level("DEBUG"):
-        response = client.post("/api/auth/login", json=sensitive_data)
+        _ = client.post("/api/auth/login", json=sensitive_data)
 
     # Check that password is not in logs
     for record in caplog.records:

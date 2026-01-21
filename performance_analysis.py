@@ -4,10 +4,7 @@ Performance analysis script for enhanced chat endpoint
 Identifies actual bottlenecks before optimization
 """
 
-import asyncio
-import json
 import logging
-import sys
 import time
 
 import requests
@@ -87,7 +84,7 @@ def test_api_performance():
                 data = response.json()
                 conversation_id = data.get("conversation_id")  # Save for next request
 
-                print(f"✅ SUCCESS")
+                print("✅ SUCCESS")
                 print(f"   Total time: {request_time:.3f}s")
                 print(f"   Response length: {len(data.get('reply', ''))} chars")
                 print(f"   Conversation ID: {conversation_id}")
@@ -112,7 +109,7 @@ def test_api_performance():
             request_time = time.time() - start_time
             print(f"💥 ERROR after {request_time:.3f}s: {e}")
 
-    print(f"\n💡 ANALYSIS COMPLETE")
+    print("\n💡 ANALYSIS COMPLETE")
     print("Check the server logs to see detailed performance breakdown.")
     print("Look for '🔍 PERFORMANCE ANALYSIS' logs to identify bottlenecks.")
 

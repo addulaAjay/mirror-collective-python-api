@@ -18,12 +18,19 @@ def get_logging_config() -> Dict[str, Any]:
         "disable_existing_loggers": False,
         "formatters": {
             "detailed": {
-                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s - [%(filename)s:%(lineno)d]",
+                "format": (
+                    "%(asctime)s - %(name)s - %(levelname)s - "
+                    "%(message)s - [%(filename)s:%(lineno)d]"
+                ),
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             },
             "simple": {"format": "%(levelname)s - %(message)s"},
             "json": {
-                "format": '{"time":"%(asctime)s","name":"%(name)s","level":"%(levelname)s","message":"%(message)s","file":"%(filename)s","line":%(lineno)d}',
+                "format": (
+                    '{"time":"%(asctime)s","name":"%(name)s",'
+                    '"level":"%(levelname)s","message":"%(message)s",'
+                    '"file":"%(filename)s","line":%(lineno)d}'
+                ),
                 "datefmt": "%Y-%m-%dT%H:%M:%SZ",
             },
         },

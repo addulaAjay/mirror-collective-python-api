@@ -2,7 +2,6 @@ import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from jose import jwt
 
 from ..controllers.auth_controller import AuthController
 from ..core.enhanced_auth import get_user_with_profile
@@ -222,8 +221,9 @@ async def unregister_device(
 
     try:
         # Step 1: De-identify the device in DynamoDB
-        # This clears the user_id link but keeps the record (as GUEST) for retention broadcasts.
-        # We do NOT delete the SNS endpoint to allow for future re-engagement.
+        # This clears the user_id link but keeps the record (as GUEST)
+        # for retention broadcasts. We do NOT delete the SNS endpoint
+        # to allow for future re-engagement.
         success = await dynamodb_service.deidentify_device_token(user_id, device_token)
 
         if success:
@@ -235,5 +235,6 @@ async def unregister_device(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Note: Chat functionality has been moved to MirrorGPT routes at /api/mirrorgpt/chat
-# This provides the full MirrorGPT experience with 5-signal analysis and archetype guidance
+# Note: Chat functionality has been moved to MirrorGPT routes
+# at /api/mirrorgpt/chat. This provides the full MirrorGPT experience
+# with 5-signal analysis and archetype guidance.

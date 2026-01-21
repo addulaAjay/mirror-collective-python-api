@@ -130,7 +130,8 @@ class UserProfile:
         # Extract attributes from Cognito format
         attributes = {}
         if "UserAttributes" in cognito_user_data:
-            # Raw AWS Cognito format: [{"Name": "email", "Value": "user@example.com"}, ...]
+            # Raw AWS Cognito format:
+            # [{"Name": "email", "Value": "user@example.com"}, ...]
             for attr in cognito_user_data["UserAttributes"]:
                 attributes[attr["Name"]] = attr["Value"]
         elif "Attributes" in cognito_user_data:
@@ -138,7 +139,8 @@ class UserProfile:
             for attr in cognito_user_data["Attributes"]:
                 attributes[attr["Name"]] = attr["Value"]
         elif "userAttributes" in cognito_user_data:
-            # Our transformed format: {"email": "user@example.com", "given_name": "John", ...}
+            # Our transformed format:
+            # {"email": "user@example.com", "given_name": "John", ...}
             attributes = cognito_user_data["userAttributes"]
 
         # Map Cognito status to our enum

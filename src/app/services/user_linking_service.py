@@ -1,10 +1,10 @@
 """
 User Linking Service - Links anonymous user data to authenticated accounts
-Handles migration of quiz results and archetype profiles from anonymous IDs to real user IDs
+Handles migration of quiz results and archetype profiles from anonymous IDs
+to real user IDs
 """
 
 import logging
-from typing import Optional
 
 from ..services.dynamodb_service import DynamoDBService
 
@@ -129,7 +129,8 @@ class UserLinkingService:
                 migrated_count += 1
 
             logger.info(
-                f"✅ Migrated {migrated_count} quiz result(s): {anonymous_id} → {user_id}"
+                f"✅ Migrated {migrated_count} quiz result(s): "
+                f"{anonymous_id} → {user_id}"
             )
             return True
 

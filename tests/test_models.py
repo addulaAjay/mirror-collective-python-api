@@ -231,7 +231,7 @@ def test_user_profile_from_cognito_user_missing_email():
 
 
 def test_user_profile_from_cognito_user_transformed_format():
-    """Test creating UserProfile from transformed Cognito data (userAttributes format)"""
+    """Test creating UserProfile from transformed Cognito data format"""
     from src.app.models.user_profile import UserProfile
 
     # This is the format returned by CognitoService.get_user_by_email()
@@ -252,7 +252,7 @@ def test_user_profile_from_cognito_user_transformed_format():
     assert profile.email == "test@example.com"  # Should find email in userAttributes
     assert profile.first_name == "John"
     assert profile.last_name == "Doe"
-    assert profile.email_verified == True
+    assert profile.email_verified is True
 
 
 def test_user_profile_cognito_format_mismatch_original_bug():

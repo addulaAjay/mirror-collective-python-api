@@ -4,11 +4,10 @@ Production-ready service with comprehensive error handling and optimization
 OPTIMIZED: Added caching and parallel processing capabilities
 """
 
-import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
@@ -53,7 +52,8 @@ class ConversationService:
         self.message_batch_size = int(os.getenv("MESSAGE_BATCH_SIZE", "25"))
 
         logger.info(
-            f"ConversationService initialized - Max context: {self.max_context_messages}, "
+            f"ConversationService initialized - "
+            f"Max context: {self.max_context_messages}, "
             f"Max tokens: {self.max_tokens_per_conversation}, "
             f"Title max length: {self.conversation_title_max_length}, "
             f"Persistence enabled: {self.enable_conversation_persistence}"
@@ -101,7 +101,8 @@ class ConversationService:
             if not title and initial_message:
                 title = self._generate_title_from_message(initial_message)
             elif not title:
-                title = f"Conversation {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+                now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                title = f"Conversation {now_str}"
 
             # Create conversation object
             conversation = Conversation(
@@ -116,7 +117,8 @@ class ConversationService:
             )
 
             logger.info(
-                f"Created conversation {created_conversation.conversation_id} for user {user_id}"
+                f"Created conversation {created_conversation.conversation_id} "
+                f"for user {user_id}"
             )
             return created_conversation
 
@@ -197,20 +199,13 @@ class ConversationService:
             InternalServerError: If creation fails
         """
         try:
-            # Validate inputs
-            if not conversation_id or not conversation_id.strip():
-                raise ValidationError("Conversation ID is required")
-            if not user_id or not user_id.strip():
-                raise ValidationError("User ID is required")
-            if role not in ["user", "assistant", "system"]:
-                raise ValidationError("Role must be 'user', 'assistant', or 'system'")
-            if not content or not content.strip():
-                raise ValidationError("Message content is required")
+            # 1. Validate inputs
+            self._validate_message_inputs(conversation_id, user_id, role, content)
 
-            # Verify conversation exists and belongs to user
+            # 2. Verify conversation exists and belongs to user
             conversation = await self.get_conversation(conversation_id, user_id)
 
-            # Create message
+            # 3. Create message
             message = ConversationMessage(
                 message_id=str(uuid4()),
                 conversation_id=conversation_id.strip(),
@@ -220,30 +215,9 @@ class ConversationService:
                 token_count=token_count,
             )
 
-            # Add MirrorGPT analysis if provided
+            # 4. Add MirrorGPT analysis if provided
             if mirrorgpt_analysis:
-                try:
-                    analysis_result = mirrorgpt_analysis["analysis_result"]
-                    confidence_scores = mirrorgpt_analysis["confidence_scores"]
-                    change_analysis = mirrorgpt_analysis.get("change_analysis", {})
-                    suggested_practice = mirrorgpt_analysis.get("suggested_practice")
-
-                    message.add_mirrorgpt_analysis(
-                        user_id=mirrorgpt_analysis["user_id"],
-                        session_id=mirrorgpt_analysis["session_id"],
-                        analysis_result=analysis_result,
-                        confidence_scores=confidence_scores,
-                        change_analysis=change_analysis,
-                        suggested_practice=suggested_practice,
-                    )
-
-                    logger.debug(
-                        f"Added MirrorGPT analysis to message {message.message_id}"
-                    )
-
-                except Exception as e:
-                    logger.warning(f"Failed to add MirrorGPT analysis to message: {e}")
-                    # Continue without analysis - the message can still be saved
+                self._add_mirrorgpt_analysis_to_message(message, mirrorgpt_analysis)
 
             # Save message
             created_message = await self.dynamodb_service.create_message(message)
@@ -259,7 +233,8 @@ class ConversationService:
             raise
         except Exception as e:
             logger.error(
-                f"Error adding message with MirrorGPT analysis to conversation {conversation_id}: {e}"
+                f"Error adding message with MirrorGPT analysis "
+                f"to conversation {conversation_id}: {e}"
             )
             raise InternalServerError(f"Failed to add message: {str(e)}")
 
@@ -476,7 +451,8 @@ class ConversationService:
         current_message: str,
     ) -> List[ChatMessage]:
         """
-        Get optimized context for AI including system prompt, conversation history, and current message
+        Get optimized context for AI including system prompt,
+        conversation history, and current message
         OPTIMIZED: Reduced database calls and improved performance
 
         Args:
@@ -515,7 +491,8 @@ class ConversationService:
             ai_messages.append(ChatMessage(role="user", content=current_message))
 
             logger.debug(
-                f"Built optimized AI context with {len(ai_messages)} messages for conversation {conversation_id}"
+                f"Built optimized AI context with {len(ai_messages)} "
+                f"messages for conversation {conversation_id}"
             )
             return ai_messages
 
@@ -558,7 +535,8 @@ class ConversationService:
             ]
 
             logger.debug(
-                f"Found {len(analyzed_messages)} messages with MirrorGPT analysis in conversation {conversation_id}"
+                f"Found {len(analyzed_messages)} messages with MirrorGPT "
+                f"analysis in conversation {conversation_id}"
             )
             return analyzed_messages
 
@@ -566,7 +544,8 @@ class ConversationService:
             raise
         except Exception as e:
             logger.error(
-                f"Error getting messages with MirrorGPT analysis from conversation {conversation_id}: {e}"
+                f"Error getting messages with MirrorGPT analysis "
+                f"from conversation {conversation_id}: {e}"
             )
             raise InternalServerError(f"Failed to get analyzed messages: {str(e)}")
 
@@ -593,69 +572,20 @@ class ConversationService:
             # Validate inputs
             if not user_id or not user_id.strip():
                 raise ValidationError("User ID is required")
-
-            signals = []
-
             if conversation_id:
-                # Get signals from specific conversation
-                messages = await self.get_messages_with_mirrorgpt_analysis(
-                    conversation_id, user_id, limit * 2  # Get extra to filter
+                signals = await self._get_signals_from_conversation(
+                    conversation_id, user_id, limit
                 )
-
-                for message in messages:
-                    if message.user_id == user_id:
-                        analysis_data = message.get_analysis_data()
-                        if analysis_data.get(
-                            "signal_1_emotional_resonance"
-                        ):  # Has valid analysis
-                            signal_data = {
-                                "timestamp": message.timestamp,
-                                "user_id": message.user_id,
-                                "session_id": message.session_id or "unknown",
-                                "conversation_id": message.conversation_id,
-                                "message_id": message.message_id,
-                                **analysis_data,
-                            }
-                            signals.append(signal_data)
-
-                        if len(signals) >= limit:
-                            break
             else:
-                # Get signals from all user conversations
-                # First get user's recent conversations
-                conversations = await self.get_user_conversations(user_id, limit=10)
+                signals = await self._get_signals_from_all_conversations(user_id, limit)
 
-                for conv_summary in conversations:
-                    if len(signals) >= limit:
-                        break
+            # Sort by timestamp (most recent first)
+            signals.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
 
-                    try:
-                        conv_messages = await self.get_messages_with_mirrorgpt_analysis(
-                            conv_summary.conversation_id, user_id, limit=5
-                        )
-
-                        for message in conv_messages:
-                            if message.user_id == user_id:
-                                analysis_data = message.get_analysis_data()
-                                if analysis_data.get("signal_1_emotional_resonance"):
-                                    signal_data = {
-                                        "timestamp": message.timestamp,
-                                        "user_id": message.user_id,
-                                        "session_id": message.session_id or "unknown",
-                                        "conversation_id": message.conversation_id,
-                                        "message_id": message.message_id,
-                                        **analysis_data,
-                                    }
-                                    signals.append(signal_data)
-
-                                if len(signals) >= limit:
-                                    break
-
-                    except Exception as e:
-                        logger.warning(
-                            f"Error getting signals from conversation {conv_summary.conversation_id}: {e}"
-                        )
-                        continue
+            logger.debug(
+                f"Retrieved {len(signals)} MirrorGPT signals for user {user_id}"
+            )
+            return signals[:limit]
 
             # Sort by timestamp (most recent first)
             signals.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
@@ -670,6 +600,76 @@ class ConversationService:
         except Exception as e:
             logger.error(f"Error getting MirrorGPT signals for user {user_id}: {e}")
             raise InternalServerError(f"Failed to get MirrorGPT signals: {str(e)}")
+
+    def _validate_message_inputs(self, conversation_id, user_id, role, content):
+        """Validate message structure and content"""
+        if not conversation_id or not conversation_id.strip():
+            raise ValidationError("Conversation ID is required")
+        if not user_id or not user_id.strip():
+            raise ValidationError("User ID is required")
+        if role not in ["user", "assistant", "system"]:
+            raise ValidationError("Role must be 'user', 'assistant', or 'system'")
+        if not content or not content.strip():
+            raise ValidationError("Message content is required")
+
+    def _add_mirrorgpt_analysis_to_message(self, message, analysis_data):
+        """Safely inject MirrorGPT analysis result into message model"""
+        try:
+            message.add_mirrorgpt_analysis(
+                user_id=analysis_data["user_id"],
+                session_id=analysis_data["session_id"],
+                analysis_result=analysis_data["analysis_result"],
+                confidence_scores=analysis_data["confidence_scores"],
+                change_analysis=analysis_data.get("change_analysis", {}),
+                suggested_practice=analysis_data.get("suggested_practice"),
+            )
+            logger.debug(f"Added MirrorGPT analysis to message {message.message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to add MirrorGPT analysis to message: {e}")
+
+    async def _get_signals_from_conversation(self, conversation_id, user_id, limit):
+        """Extract signals from a specific conversation session"""
+        signals: List[Dict[str, Any]] = []
+        messages = await self.get_messages_with_mirrorgpt_analysis(
+            conversation_id, user_id, limit * 2
+        )
+        for message in messages:
+            if message.user_id == user_id:
+                analysis = message.get_analysis_data()
+                if analysis.get("signal_1_emotional_resonance"):
+                    signals.append(self._format_signal_data(message, analysis))
+            if len(signals) >= limit:
+                break
+        return signals
+
+    async def _get_signals_from_all_conversations(self, user_id, limit):
+        """Crawl across all user conversations to assemble signal history"""
+        signals: List[Dict[str, Any]] = []
+        conversations = await self.get_user_conversations(user_id, limit=10)
+        for conv in conversations:
+            if len(signals) >= limit:
+                break
+            try:
+                conv_signals = await self._get_signals_from_conversation(
+                    conv.conversation_id, user_id, limit - len(signals)
+                )
+                signals.extend(conv_signals)
+            except Exception as e:
+                logger.warning(
+                    f"Error getting signals from {conv.conversation_id}: {e}"
+                )
+        return signals
+
+    def _format_signal_data(self, message, analysis_data):
+        """Standardize signal data format for client consumption"""
+        return {
+            "timestamp": message.timestamp,
+            "user_id": message.user_id,
+            "session_id": message.session_id or "unknown",
+            "conversation_id": message.conversation_id,
+            "message_id": message.message_id,
+            **analysis_data,
+        }
 
     def _generate_title_from_message(self, message: str) -> str:
         """

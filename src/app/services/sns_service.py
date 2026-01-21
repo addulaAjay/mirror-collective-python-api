@@ -133,7 +133,8 @@ class SNSService:
                 TargetArn=endpoint_arn, Message=payload, MessageStructure="json"
             )
             logger.info(
-                f"Sent direct message {response['MessageId']} to endpoint {endpoint_arn}"
+                f"Sent direct message {response['MessageId']} to "
+                f"endpoint {endpoint_arn}"
             )
             return response["MessageId"]
         except Exception as e:

@@ -2,9 +2,6 @@
 Test authentication endpoints
 """
 
-from unittest.mock import Mock, patch
-
-import pytest
 from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 

@@ -320,9 +320,11 @@ class CognitoService:
 
             # Note: SECRET_HASH is NOT required for refresh token operations
             # AWS Cognito validates the refresh token itself without needing SECRET_HASH
-            logger.debug(
-                f"Refresh token params (without SECRET_HASH): ClientId={self.client_id}, AuthFlow=REFRESH_TOKEN_AUTH"
+            msg = (
+                "Refresh token params (without SECRET_HASH): "
+                f"ClientId={self.client_id}, AuthFlow=REFRESH_TOKEN_AUTH"
             )
+            logger.debug(msg)
 
             response = self.client.initiate_auth(**params)
             logger.info("Successfully called initiate_auth for refresh token")
@@ -342,8 +344,7 @@ class CognitoService:
 
             return {
                 "accessToken": access_token,
-                "refreshToken": new_refresh_token
-                or refresh_token,  # Use new if provided, otherwise keep old
+                "refreshToken": new_refresh_token or refresh_token,
                 "idToken": id_token,
             }
 
@@ -548,7 +549,8 @@ class CognitoService:
             # SECURITY: Only allow users to access their own data
             if user_id != requesting_user_id:
                 logger.warning(
-                    f"Unauthorized access attempt: {requesting_user_id} tried to access {user_id}"
+                    f"Unauthorized access attempt: {requesting_user_id} "
+                    f"tried to access {user_id}"
                 )
                 raise AuthenticationError("You can only access your own user data")
 
@@ -558,7 +560,8 @@ class CognitoService:
             # Implementation would need AWS Cognito admin permissions
             # For now, this is a security-first placeholder that fails safely
             raise CognitoServiceError(
-                "get_user_by_id not implemented - use get_user with access token instead"
+                "get_user_by_id not implemented - use get_user with "
+                "access token instead"
             )
 
         except Exception as e:

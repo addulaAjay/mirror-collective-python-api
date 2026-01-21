@@ -1,7 +1,9 @@
 """
 Create MirrorGPT DynamoDB tables
 Script to create all required DynamoDB tables for MirrorGPT functionality
-Note: echo_signals table removed - MirrorGPT analysis now stored in conversation_messages
+
+Note: echo_signals table removed
+MirrorGPT analysis now stored in conversation_messages
 """
 
 import logging
@@ -41,8 +43,8 @@ def get_dynamodb_client():
             "dynamodb",
             region_name=AWS_REGION,
             endpoint_url=endpoint_url,
-            aws_access_key_id="dummy",
-            aws_secret_access_key="dummy",
+            aws_access_key_id="dummy",  # nosec
+            aws_secret_access_key="dummy",  # nosec
         )
     else:
         # AWS DynamoDB configuration
@@ -56,7 +58,8 @@ def create_mirrorgpt_tables():
     dynamodb = get_dynamodb_client()
 
     # Define table configurations
-    # Note: echo_signals table removed - MirrorGPT analysis now stored in conversation_messages
+    # Note: echo_signals table removed
+    # MirrorGPT analysis now stored in conversation_messages
     tables = [
         {
             "TableName": os.getenv(
@@ -223,7 +226,8 @@ def create_mirrorgpt_tables():
         "Use 'aws dynamodb describe-table --table-name <table_name>' to check status."
     )
     logger.info(
-        "\n📝 echo_signals table removed - MirrorGPT analysis now stored in conversation_messages"
+        "\n📝 echo_signals table removed - "
+        "MirrorGPT analysis now stored in conversation_messages"
     )
 
     return True
@@ -278,7 +282,8 @@ def verify_tables():
         )
 
     logger.info(
-        "\n📝 Note: echo_signals table is no longer used (MirrorGPT analysis stored in conversation_messages)"
+        "\n📝 Note: echo_signals table is no longer used "
+        "(MirrorGPT analysis stored in conversation_messages)"
     )
 
     return all_active
@@ -344,7 +349,8 @@ if __name__ == "__main__":
         logger.info("DynamoDB Endpoint: AWS (Cloud)")
 
     logger.info(
-        "📝 Note: echo_signals table removed - MirrorGPT analysis now in conversation_messages"
+        "📝 Note: echo_signals table removed - "
+        "MirrorGPT analysis now in conversation_messages"
     )
 
     if args.action == "create":

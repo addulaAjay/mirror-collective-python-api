@@ -68,7 +68,10 @@ class AuthController:
             success=True,
             data={
                 "user": user.dict(),
-                "message": "Registration successful. Please check your email for verification code.",
+                "message": (
+                    "Registration successful. "
+                    "Please check your email for verification code."
+                ),
             },
         )
 
@@ -87,7 +90,8 @@ class AuthController:
         user = UserBasic(
             id=user_id,
             email=user_attrs.get("email", payload.email),
-            fullName=f"{user_attrs.get('given_name', '')} {user_attrs.get('family_name', '')}".strip(),
+            fullName=f"{user_attrs.get('given_name', '')} "
+            f"{user_attrs.get('family_name', '')}".strip(),
             isVerified=user_attrs.get("email_verified", "false").lower() == "true",
         )
 
@@ -121,7 +125,10 @@ class AuthController:
         await self.cognito_service.forgot_password(payload.email)
         return GeneralApiResponse(
             success=True,
-            message="If an account with this email exists, you will receive a password reset code.",
+            message=(
+                "If an account with this email exists, "
+                "you will receive a password reset code."
+            ),
         )
 
     async def reset_password(self, payload: ResetPasswordRequest) -> GeneralApiResponse:
@@ -144,7 +151,8 @@ class AuthController:
             if existing_profile:
                 # Note: Cognito sync removed for security reasons
                 logger.info(
-                    f"User profile exists but sync with Cognito not available: {user_id}"
+                    f"User profile exists but sync with Cognito "
+                    f"not available: {user_id}"
                 )
             else:
                 logger.info(f"No existing profile to sync for user: {user_id}")
@@ -155,7 +163,10 @@ class AuthController:
 
         return GeneralApiResponse(
             success=True,
-            message="Password has been reset successfully. You can now log in with your new password.",
+            message=(
+                "Password has been reset successfully. "
+                "You can now log in with your new password."
+            ),
         )
 
     async def refresh_token(self, payload: RefreshTokenRequest) -> AuthResponse:
@@ -179,7 +190,10 @@ class AuthController:
     async def confirm_email(
         self, payload: EmailVerificationRequest
     ) -> GeneralApiResponse:
-        """Confirm email address with verification code and create user profile in DynamoDB"""
+        """
+        Confirm email address with verification code
+        and create user profile in DynamoDB
+        """
         try:
             # Confirm email with Cognito
             await self.cognito_service.confirm_sign_up(
@@ -209,7 +223,8 @@ class AuthController:
                             anonymous_id=anon_id, user_id=user_profile.user_id
                         )
                         logger.info(
-                            f"Anonymous data linking completed for {user_profile.user_id}: {link_results}"
+                            f"Anonymous data linking completed for "
+                            f"{user_profile.user_id}: {link_results}"
                         )
                     except Exception as link_error:
                         logger.error(f"Failed to link anonymous data: {link_error}")
@@ -219,7 +234,8 @@ class AuthController:
                 # Log the error but don't fail the email confirmation
                 # The user can still use the system, profile creation can be retried
                 logger.error(
-                    f"Failed to create user profile in DynamoDB after email confirmation: {e}"
+                    f"Failed to create user profile in DynamoDB "
+                    f"after email confirmation: {e}"
                 )
                 # In production, you might want to trigger a retry mechanism or alert
 

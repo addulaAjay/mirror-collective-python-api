@@ -6,7 +6,7 @@ import logging
 import time
 import traceback
 import uuid
-from typing import Any, Dict, Union
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -235,7 +235,8 @@ def setup_error_handlers(app: FastAPI):
 
         # Log request
         logger.info(
-            f"{request.method} {request.url.path} - {response.status_code} - {process_time:.2f}ms",
+            f"{request.method} {request.url.path} - "
+            f"{response.status_code} - {process_time:.2f}ms",
             extra={
                 "request_id": request_id,
                 "method": request.method,

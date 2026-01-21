@@ -7,7 +7,6 @@ import os
 from typing import Any, Dict
 from unittest.mock import AsyncMock, Mock
 
-import pytest
 from fastapi.testclient import TestClient
 
 # Set up environment for clean testing
@@ -133,7 +132,9 @@ def test_mirrorgpt_chat_success():
 
     # Use a proper MirrorGPT format with required fields
     mirrorgpt_data = {
-        "message": "I'm seeking truth and meaning in my life. This path feels illuminating.",
+        "message": (
+            "I'm seeking truth and meaning in my life. " "This path feels illuminating."
+        ),
         "include_archetype_analysis": True,
         "use_enhanced_response": True,
     }
@@ -197,8 +198,10 @@ def test_mirrorgpt_chat_long_message():
     client = get_clean_test_client()
 
     chat_data = {
-        "message": "This is a longer message to test how MirrorGPT handles more complex input. "
-        * 10,
+        "message": (
+            "This is a longer message to test how MirrorGPT handles "
+            "more complex input. " * 10
+        ),
         "include_archetype_analysis": True,
         "use_enhanced_response": True,
     }
