@@ -2,6 +2,7 @@
 import logging
 import os
 import uuid
+from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -25,9 +26,6 @@ def push_job():
             logger.warning("❌ Scheduled push failed: No MessageId returned")
     except Exception as e:
         logger.error(f"❌ Error while publishing scheduled push: {e}")
-
-
-from typing import Optional
 
 
 def start_scheduler(interval_minutes: Optional[int] = None):

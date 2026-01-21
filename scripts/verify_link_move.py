@@ -1,7 +1,6 @@
 import asyncio
 import os
 import uuid
-from typing import Any, Dict
 
 from app.services.dynamodb_service import DynamoDBService
 from app.services.user_linking_service import UserLinkingService

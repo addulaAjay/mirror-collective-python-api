@@ -1,7 +1,9 @@
 """
 Create MirrorGPT DynamoDB tables
 Script to create all required DynamoDB tables for MirrorGPT functionality
-Note: echo_signals table removed - MirrorGPT analysis now stored in conversation_messages
+
+Note: echo_signals table removed
+MirrorGPT analysis now stored in conversation_messages
 """
 
 import logging
@@ -60,7 +62,8 @@ def create_mirrorgpt_tables():
     dynamodb = get_dynamodb_client()
 
     # Define table configurations
-    # Note: echo_signals table removed - MirrorGPT analysis now stored in conversation_messages
+    # Note: echo_signals table removed
+    # MirrorGPT analysis now stored in conversation_messages
     tables = [
         {
             "TableName": os.getenv(
@@ -100,7 +103,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "moment_type", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "Projection": {"ProjectionType": "ALL"},
                 },
                 {
                     "IndexName": "time-index",
@@ -108,7 +110,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "user_id", "KeyType": "HASH"},
                         {"AttributeName": "triggered_at", "KeyType": "RANGE"},
                     ],
-                    "Projection": {"ProjectionType": "ALL"},
                     "Projection": {"ProjectionType": "ALL"},
                 },
             ],
@@ -142,7 +143,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "trend", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                    "Projection": {"ProjectionType": "ALL"},
                 },
                 {
                     "IndexName": "activity-index",
@@ -150,7 +150,6 @@ def create_mirrorgpt_tables():
                         {"AttributeName": "user_id", "KeyType": "HASH"},
                         {"AttributeName": "last_seen", "KeyType": "RANGE"},
                     ],
-                    "Projection": {"ProjectionType": "ALL"},
                     "Projection": {"ProjectionType": "ALL"},
                 },
             ],
@@ -267,7 +266,8 @@ def create_mirrorgpt_tables():
         "Use 'aws dynamodb describe-table --table-name <table_name>' to check status."
     )
     logger.info(
-        "\n📝 echo_signals table removed - MirrorGPT analysis now stored in conversation_messages"
+        "\n📝 echo_signals table removed - "
+        "MirrorGPT analysis now stored in conversation_messages"
     )
 
     return True
@@ -323,7 +323,8 @@ def verify_tables():
         )
 
     logger.info(
-        "\n📝 Note: echo_signals table is no longer used (MirrorGPT analysis stored in conversation_messages)"
+        "\n📝 Note: echo_signals table is no longer used "
+        "(MirrorGPT analysis stored in conversation_messages)"
     )
 
     return all_active
@@ -390,7 +391,8 @@ if __name__ == "__main__":
         logger.info("DynamoDB Endpoint: AWS (Cloud)")
 
     logger.info(
-        "📝 Note: echo_signals table removed - MirrorGPT analysis now in conversation_messages"
+        "📝 Note: echo_signals table removed - "
+        "MirrorGPT analysis now in conversation_messages"
     )
 
     if args.action == "create":

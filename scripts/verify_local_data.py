@@ -36,12 +36,11 @@ def scan_table(table_name):
 
             for item in items:
                 # Try to guess the PK
-                pk = (
-                    item.get("user_id")
-                    or item.get("quiz_id")
-                    or item.get("id")
-                    or "Unknown"
-                )
+                pk = "Unknown"
+                for k in ["user_id", "quiz_id", "id"]:
+                    if item.get(k):
+                        pk = item.get(k)
+                        break
                 t.add_row(str(pk), str(item)[:100] + "...")
 
             console.print(t)

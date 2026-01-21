@@ -265,7 +265,7 @@ def main():
                 )
                 dynamodb_client.list_tables()
                 print("✅ Connected to local DynamoDB")
-            except Exception as e:
+            except Exception:
                 print("❌ Cannot connect to local DynamoDB. Make sure it's running:")
                 print("   docker-compose -f docker-compose.local.yml up -d")
                 sys.exit(1)
@@ -281,12 +281,10 @@ def main():
         )
         messages_success = create_messages_table(dynamodb, messages_table)
 
-        if (
-            users_success
-            and activity_success
-            and conversations_success
-            and messages_success
-        ):
+        all_success = all(
+            [users_success, activity_success, conversations_success, messages_success]
+        )
+        if all_success:
             print()
             print("🎉 All tables created successfully!")
             print()

@@ -11,12 +11,12 @@ import sys
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from app.services.archetype_engine import (
+from app.services.archetype_engine import (  # noqa: E402
     ArchetypeEngine,
     ChangeDetector,
     ConfidenceCalculator,
 )
-from app.utils.archetype_data import ArchetypeDefinitions
+from app.utils.archetype_data import ArchetypeDefinitions  # noqa: E402
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -59,19 +59,31 @@ def test_archetype_engine():
         # Test different archetypal messages
         test_messages = [
             {
-                "message": "I'm searching for truth and meaning in life, seeking the light beyond darkness.",
+                "message": (
+                    "I'm searching for truth and meaning in life, "
+                    "seeking the light beyond darkness."
+                ),
                 "expected_archetype": "Seeker",
             },
             {
-                "message": "I need to protect my family and create a safe haven for everyone I care about.",
+                "message": (
+                    "I need to protect my family and create a safe "
+                    "haven for everyone I care about."
+                ),
                 "expected_archetype": "Guardian",
             },
             {
-                "message": "It's time to break free from these chains and transform everything that holds me back.",
+                "message": (
+                    "It's time to break free from these chains and "
+                    "transform everything that holds me back."
+                ),
                 "expected_archetype": "Flamebearer",
             },
             {
-                "message": "I see the beautiful patterns connecting all things in this cosmic web of creation.",
+                "message": (
+                    "I see the beautiful patterns connecting all things "
+                    "in this cosmic web of creation."
+                ),
                 "expected_archetype": "Weaver",
             },
         ]
@@ -97,14 +109,17 @@ def test_archetype_engine():
 
             logger.info(f"Message: '{test_case['message'][:50]}...'")
             logger.info(
-                f"Expected: {test_case['expected_archetype']}, Detected: {detected_archetype}, Confidence: {confidence:.3f}"
+                f"Expected: {test_case['expected_archetype']}, "
+                f"Detected: {detected_archetype}, "
+                f"Confidence: {confidence:.3f}"
             )
 
             if detected_archetype == test_case["expected_archetype"]:
                 logger.info("✅ Archetype detection correct")
             else:
                 logger.warning(
-                    f"⚠️  Archetype detection mismatch (this may be acceptable based on message content)"
+                    "⚠️  Archetype detection mismatch "
+                    "(this may be acceptable based on message content)"
                 )
 
             # Verify confidence is reasonable
@@ -183,7 +198,7 @@ def test_change_detector():
         changes = detector.detect_changes(current_analysis, previous_profile)
 
         assert "change_detected" in changes, "Missing change_detected field"
-        assert changes["change_detected"] == True, "Should detect archetype shift"
+        assert changes["change_detected"] is True, "Should detect archetype shift"
         assert len(changes["changes"]) > 0, "Should have change details"
         assert (
             changes["changes"][0]["type"] == "archetype_shift"
@@ -211,7 +226,8 @@ def test_end_to_end_analysis():
         messages = [
             "I feel lost and confused, searching for my purpose in life.",
             "I'm starting to see some light in the darkness, finding small truths.",
-            "I've discovered something important about myself - time to protect what matters.",
+            "I've discovered something important about myself - "
+            "time to protect what matters.",
             "Now I need to transform everything and burn away what doesn't serve me.",
         ]
 
@@ -219,7 +235,7 @@ def test_end_to_end_analysis():
         previous_signals = []
 
         for i, message in enumerate(messages):
-            logger.info(f"\n--- Message {i+1}: '{message}' ---")
+            logger.info(f"\n--- Message {i + 1}: '{message}' ---")
 
             # Analyze message
             analysis = engine.analyze_message(
@@ -237,7 +253,8 @@ def test_end_to_end_analysis():
             )
 
             logger.info(
-                f"Detected archetype: {analysis['primary_archetype']} (confidence: {confidence['overall']:.3f})"
+                f"Detected archetype: {analysis['primary_archetype']} "
+                f"(confidence: {confidence['overall']:.3f})"
             )
 
             if changes["change_detected"]:
@@ -292,7 +309,7 @@ async def test_mock_orchestrator():
             use_enhanced_response=False,  # Skip OpenAI to avoid API calls
         )
 
-        assert result["success"] == True, "Orchestrator should succeed"
+        assert result["success"] is True, "Orchestrator should succeed"
         assert "response" in result, "Should have response"
         assert "archetype_analysis" in result, "Should have archetype analysis"
         assert result["archetype_analysis"]["primary_archetype"] in [
@@ -306,7 +323,8 @@ async def test_mock_orchestrator():
         mock_dynamodb.save_user_archetype_profile.assert_called_once()
 
         logger.info(
-            f"Orchestrator result: {result['archetype_analysis']['primary_archetype']} archetype detected"
+            f"Orchestrator result: "
+            f"{result['archetype_analysis']['primary_archetype']} archetype detected"
         )
         logger.info("✅ Mock orchestrator test passed")
         return True

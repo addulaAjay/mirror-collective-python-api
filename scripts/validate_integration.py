@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 try:
-    from app.models.conversation import ConversationMessage
-    from app.services.conversation_service import ConversationService
-    from app.services.dynamodb_service import DynamoDBService
-    from app.services.mirror_orchestrator import MirrorOrchestrator
-    from app.services.openai_service import OpenAIService
+    from app.models.conversation import ConversationMessage  # noqa: E402
+    from app.services.conversation_service import ConversationService  # noqa: E402
+    from app.services.dynamodb_service import DynamoDBService  # noqa: E402
+    from app.services.mirror_orchestrator import MirrorOrchestrator  # noqa: E402
+    from app.services.openai_service import OpenAIService  # noqa: E402
 
     print("✅ All imports successful!")
 except ImportError as e:
@@ -57,14 +57,14 @@ def test_message_mirrorgpt_integration():
     )
 
     # Verify analysis storage
-    assert message.has_mirrorgpt_analysis() == True
+    assert message.has_mirrorgpt_analysis() is True
     assert message.user_id == "user_123"
     assert message.signal_3_archetype_blend["primary"] == "Seeker"
 
     # Test serialization/deserialization
     item = message.to_dynamodb_item()
     restored = ConversationMessage.from_dynamodb_item(item)
-    assert restored.has_mirrorgpt_analysis() == True
+    assert restored.has_mirrorgpt_analysis() is True
 
     print("✅ ConversationMessage MirrorGPT integration works!")
 
@@ -132,7 +132,7 @@ def test_integration_workflow():
     orchestrator.apply_mirrorgpt_analysis_to_message(message, mock_mirrorgpt_data)
 
     # 4. Verify the message now has the analysis
-    assert message.has_mirrorgpt_analysis() == True
+    assert message.has_mirrorgpt_analysis() is True
     assert message.signal_3_archetype_blend["primary"] == "Sage"
 
     print("✅ Integration workflow test passed!")

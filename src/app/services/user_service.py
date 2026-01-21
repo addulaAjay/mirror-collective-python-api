@@ -7,7 +7,7 @@ import time
 from typing import Any, Dict, Optional
 
 from ..core.exceptions import InternalServerError
-from ..models.user_profile import UserProfile, UserStatus
+from ..models.user_profile import UserProfile
 from .cognito_service import CognitoService
 from .dynamodb_service import DynamoDBService
 

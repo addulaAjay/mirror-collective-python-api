@@ -3,10 +3,8 @@ Comprehensive tests for MirrorGPT functionality
 Tests archetype engine, orchestrator, API endpoints, and integration
 """
 
-import asyncio
-import uuid
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -73,7 +71,10 @@ class TestArchetypeEngine:
 
     def test_analyze_message_basic(self):
         """Test basic message analysis"""
-        message = "I'm searching for meaning and truth in my life. This path feels illuminating."
+        message = (
+            "I'm searching for meaning and truth in my life. "
+            "This path feels illuminating."
+        )
 
         result = self.engine.analyze_message(message)
 
@@ -98,10 +99,8 @@ class TestArchetypeEngine:
         assert "arousal" in result
         assert "dominant_emotion" in result
         assert result["valence"] > 0  # Should be positive
-        assert (
-            "joy" in result["detected_emotions"]
-            or "excitement" in result["detected_emotions"]
-        )
+        emotions = result["detected_emotions"]
+        assert "joy" in emotions or "excitement" in emotions
 
     def test_symbolic_language_extraction(self):
         """Test symbolic language detection"""
@@ -167,10 +166,8 @@ class TestArchetypeEngine:
 
         assert "current_motifs" in result
         assert "active_loops" in result
-        assert (
-            "perfectionism" in result["current_motifs"]
-            or "worthiness" in result["current_motifs"]
-        )
+        motifs = result["current_motifs"]
+        assert "perfectionism" in motifs or "worthiness" in motifs
 
 
 class TestConfidenceCalculator:
@@ -293,7 +290,12 @@ class TestResponseGenerator:
     @pytest.mark.asyncio
     async def test_generate_enhanced_response(self):
         """Test enhanced AI response generation"""
-        self.mock_openai_service.send_async.return_value = "The Guardian in you has been holding space so beautifully. I feel the caring that comes from caring so deeply. What would it look like to wrap that same protection around your own tender places?"
+        self.mock_openai_service.send_async.return_value = (
+            "The Guardian in you has been holding space so beautifully. "
+            "I feel the caring that comes from caring so deeply. What would "
+            "it look like to wrap that same protection around your own "
+            "tender places?"
+        )
 
         analysis_result = {
             "signal_3_archetype_blend": {"primary": "Guardian", "confidence": 0.7},
@@ -307,7 +309,12 @@ class TestResponseGenerator:
             "I want to protect my family", analysis_result, change_analysis
         )
 
-        expected_response = "The Guardian in you has been holding space so beautifully. I feel the caring that comes from caring so deeply. What would it look like to wrap that same protection around your own tender places?"
+        expected_response = (
+            "The Guardian in you has been holding space so beautifully. "
+            "I feel the caring that comes from caring so deeply. What would "
+            "it look like to wrap that same protection around your own "
+            "tender places?"
+        )
         assert result == expected_response
         self.mock_openai_service.send_async.assert_called_once()
 
@@ -511,10 +518,11 @@ class TestErrorHandling:
             # Should handle error gracefully
             assert result["success"] is False
             assert "error" in result
-            assert (
-                result["response"]
-                == "I'm experiencing some difficulty connecting to the deeper patterns right now. Could you share that again?"
+            expected = (
+                "I'm experiencing some difficulty connecting to the deeper "
+                "patterns right now. Could you share that again?"
             )
+            assert result["response"] == expected
 
 
 class TestPerformance:

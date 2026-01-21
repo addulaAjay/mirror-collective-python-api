@@ -3,7 +3,6 @@ Core archetype detection and symbolic analysis engine
 Implements the 5-signal analysis system for MirrorGPT
 """
 
-import json
 import logging
 import re
 from datetime import datetime
@@ -69,51 +68,80 @@ class ArchetypeEngine:
         # Emotion keyword mapping with weights
         emotion_patterns: Dict[str, Dict[str, Any]] = {
             "joy": {
-                "pattern": r"\b(joy|happy|delight|elated|bliss|euphoria|celebration|glad|cheerful)\b",
+                "pattern": (
+                    r"\b(joy|happy|delight|elated|bliss|euphoria|"
+                    r"celebration|glad|cheerful)\b"
+                ),
                 "weight": 1.2,
             },
             "sadness": {
-                "pattern": r"\b(sad|grief|sorrow|mourn|loss|tears|heartbreak|melancholy|despair)\b",
+                "pattern": (
+                    r"\b(sad|grief|sorrow|mourn|loss|tears|heartbreak|"
+                    r"melancholy|despair)\b"
+                ),
                 "weight": 1.0,
             },
             "anger": {
-                "pattern": r"\b(angry|rage|fury|irritated|frustrated|mad|livid|outraged)\b",
+                "pattern": (
+                    r"\b(angry|rage|fury|irritated|frustrated|mad|" r"livid|outraged)\b"
+                ),
                 "weight": 1.3,
             },
             "fear": {
-                "pattern": r"\b(fear|afraid|scared|terror|anxiety|worried|panic|dread)\b",
+                "pattern": (
+                    r"\b(fear|afraid|scared|terror|anxiety|worried|panic|" r"dread)\b"
+                ),
                 "weight": 1.1,
             },
             "love": {
-                "pattern": r"\b(love|adore|cherish|devotion|affection|tender|caring|compassion)\b",
+                "pattern": (
+                    r"\b(love|adore|cherish|devotion|affection|tender|"
+                    r"caring|compassion)\b"
+                ),
                 "weight": 1.5,
             },
             "curiosity": {
-                "pattern": r"\b(curious|wonder|question|explore|seek|discover|intrigued)\b",
+                "pattern": (
+                    r"\b(curious|wonder|question|explore|seek|discover|" r"intrigued)\b"
+                ),
                 "weight": 1.0,
             },
             "peace": {
-                "pattern": r"\b(peace|calm|serene|tranquil|still|quiet|centered|balanced)\b",
+                "pattern": (
+                    r"\b(peace|calm|serene|tranquil|still|quiet|centered|"
+                    r"balanced)\b"
+                ),
                 "weight": 1.0,
             },
             "excitement": {
-                "pattern": r"\b(excited|thrilled|enthusiastic|energized|passionate|exhilarated)\b",
+                "pattern": (
+                    r"\b(excited|thrilled|enthusiastic|energized|"
+                    r"passionate|exhilarated)\b"
+                ),
                 "weight": 1.2,
             },
             "longing": {
-                "pattern": r"\b(longing|yearning|craving|desire|aching|missing|wanting)\b",
+                "pattern": (
+                    r"\b(longing|yearning|craving|desire|aching|missing|" r"wanting)\b"
+                ),
                 "weight": 1.1,
             },
             "shame": {
-                "pattern": r"\b(shame|ashamed|embarrassed|guilty|humiliated|worthless)\b",
+                "pattern": (
+                    r"\b(shame|ashamed|embarrassed|guilty|humiliated|" r"worthless)\b"
+                ),
                 "weight": 0.9,
             },
             "hope": {
-                "pattern": r"\b(hope|hopeful|optimistic|faith|trust|belief|possibility)\b",
+                "pattern": (
+                    r"\b(hope|hopeful|optimistic|faith|trust|belief|" r"possibility)\b"
+                ),
                 "weight": 1.3,
             },
             "confusion": {
-                "pattern": r"\b(confused|lost|unclear|uncertain|bewildered|puzzled)\b",
+                "pattern": (
+                    r"\b(confused|lost|unclear|uncertain|bewildered|" r"puzzled)\b"
+                ),
                 "weight": 0.8,
             },
         }
@@ -133,7 +161,6 @@ class ArchetypeEngine:
         # Calculate valence (-1 to 1)
         positive_emotions = ["joy", "love", "peace", "excitement", "hope", "curiosity"]
         negative_emotions = ["sadness", "anger", "fear", "shame", "confusion"]
-        neutral_emotions = ["longing"]
 
         positive_score = sum(detected_emotions.get(e, 0) for e in positive_emotions)
         negative_score = sum(detected_emotions.get(e, 0) for e in negative_emotions)
@@ -146,13 +173,9 @@ class ArchetypeEngine:
 
         # Calculate arousal (0 to 1) - intensity of emotions
         high_arousal = ["anger", "excitement", "fear", "rage", "panic"]
-        low_arousal = ["peace", "sadness", "calm"]
 
         arousal_score = sum(
             detected_emotions.get(e, 0) for e in high_arousal if e in detected_emotions
-        )
-        low_arousal_score = sum(
-            detected_emotions.get(e, 0) for e in low_arousal if e in detected_emotions
         )
 
         total_emotional_words = (
@@ -201,11 +224,17 @@ class ArchetypeEngine:
         metaphor_indicators = [
             {
                 "type": "simile",
-                "pattern": r"\b(like|as if|reminds me of|feels like|seems like|appears to be)\b",
+                "pattern": (
+                    r"\b(like|as if|reminds me of|feels like|seems like|"
+                    r"appears to be)\b"
+                ),
             },
             {
                 "type": "metaphor",
-                "pattern": r"\b(is|are|becomes?|transforms? into|turns? into)\b.*\b(symbol|represents?|embodies|means)\b",
+                "pattern": (
+                    r"\b(is|are|becomes?|transforms? into|turns? into)\b.*"
+                    r"\b(symbol|represents?|embodies|means)\b"
+                ),
             },
             {
                 "type": "symbolic",
@@ -260,85 +289,51 @@ class ArchetypeEngine:
     ) -> Dict[str, Any]:
         """Signal 3: Archetype pattern detection with enhanced scoring"""
 
-        archetype_scores = {}
+        archetype_scores: Dict[str, Dict[str, Any]] = {}
 
         for archetype_name, archetype_data in self.archetypes.items():
-            score: float = 0.0
-            match_details = {}
+            # Scoring components
+            symbol_results = self._score_symbols(archetype_data, symbolic_language)
+            emotion_results = self._score_emotions(archetype_data, emotional_resonance)
+            language_results = self._score_language(archetype_data, message)
 
-            # Symbol matching (40% weight)
-            symbol_matches = 0
-            matched_symbols = []
-            for symbol in archetype_data["symbols"]:
-                if symbol in symbolic_language["extracted_symbols"]:
-                    symbol_matches += 1
-                    matched_symbols.append(symbol)
-
-            if len(archetype_data["symbols"]) > 0:
-                symbol_score = (symbol_matches / len(archetype_data["symbols"])) * 0.4
-                score += symbol_score
-                match_details["symbols"] = {
-                    "matches": symbol_matches,
-                    "matched": matched_symbols,
-                }
-
-            # Emotion matching (30% weight)
-            emotion_matches = 0
-            matched_emotions = []
-            for emotion in archetype_data["emotions"]:
-                if emotion in emotional_resonance["detected_emotions"]:
-                    emotion_weight = emotional_resonance["detected_emotions"][emotion]
-                    emotion_matches += emotion_weight
-                    matched_emotions.append(emotion)
-
-            if len(archetype_data["emotions"]) > 0:
-                emotion_score = (
-                    min(emotion_matches / len(archetype_data["emotions"]), 1) * 0.3
-                )
-                score += emotion_score
-                match_details["emotions"] = {
-                    "score": emotion_matches,
-                    "matched": matched_emotions,
-                }
-
-            # Language pattern matching (30% weight)
-            language_matches = 0
-            for pattern in archetype_data["language_patterns"]:
-                matches = len(re.findall(pattern, message.lower()))
-                language_matches += matches
-
-            if len(archetype_data["language_patterns"]) > 0:
-                language_score = (
-                    min(language_matches / len(archetype_data["language_patterns"]), 1)
-                    * 0.3
-                )
-                score += language_score
-                match_details["language"] = {"matches": language_matches}
+            score_sum = symbol_results["score"] + emotion_results["score"]
+            score_sum += language_results["score"]
+            score: float = float(score_sum)
 
             archetype_scores[archetype_name] = {
                 "score": round(score, 3),
-                "details": match_details,
+                "details": {
+                    "symbols": symbol_results["details"],
+                    "emotions": emotion_results["details"],
+                    "language": language_results["details"],
+                },
             }
 
         # Sort archetypes by score
         def get_score(item: Tuple[str, Dict[str, Any]]) -> float:
-            return float(item[1].get("score", 0))
+            score = item[1].get("score", 0.0)
+            if score is None:
+                return 0.0
+            return float(score)
 
         sorted_archetypes = sorted(
             archetype_scores.items(), key=get_score, reverse=True
         )
 
         primary = sorted_archetypes[0][0] if sorted_archetypes else "Unknown"
-        secondary = (
-            sorted_archetypes[1][0]
-            if len(sorted_archetypes) > 1 and float(sorted_archetypes[1][1].get("score", 0)) > 0.2  # type: ignore
-            else None
-        )
-        tertiary = (
-            sorted_archetypes[2][0]
-            if len(sorted_archetypes) > 2 and float(sorted_archetypes[2][1].get("score", 0)) > 0.15  # type: ignore
-            else None
-        )
+        if len(sorted_archetypes) > 1:
+            score2_val = sorted_archetypes[1][1].get("score", 0.0)
+            score2 = float(score2_val) if score2_val is not None else 0.0
+            secondary = sorted_archetypes[1][0] if score2 > 0.2 else None
+        else:
+            secondary = None
+        if len(sorted_archetypes) > 2:
+            score3_val = sorted_archetypes[2][1].get("score", 0.0)
+            score3 = float(score3_val) if score3_val is not None else 0.0
+            tertiary = sorted_archetypes[2][0] if score3 > 0.15 else None
+        else:
+            tertiary = None
 
         primary_confidence = (
             sorted_archetypes[0][1]["score"] if sorted_archetypes else 0
@@ -355,6 +350,58 @@ class ArchetypeEngine:
             "match_details": archetype_scores.get(primary, {}).get("details", {}),
         }
 
+    def _score_symbols(self, archetype_data: Dict, symbolic_language: Dict) -> Dict:
+        """Calculate symbol match score (40% weight)"""
+        matches = 0
+        matched = []
+        for symbol in archetype_data["symbols"]:
+            if symbol in symbolic_language["extracted_symbols"]:
+                matches += 1
+                matched.append(symbol)
+
+        score = 0.0
+        if archetype_data["symbols"]:
+            score = (matches / len(archetype_data["symbols"])) * 0.4
+
+        return {
+            "score": score,
+            "details": {"matches": matches, "matched": matched},
+        }
+
+    def _score_emotions(self, archetype_data: Dict, emotional_resonance: Dict) -> Dict:
+        """Calculate emotion match score (30% weight)"""
+        matches = 0.0
+        matched = []
+        for emotion in archetype_data["emotions"]:
+            if emotion in emotional_resonance["detected_emotions"]:
+                weight = emotional_resonance["detected_emotions"][emotion]
+                matches += weight
+                matched.append(emotion)
+
+        score = 0.0
+        if archetype_data["emotions"]:
+            score = min(matches / len(archetype_data["emotions"]), 1) * 0.3
+
+        return {
+            "score": score,
+            "details": {"score": matches, "matched": matched},
+        }
+
+    def _score_language(self, archetype_data: Dict, message: str) -> Dict:
+        """Calculate language pattern match score (30% weight)"""
+        matches = 0
+        for pattern in archetype_data["language_patterns"]:
+            matches += len(re.findall(pattern, message.lower()))
+
+        score = 0.0
+        if archetype_data["language_patterns"]:
+            score = min(matches / len(archetype_data["language_patterns"]), 1) * 0.3
+
+        return {
+            "score": score,
+            "details": {"matches": matches},
+        }
+
     def _analyze_narrative_position(
         self, message: str, user_history: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
@@ -362,26 +409,68 @@ class ArchetypeEngine:
 
         # Hero's journey phases with enhanced patterns
         hero_journey_patterns = {
-            "ordinary_world": r"\b(normal|routine|everyday|usual|regular|stable|comfortable)\b",
-            "call_to_adventure": r"\b(call|calling|invitation|opportunity|chance|beginning|stirring|awakening)\b",
-            "refusal_of_call": r"\b(hesitat|resist|afraid|doubt|uncertain|not ready|avoiding|denial)\b",
-            "meeting_mentor": r"\b(guide|teacher|mentor|wisdom|guidance|help|support|advice)\b",
-            "crossing_threshold": r"\b(step|cross|enter|begin|start|commit|decide|leap|threshold)\b",
-            "tests_allies_enemies": r"\b(challenge|test|friend|enemy|obstacle|support|help|ally|opponent)\b",
-            "approach_inmost_cave": r"\b(deep|core|heart|center|fear|confront|face|prepare|gather)\b",
-            "ordeal": r"\b(crisis|death|loss|breakdown|rock bottom|darkest|trial|suffering)\b",
-            "reward": r"\b(gift|treasure|wisdom|insight|breakthrough|victory|achievement|realization)\b",
-            "road_back": r"\b(return|integrate|apply|share|teach|give back|journey home)\b",
-            "resurrection": r"\b(rebirth|transform|new|different|reborn|emerge|phoenix|renewal)\b",
-            "return_with_elixir": r"\b(wisdom|healing|help others|serve|mastery|gift|medicine|teaching)\b",
+            "ordinary_world": (
+                r"\b(normal|routine|everyday|usual|regular|stable|" r"comfortable)\b"
+            ),
+            "call_to_adventure": (
+                r"\b(call|calling|invitation|opportunity|chance|beginning|"
+                r"stirring|awakening)\b"
+            ),
+            "refusal_of_call": (
+                r"\b(hesitat|resist|afraid|doubt|uncertain|not ready|"
+                r"avoiding|denial)\b"
+            ),
+            "meeting_mentor": (
+                r"\b(guide|teacher|mentor|wisdom|guidance|help|support|" r"advice)\b"
+            ),
+            "crossing_threshold": (
+                r"\b(step|cross|enter|begin|start|commit|decide|leap|" r"threshold)\b"
+            ),
+            "tests_allies_enemies": (
+                r"\b(challenge|test|friend|enemy|obstacle|support|help|"
+                r"ally|opponent)\b"
+            ),
+            "approach_inmost_cave": (
+                r"\b(deep|core|heart|center|fear|confront|face|prepare|" r"gather)\b"
+            ),
+            "ordeal": (
+                r"\b(crisis|death|loss|breakdown|rock bottom|darkest|trial|"
+                r"suffering)\b"
+            ),
+            "reward": (
+                r"\b(gift|treasure|wisdom|insight|breakthrough|victory|"
+                r"achievement|realization)\b"
+            ),
+            "road_back": (
+                r"\b(return|integrate|apply|share|teach|give back|" r"journey home)\b"
+            ),
+            "resurrection": (
+                r"\b(rebirth|transform|new|different|reborn|emerge|"
+                r"phoenix|renewal)\b"
+            ),
+            "return_with_elixir": (
+                r"\b(wisdom|healing|help others|serve|mastery|gift|"
+                r"medicine|teaching)\b"
+            ),
         }
 
         # Narrative stages with enhanced detection
         narrative_stages = {
-            "beginning": r"\b(start|begin|new|first|initial|opening|origin|inception|dawn)\b",
-            "middle": r"\b(middle|during|process|journey|path|struggle|work|development|unfolding)\b",
-            "climax": r"\b(climax|peak|crisis|turning point|breakthrough|moment|crescendo|culmination)\b",
-            "resolution": r"\b(end|finish|complete|resolve|closure|peace|done|conclusion|fulfillment)\b",
+            "beginning": (
+                r"\b(start|begin|new|first|initial|opening|origin|" r"inception|dawn)\b"
+            ),
+            "middle": (
+                r"\b(middle|during|process|journey|path|struggle|work|"
+                r"development|unfolding)\b"
+            ),
+            "climax": (
+                r"\b(climax|peak|crisis|turning point|breakthrough|moment|"
+                r"crescendo|culmination)\b"
+            ),
+            "resolution": (
+                r"\b(end|finish|complete|resolve|closure|peace|done|"
+                r"conclusion|fulfillment)\b"
+            ),
         }
 
         # Detect journey phase
@@ -472,78 +561,109 @@ class ArchetypeEngine:
         context_signals: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Signal 5: Motif loop detection with enhanced pattern recognition"""
+        # 1. Extract current motifs
+        current_motifs = self._extract_current_motifs(message)
 
-        # Extract key themes/motifs from current message
-        current_motifs = []
+        # 2. Analyze loops if context available
+        loop_results = self._analyze_motif_loops(current_motifs, context_signals)
 
-        # Enhanced psychological motifs with patterns
-        motif_patterns = {
-            "abandonment": r"\b(abandon|left|alone|desert|reject|isolat|forsak|betray)\b",
-            "betrayal": r"\b(betray|trust|lie|deceiv|cheat|broken promise|dishonest|unfaithful)\b",
-            "perfectionism": r"\b(perfect|flawless|never enough|not good enough|mistake|failure|inadequate)\b",
-            "control": r"\b(control|manage|organize|plan|predict|certain|manipulat|dominat)\b",
-            "approval": r"\b(approval|accept|like me|love me|validate|recognition|praise|acknowledgment)\b",
-            "scarcity": r"\b(not enough|lack|scarce|limited|running out|shortage|insufficient)\b",
-            "worthiness": r"\b(worthy|deserve|enough|valuable|matter|important|significant|valued)\b",
-            "safety": r"\b(safe|secure|protected|danger|threat|risk|vulnerable|harm)\b",
-            "freedom": r"\b(free|escape|trapped|cage|liberat|independ|autonomous|choice)\b",
-            "belonging": r"\b(belong|fit in|outsider|different|home|family|community|included)\b",
-            "power": r"\b(power|strength|weak|helpless|capable|competent|agency|influence)\b",
-            "identity": r"\b(who am i|identity|self|authentic|real me|true self|persona)\b",
+        return {
+            "current_motifs": current_motifs,
+            "active_loops": loop_results["active_loops"],
+            "new_loops_detected": loop_results["new_loops"],
+            "broken_loops": loop_results["broken_loops"],
+            "loop_strengths": loop_results["loop_strengths"],
+            "loop_strength_score": round(loop_results["strength_score"], 3),
         }
 
-        # Detect current motifs
+    def _extract_current_motifs(self, message: str) -> List[str]:
+        """Identify psychological motifs present in the message"""
+        motif_patterns = {
+            "abandonment": (
+                r"\b(abandon|left|alone|desert|reject|isolat|forsak|" r"betray)\b"
+            ),
+            "betrayal": (
+                r"\b(betray|trust|lie|deceiv|cheat|broken promise|"
+                r"dishonest|unfaithful)\b"
+            ),
+            "perfectionism": (
+                r"\b(perfect|flawless|never enough|not good enough|"
+                r"mistake|failure|inadequate)\b"
+            ),
+            "control": (
+                r"\b(control|manage|organize|plan|predict|certain|"
+                r"manipulat|dominat)\b"
+            ),
+            "approval": (
+                r"\b(approval|accept|like me|love me|validate|"
+                r"recognition|praise|acknowledgment)\b"
+            ),
+            "scarcity": (
+                r"\b(not enough|lack|scarce|limited|running out|"
+                r"shortage|insufficient)\b"
+            ),
+            "worthiness": (
+                r"\b(worthy|deserve|enough|valuable|matter|important|"
+                r"significant|valued)\b"
+            ),
+            "safety": r"\b(safe|secure|protected|danger|threat|risk|vulnerable|harm)\b",
+            "freedom": (
+                r"\b(free|escape|trapped|cage|liberat|independ|" r"autonomous|choice)\b"
+            ),
+            "belonging": (
+                r"\b(belong|fit in|outsider|different|home|family|"
+                r"community|included)\b"
+            ),
+            "power": (
+                r"\b(power|strength|weak|helpless|capable|competent|"
+                r"agency|influence)\b"
+            ),
+            "identity": (
+                r"\b(who am i|identity|self|authentic|real me|" r"true self|persona)\b"
+            ),
+        }
+        detected = []
         for motif, pattern in motif_patterns.items():
             if re.search(pattern, message.lower()):
-                current_motifs.append(motif)
+                detected.append(motif)
+        return detected
 
-        # Initialize loop tracking variables
+    def _analyze_motif_loops(self, current_motifs, context_signals):
+        """Track recurrence and dissolution of motifs over time"""
         active_loops = []
         new_loops = []
         broken_loops = []
         loop_strengths = {}
 
-        # Analyze patterns if context available
         if context_signals and "historical_motifs" in context_signals:
-            historical_motifs = context_signals["historical_motifs"]
-
+            hist = context_signals["historical_motifs"]
             for motif in current_motifs:
-                if motif in historical_motifs:
-                    count = historical_motifs[motif].get("count", 0) + 1
-
-                    # Determine loop status
-                    if count >= 3:  # Loop threshold
+                if motif in hist:
+                    count = hist[motif].get("count", 0) + 1
+                    if count >= 3:
                         active_loops.append(motif)
-                        loop_strengths[motif] = min(
-                            count / 10.0, 1.0
-                        )  # Normalize strength
-                    elif count == 2:
+                        loop_strengths[motif] = min(count / 10.0, 1.0)
+                    else:
                         new_loops.append(motif)
                 else:
-                    # First occurrence
                     new_loops.append(motif)
 
-            # Check for broken loops (motifs that appeared before but not now)
-            for historical_motif, data in historical_motifs.items():
-                if historical_motif not in current_motifs and data.get("count", 0) >= 3:
-                    # Check if it was active recently
-                    last_seen = data.get("last_seen", "")
-                    if last_seen:  # If we have timing data, could check recency
-                        broken_loops.append(historical_motif)
+            for motif, data in hist.items():
+                if motif not in current_motifs and data.get("count", 0) >= 3:
+                    broken_loops.append(motif)
+        else:
+            new_loops = current_motifs
 
-        # Calculate loop strength score
-        loop_strength_score: float = 0.0
+        strength_score = 0.0
         if current_motifs:
-            total_strength = sum(loop_strengths.values())
-            loop_strength_score = total_strength / len(current_motifs)
+            strength_score = sum(loop_strengths.values()) / len(current_motifs)
 
         return {
-            "current_motifs": current_motifs,
             "active_loops": active_loops,
-            "new_loops_detected": new_loops,
+            "new_loops": new_loops,
             "broken_loops": broken_loops,
             "loop_strengths": loop_strengths,
-            "loop_strength_score": round(loop_strength_score, 3),
+            "strength_score": strength_score,
         }
 
 
@@ -571,20 +691,16 @@ class ConfidenceCalculator:
 
         # Narrative confidence (based on detection clarity)
         narrative_data = analysis_result["signal_4_narrative_position"]
-        narrative_confidence = min(
-            (narrative_data["journey_confidence"] + narrative_data["stage_confidence"])
-            / 10,
-            1.0,
-        )
+        n_conf = narrative_data["journey_confidence"]
+        n_conf += narrative_data["stage_confidence"]
+        narrative_confidence = min(n_conf / 10, 1.0)
 
         # Overall confidence (weighted average)
-        overall_confidence = (
-            archetype_confidence * 0.35
-            + symbol_confidence * 0.25
-            + emotion_confidence * 0.25
-            + narrative_confidence * 0.1
-            + historical_stability * 0.05
-        )
+        overall_confidence = archetype_confidence * 0.35
+        overall_confidence += symbol_confidence * 0.25
+        overall_confidence += emotion_confidence * 0.25
+        overall_confidence += narrative_confidence * 0.1
+        overall_confidence += historical_stability * 0.05
 
         return {
             "overall": round(overall_confidence, 3),
@@ -664,11 +780,8 @@ class ChangeDetector:
         curr_primary = current["signal_3_archetype_blend"]["primary"]
         curr_confidence = current["signal_3_archetype_blend"]["confidence"]
 
-        if (
-            prev_primary
-            and prev_primary != curr_primary
-            and curr_confidence > self.confidence_threshold
-        ):
+        has_primary = prev_primary and prev_primary != curr_primary
+        if has_primary and curr_confidence > self.confidence_threshold:
             significance = self._calculate_shift_significance(
                 prev_primary, curr_primary
             )
@@ -682,8 +795,10 @@ class ChangeDetector:
                 "significance": significance,
                 "is_mirror_moment": significance > 0.7,
                 "message": f"Movement from {prev_primary} to {curr_primary} detected",
-                "suggested_practice": ArchetypeDefinitions.get_integration_practices().get(
-                    curr_primary, "Reflective journaling and integration"
+                "suggested_practice": (
+                    ArchetypeDefinitions.get_integration_practices().get(
+                        curr_primary, "Reflective journaling and integration"
+                    )
                 ),
             }
 
@@ -713,7 +828,10 @@ class ChangeDetector:
                 "delta": confidence_delta,
                 "current_confidence": curr_confidence,
                 "is_mirror_moment": confidence_delta > 0.5,
-                "message": f"Archetype confidence {direction}: {confidence_delta:.2f} change",
+                "message": (
+                    f"Archetype confidence {direction}: "
+                    f"{confidence_delta:.2f} change"
+                ),
             }
 
         return {"detected": False}
@@ -750,17 +868,18 @@ class ChangeDetector:
 
         breakthrough_phases = ["reward", "resurrection", "return_with_elixir"]
 
-        if (
-            narrative["transformation_marker"]
-            and narrative["hero_journey_phase"] in breakthrough_phases
-        ):
+        is_transform = narrative["transformation_marker"]
+        is_breakthrough = narrative["hero_journey_phase"] in breakthrough_phases
+        if is_transform and is_breakthrough:
 
             return {
                 "detected": True,
                 "type": "breakthrough_moment",
                 "journey_phase": narrative["hero_journey_phase"],
                 "is_mirror_moment": True,
-                "message": "Breakthrough moment detected - transformation is integrating",
+                "message": (
+                    "Breakthrough moment detected - " "transformation is integrating"
+                ),
                 "suggested_practice": "Integration and grounding practice",
             }
 

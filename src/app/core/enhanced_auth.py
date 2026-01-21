@@ -3,9 +3,9 @@ Enhanced user dependencies for profile data
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 
 from ..services.cognito_service import CognitoService
 from .security import get_current_user
@@ -50,14 +50,16 @@ async def get_user_with_profile(
             email = attrs.get("email", current_user.get("email", ""))
 
             # Create display name
-            display_name = (
-                f"{given_name} {family_name}".strip()
-                or attrs.get("name", "")
-                or attrs.get("preferred_username", "")
-                or email.split("@")[0]
-                if email
-                else "" or f"User-{current_user['id'][:8]}"
-            )
+            display_name = f"{given_name} {family_name}".strip()
+            if not display_name:
+                display_name = attrs.get("name", "")
+            if not display_name:
+                display_name = attrs.get("preferred_username", "")
+            if not display_name:
+                if email:
+                    display_name = email.split("@")[0]
+                else:
+                    display_name = f"User-{current_user['id'][:8]}"
 
             # Create enhanced user profile
             enhanced_user = {

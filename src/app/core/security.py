@@ -80,13 +80,14 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     groups: List[str] = payload.get("cognito:groups", []) or []
 
-    # Try multiple ways to get email, as it might be in different claims
-    email = (
-        payload.get("email")
-        or payload.get("cognito:username")
-        or payload.get("username")  # Sometimes username is the email
-        or None
-    )
+    # Try multiple ways to get email
+    email = payload.get("email")
+    if not email:
+        email = payload.get("cognito:username")
+    if not email:
+        email = payload.get("username")
+    if not email:
+        email = None
 
     # If we still don't have email and this is an access token, warn about it
     token_use = payload.get("token_use")
@@ -94,7 +95,8 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
         not email and token_use == "access"  # nosec B105
     ):  # 'access' is a token type, not a password
         logger.warning(
-            "⚠️  No email found in access token. Consider using ID token for user profile endpoints."
+            "⚠️  No email found in access token. "
+            "Consider using ID token for user profile endpoints."
         )
         logger.info("💡 Available claims in access token: " + ", ".join(payload.keys()))
 
@@ -130,10 +132,9 @@ async def get_current_user(
     Dependency to get current authenticated user from JWT token
     Extracts and validates user information from Cognito JWT tokens
     """
-    is_development = (
-        os.getenv("NODE_ENV") in ["development", "test"]
-        or os.getenv("DEBUG", "false").lower() == "true"
-    )
+    is_dev_env = os.getenv("NODE_ENV") in ["development", "test"]
+    is_debug = os.getenv("DEBUG", "false").lower() == "true"
+    is_development = is_dev_env or is_debug
 
     # Try to get token from Authorization header
     token = None
@@ -209,7 +210,8 @@ async def get_current_user(
 
     if is_development:
         logger.info(
-            f"🔧 Development: Decoded JWT token for user: {user_profile.get('email', 'unknown')}"
+            f"🔧 Development: Decoded JWT token for user: "
+            f"{user_profile.get('email', 'unknown')}"
         )
     else:
         logger.debug(

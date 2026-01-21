@@ -96,12 +96,10 @@ class CognitoHealthCheck(HealthCheck):
 
                 # Extract only basic info to avoid serialization issues
                 pool_name = "Unknown"
-                if (
-                    response
-                    and "UserPool" in response
-                    and "Name" in response["UserPool"]
-                ):
-                    pool_name = str(response["UserPool"]["Name"])
+                if response and "UserPool" in response:
+                    user_pool = response["UserPool"]
+                    if "Name" in user_pool:
+                        pool_name = str(user_pool["Name"])
 
                 return {
                     "configured": True,
@@ -286,13 +284,14 @@ class HealthCheckService:
                 # Ensure the result is JSON serializable by converting to basic types
                 serializable_result = self._make_json_serializable(result)
 
-                # Check for errors in the individual health check result (including nested details)
+                # Check for errors in the individual health check result
                 details = serializable_result.get("details", {})
-                has_error = (
-                    serializable_result.get("error") is not None
-                    or details.get("error") is not None
-                    or details.get("connection_error") is not None
-                )
+                has_error = serializable_result.get("error") is not None
+                if not has_error:
+                    if details.get("error") is not None:
+                        has_error = True
+                    elif details.get("connection_error") is not None:
+                        has_error = True
 
                 if has_error:
                     serializable_result["status"] = HealthStatus.UNHEALTHY.value
@@ -301,11 +300,9 @@ class HealthCheckService:
 
                 if serializable_result.get("status") == HealthStatus.UNHEALTHY.value:
                     overall_status = HealthStatus.UNHEALTHY
-                elif (
-                    serializable_result.get("status") == HealthStatus.DEGRADED.value
-                    and overall_status == HealthStatus.HEALTHY
-                ):
-                    overall_status = HealthStatus.DEGRADED
+                elif serializable_result.get("status") == HealthStatus.DEGRADED.value:
+                    if overall_status == HealthStatus.HEALTHY:
+                        overall_status = HealthStatus.DEGRADED
 
         total_duration = time.time() - start_time
 

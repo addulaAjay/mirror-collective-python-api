@@ -17,7 +17,7 @@ def test_imports():
 
     try:
         # Test basic model imports
-        from app.models.conversation import ConversationMessage
+        from app.models.conversation import ConversationMessage  # noqa: F401
 
         print("✅ ConversationMessage import successful")
 
@@ -26,11 +26,12 @@ def test_imports():
 
         print("✅ ConversationService import successful")
 
-        import app.services.mirror_orchestrator
+        import app.services.mirror_orchestrator  # noqa: F401
 
         print("✅ MirrorOrchestrator import successful")
 
-        # Note: Enhanced mirror chat use case has been removed in favor of MirrorGPT integration
+        # Note: Enhanced mirror chat use case has been removed in favor of
+        # MirrorGPT integration
 
         return True
 
@@ -110,9 +111,9 @@ def test_service_method_signatures():
     from app.services.mirror_orchestrator import MirrorOrchestrator
 
     # Test ConversationService methods exist
-    conv_service = ConversationService.__new__(
+    ConversationService.__new__(
         ConversationService
-    )  # Create without __init__
+    )  # Create without __init__, test syntax
 
     expected_methods = [
         "add_message_with_mirrorgpt_analysis",
@@ -204,7 +205,8 @@ def test_integration_concept():
     ), "Emotion should be uncertainty"
 
     # 5. Simulate storing and retrieving (conceptually)
-    # In the real implementation, this would be stored in DynamoDB conversation_messages table
+    # In the real implementation, this would be stored in DynamoDB
+    # conversation_messages table
     # and retrieved using ConversationService.get_messages_with_mirrorgpt_analysis()
 
     analysis_data = user_message.get_analysis_data()
@@ -249,7 +251,7 @@ def main():
 
             traceback.print_exc()
 
-    print(f"\n{'='*65}")
+    print(f"\n{'=' * 65}")
     print(f"📊 Test Results: {passed}/{total} tests passed")
 
     if passed == total:
