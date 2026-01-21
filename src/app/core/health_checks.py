@@ -195,8 +195,8 @@ class DatabaseHealthCheck(HealthCheck):
                     "dynamodb",
                     region_name=region_name,
                     endpoint_url=endpoint_url,
-                    aws_access_key_id="dummy",
-                    aws_secret_access_key="dummy",
+                    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "local"),
+                    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "local"),
                 )
             else:
                 dynamodb = boto3.client("dynamodb", region_name=region_name)

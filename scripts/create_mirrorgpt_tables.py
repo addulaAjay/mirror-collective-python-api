@@ -10,6 +10,10 @@ import sys
 
 import boto3
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 # Add src to path to import config
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))

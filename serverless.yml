@@ -25,6 +25,7 @@ provider:
     DYNAMODB_MIRROR_MOMENTS_TABLE: ${self:service}-mirror-moments-${self:provider.stage}
     DYNAMODB_PATTERN_LOOPS_TABLE: ${self:service}-pattern-loops-${self:provider.stage}
     DYNAMODB_QUIZ_RESULTS_TABLE: ${self:service}-quiz-results-${self:provider.stage}
+    DYNAMODB_DEVICE_TOKENS_TABLE: ${self:service}-device-tokens-${self:provider.stage}
   iam:
     role:
       statements:
@@ -71,6 +72,7 @@ provider:
               - '/'
               - - Fn::GetAtt: [ QuizResultsTable, Arn ]
                 - 'index/*'
+            - Fn::GetAtt: [ DeviceTokensTable, Arn ]
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -334,6 +336,25 @@ resources:
             ProvisionedThroughput:
               ReadCapacityUnits: 1
               WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    DeviceTokensTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-device-tokens-${self:provider.stage}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: device_token
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: device_token
+            KeyType: RANGE
         BillingMode: PROVISIONED
         ProvisionedThroughput:
           ReadCapacityUnits: 1

@@ -127,6 +127,20 @@ class HealthResponse(BaseModel):
     timestamp: str
 
 
+class NotificationRequest(BaseModel):
+    title: str
+    body: str
+
+
+class DeviceRegistrationRequest(BaseModel):
+    device_token: str
+    platform: str = "android"  # Default to android for backward compatibility
+
+
+class DeviceUnregistrationRequest(BaseModel):
+    device_token: str
+
+
 # ========================================
 # MIRRORGPT API MODELS
 # ========================================
