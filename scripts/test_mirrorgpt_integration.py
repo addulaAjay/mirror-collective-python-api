@@ -29,16 +29,18 @@ def test_archetype_definitions():
 
     try:
         archetypes = ArchetypeDefinitions.get_all_archetypes()
-        assert len(archetypes) == 14, f"Expected 14 archetypes, got {len(archetypes)}"
+        assert (
+            len(archetypes) == 14
+        ), f"Expected 14 archetypes, got {len(archetypes)}"  # nosec
 
         symbols = ArchetypeDefinitions.get_symbol_library()
-        assert len(symbols) > 0, "Symbol library is empty"
+        assert len(symbols) > 0, "Symbol library is empty"  # nosec
 
         relationships = ArchetypeDefinitions.get_archetype_relationships()
-        assert len(relationships) > 0, "Archetype relationships are empty"
+        assert len(relationships) > 0, "Archetype relationships are empty"  # nosec
 
         practices = ArchetypeDefinitions.get_integration_practices()
-        assert (
+        assert (  # nosec
             len(practices) == 14
         ), f"Expected 14 integration practices, got {len(practices)}"
 
@@ -101,7 +103,7 @@ def test_archetype_engine():
             ]
 
             for signal in required_signals:
-                assert signal in result, f"Missing signal: {signal}"
+                assert signal in result, f"Missing signal: {signal}"  # nosec
 
             # Verify archetype detection
             detected_archetype = result["primary_archetype"]
@@ -123,7 +125,7 @@ def test_archetype_engine():
                 )
 
             # Verify confidence is reasonable
-            assert (
+            assert (  # nosec
                 0 <= confidence <= 1
             ), f"Confidence should be between 0-1, got {confidence}"
 
@@ -157,11 +159,11 @@ def test_confidence_calculator():
 
         required_scores = ["overall", "archetype", "symbol", "emotion", "historical"]
         for score_type in required_scores:
-            assert (
+            assert (  # nosec
                 score_type in confidence_scores
             ), f"Missing confidence score: {score_type}"
             score = confidence_scores[score_type]
-            assert (
+            assert (  # nosec
                 0 <= score <= 1
             ), f"{score_type} confidence should be 0-1, got {score}"
 
@@ -197,10 +199,12 @@ def test_change_detector():
 
         changes = detector.detect_changes(current_analysis, previous_profile)
 
-        assert "change_detected" in changes, "Missing change_detected field"
-        assert changes["change_detected"] is True, "Should detect archetype shift"
-        assert len(changes["changes"]) > 0, "Should have change details"
+        assert "change_detected" in changes, "Missing change_detected field"  # nosec
         assert (
+            changes["change_detected"] is True
+        ), "Should detect archetype shift"  # nosec
+        assert len(changes["changes"]) > 0, "Should have change details"  # nosec
+        assert (  # nosec
             changes["changes"][0]["type"] == "archetype_shift"
         ), "Should detect archetype shift"
 
@@ -309,10 +313,10 @@ async def test_mock_orchestrator():
             use_enhanced_response=False,  # Skip OpenAI to avoid API calls
         )
 
-        assert result["success"] is True, "Orchestrator should succeed"
-        assert "response" in result, "Should have response"
-        assert "archetype_analysis" in result, "Should have archetype analysis"
-        assert result["archetype_analysis"]["primary_archetype"] in [
+        assert result["success"] is True, "Orchestrator should succeed"  # nosec
+        assert "response" in result, "Should have response"  # nosec
+        assert "archetype_analysis" in result, "Should have archetype analysis"  # nosec
+        assert result["archetype_analysis"]["primary_archetype"] in [  # nosec
             "Seeker",
             "Wounded Explorer",
         ], "Should detect appropriate archetype"

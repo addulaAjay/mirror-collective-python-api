@@ -43,8 +43,8 @@ def get_dynamodb_client():
             "dynamodb",
             region_name=AWS_REGION,
             endpoint_url=endpoint_url,
-            aws_access_key_id="dummy",
-            aws_secret_access_key="dummy",
+            aws_access_key_id="dummy",  # nosec
+            aws_secret_access_key="dummy",  # nosec
         )
     else:
         # AWS DynamoDB configuration

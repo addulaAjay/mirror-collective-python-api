@@ -57,14 +57,14 @@ def test_message_mirrorgpt_integration():
     )
 
     # Verify analysis storage
-    assert message.has_mirrorgpt_analysis() is True
-    assert message.user_id == "user_123"
-    assert message.signal_3_archetype_blend["primary"] == "Seeker"
+    assert message.has_mirrorgpt_analysis() is True  # nosec
+    assert message.user_id == "user_123"  # nosec
+    assert message.signal_3_archetype_blend["primary"] == "Seeker"  # nosec
 
     # Test serialization/deserialization
     item = message.to_dynamodb_item()
     restored = ConversationMessage.from_dynamodb_item(item)
-    assert restored.has_mirrorgpt_analysis() is True
+    assert restored.has_mirrorgpt_analysis() is True  # nosec
 
     print("✅ ConversationMessage MirrorGPT integration works!")
 
@@ -82,7 +82,9 @@ def test_service_method_existence():
     ]
 
     for method in required_conv_methods:
-        assert hasattr(conv_service, method), f"ConversationService missing {method}"
+        assert hasattr(
+            conv_service, method
+        ), f"ConversationService missing {method}"  # nosec
 
     # Test MirrorOrchestrator
     dynamodb = DynamoDBService()
@@ -95,7 +97,9 @@ def test_service_method_existence():
     ]
 
     for method in required_orchestrator_methods:
-        assert hasattr(orchestrator, method), f"MirrorOrchestrator missing {method}"
+        assert hasattr(
+            orchestrator, method
+        ), f"MirrorOrchestrator missing {method}"  # nosec
 
     print("✅ All required service methods exist!")
 
@@ -132,8 +136,8 @@ def test_integration_workflow():
     orchestrator.apply_mirrorgpt_analysis_to_message(message, mock_mirrorgpt_data)
 
     # 4. Verify the message now has the analysis
-    assert message.has_mirrorgpt_analysis() is True
-    assert message.signal_3_archetype_blend["primary"] == "Sage"
+    assert message.has_mirrorgpt_analysis() is True  # nosec
+    assert message.signal_3_archetype_blend["primary"] == "Sage"  # nosec
 
     print("✅ Integration workflow test passed!")
 

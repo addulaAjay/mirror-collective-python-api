@@ -251,8 +251,8 @@ def main():
                 "dynamodb",
                 endpoint_url=endpoint_url,
                 region_name=region,
-                aws_access_key_id="dummy",
-                aws_secret_access_key="dummy",
+                aws_access_key_id="dummy",  # nosec
+                aws_secret_access_key="dummy",  # nosec
             )
             # Test local connection
             try:
@@ -260,8 +260,8 @@ def main():
                     "dynamodb",
                     endpoint_url=endpoint_url,
                     region_name=region,
-                    aws_access_key_id="dummy",
-                    aws_secret_access_key="dummy",
+                    aws_access_key_id="dummy",  # nosec
+                    aws_secret_access_key="dummy",  # nosec
                 )
                 dynamodb_client.list_tables()
                 print("✅ Connected to local DynamoDB")
