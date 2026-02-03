@@ -257,6 +257,37 @@ class HealthCheckService:
             DatabaseHealthCheck(),
         ]
 
+    def _process_exception_result(self, exception: Exception) -> Dict[str, Any]:
+        """Process a health check exception into a result dict"""
+        return {
+            "name": "unknown",
+            "status": HealthStatus.UNHEALTHY.value,
+            "error": str(exception),
+        }
+
+    def _has_error_in_result(self, result: Dict[str, Any]) -> bool:
+        """Check if a health check result contains errors"""
+        if result.get("error") is not None:
+            return True
+        details = result.get("details", {})
+        return (
+            details.get("error") is not None
+            or details.get("connection_error") is not None
+        )
+
+    def _update_overall_status(
+        self, current_status: HealthStatus, check_status: str
+    ) -> HealthStatus:
+        """Update overall status based on individual check status"""
+        if check_status == HealthStatus.UNHEALTHY.value:
+            return HealthStatus.UNHEALTHY
+        if (
+            check_status == HealthStatus.DEGRADED.value
+            and current_status == HealthStatus.HEALTHY
+        ):
+            return HealthStatus.DEGRADED
+        return current_status
+
     async def run_all_checks(self) -> Dict[str, Any]:
         """Run all health checks and aggregate results"""
         start_time = time.time()
@@ -266,43 +297,24 @@ class HealthCheckService:
             *[check.check() for check in self.checks], return_exceptions=True
         )
 
-        # Process results and ensure they're JSON serializable
+        # Process results
         check_results: List[Dict[str, Any]] = []
         overall_status = HealthStatus.HEALTHY
 
         for result in results:
             if isinstance(result, Exception):
-                check_results.append(
-                    {
-                        "name": "unknown",
-                        "status": HealthStatus.UNHEALTHY.value,
-                        "error": str(result),
-                    }
-                )
+                check_results.append(self._process_exception_result(result))
                 overall_status = HealthStatus.UNHEALTHY
             elif isinstance(result, dict):
-                # Ensure the result is JSON serializable by converting to basic types
                 serializable_result = self._make_json_serializable(result)
 
-                # Check for errors in the individual health check result
-                details = serializable_result.get("details", {})
-                has_error = serializable_result.get("error") is not None
-                if not has_error:
-                    if details.get("error") is not None:
-                        has_error = True
-                    elif details.get("connection_error") is not None:
-                        has_error = True
-
-                if has_error:
+                if self._has_error_in_result(serializable_result):
                     serializable_result["status"] = HealthStatus.UNHEALTHY.value
 
                 check_results.append(serializable_result)
-
-                if serializable_result.get("status") == HealthStatus.UNHEALTHY.value:
-                    overall_status = HealthStatus.UNHEALTHY
-                elif serializable_result.get("status") == HealthStatus.DEGRADED.value:
-                    if overall_status == HealthStatus.HEALTHY:
-                        overall_status = HealthStatus.DEGRADED
+                overall_status = self._update_overall_status(
+                    overall_status, serializable_result.get("status")
+                )
 
         total_duration = time.time() - start_time
 
@@ -313,19 +325,15 @@ class HealthCheckService:
             "checks": check_results,
             "summary": {
                 "total_checks": len(check_results),
-                "healthy_checks": len(
-                    [
-                        c
-                        for c in check_results
-                        if c.get("status") == HealthStatus.HEALTHY.value
-                    ]
+                "healthy_checks": sum(
+                    1
+                    for c in check_results
+                    if c.get("status") == HealthStatus.HEALTHY.value
                 ),
-                "unhealthy_checks": len(
-                    [
-                        c
-                        for c in check_results
-                        if c.get("status") == HealthStatus.UNHEALTHY.value
-                    ]
+                "unhealthy_checks": sum(
+                    1
+                    for c in check_results
+                    if c.get("status") == HealthStatus.UNHEALTHY.value
                 ),
             },
         }
