@@ -1,9 +1,7 @@
 """
-Create MirrorGPT DynamoDB tables
-Script to create all required DynamoDB tables for MirrorGPT functionality
-
-Note: echo_signals table removed
-MirrorGPT analysis now stored in conversation_messages
+Create Echo Vault DynamoDB tables
+Script to create all required DynamoDB tables for Echo Vault functionality
+(Echoes, Recipients, Guardians)
 """
 
 import logging
@@ -52,111 +50,130 @@ def get_dynamodb_client():
         return boto3.client("dynamodb", region_name=AWS_REGION)
 
 
-def create_mirrorgpt_tables():
-    """Create all MirrorGPT DynamoDB tables"""
+def create_echo_vault_tables():
+    """Create all Echo Vault DynamoDB tables"""
 
     dynamodb = get_dynamodb_client()
+    environment = os.getenv("ENVIRONMENT", "development")
 
-    # Define table configurations
-    # Note: echo_signals table removed
-    # MirrorGPT analysis now stored in conversation_messages
     tables = [
+        # ========================================
+        # ECHOES TABLE
+        # ========================================
         {
-            "TableName": os.getenv(
-                "DYNAMODB_ARCHETYPE_PROFILES_TABLE", "user_archetype_profiles"
-            ),
-            "KeySchema": [{"AttributeName": "user_id", "KeyType": "HASH"}],
-            "AttributeDefinitions": [
-                {"AttributeName": "user_id", "AttributeType": "S"}
-            ],
-            "BillingMode": "PAY_PER_REQUEST",
-            "Tags": [
-                {"Key": "Service", "Value": "MirrorGPT"},
-                {"Key": "Component", "Value": "ArchetypeProfiles"},
-                {
-                    "Key": "Environment",
-                    "Value": os.getenv("ENVIRONMENT", "development"),
-                },
-            ],
-        },
-        {
-            "TableName": os.getenv("DYNAMODB_MIRROR_MOMENTS_TABLE", "mirror_moments"),
+            "TableName": os.getenv("DYNAMODB_ECHOES_TABLE", "echoes"),
             "KeySchema": [
-                {"AttributeName": "user_id", "KeyType": "HASH"},
-                {"AttributeName": "moment_id", "KeyType": "RANGE"},
+                {"AttributeName": "echo_id", "KeyType": "HASH"},
             ],
             "AttributeDefinitions": [
+                {"AttributeName": "echo_id", "AttributeType": "S"},
                 {"AttributeName": "user_id", "AttributeType": "S"},
-                {"AttributeName": "moment_id", "AttributeType": "S"},
-                {"AttributeName": "triggered_at", "AttributeType": "S"},
-                {"AttributeName": "moment_type", "AttributeType": "S"},
+                {"AttributeName": "status", "AttributeType": "S"},
+                {"AttributeName": "category", "AttributeType": "S"},
+                {"AttributeName": "recipient_id", "AttributeType": "S"},
             ],
             "GlobalSecondaryIndexes": [
                 {
-                    "IndexName": "type-index",
+                    "IndexName": "user-echoes-index",
                     "KeySchema": [
                         {"AttributeName": "user_id", "KeyType": "HASH"},
-                        {"AttributeName": "moment_type", "KeyType": "RANGE"},
+                        {"AttributeName": "status", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },
                 {
-                    "IndexName": "time-index",
+                    "IndexName": "category-index",
                     "KeySchema": [
                         {"AttributeName": "user_id", "KeyType": "HASH"},
-                        {"AttributeName": "triggered_at", "KeyType": "RANGE"},
+                        {"AttributeName": "category", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "recipient-echoes-index",
+                    "KeySchema": [
+                        {"AttributeName": "recipient_id", "KeyType": "HASH"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },
             ],
             "BillingMode": "PAY_PER_REQUEST",
             "Tags": [
-                {"Key": "Service", "Value": "MirrorGPT"},
-                {"Key": "Component", "Value": "MirrorMoments"},
-                {
-                    "Key": "Environment",
-                    "Value": os.getenv("ENVIRONMENT", "development"),
-                },
+                {"Key": "Service", "Value": "EchoVault"},
+                {"Key": "Component", "Value": "Echoes"},
+                {"Key": "Environment", "Value": environment},
             ],
         },
+        # ========================================
+        # RECIPIENTS TABLE
+        # ========================================
         {
-            "TableName": os.getenv("DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"),
+            "TableName": os.getenv("DYNAMODB_RECIPIENTS_TABLE", "echo_recipients"),
             "KeySchema": [
-                {"AttributeName": "user_id", "KeyType": "HASH"},
-                {"AttributeName": "loop_id", "KeyType": "RANGE"},
+                {"AttributeName": "recipient_id", "KeyType": "HASH"},
             ],
             "AttributeDefinitions": [
+                {"AttributeName": "recipient_id", "AttributeType": "S"},
                 {"AttributeName": "user_id", "AttributeType": "S"},
-                {"AttributeName": "loop_id", "AttributeType": "S"},
-                {"AttributeName": "last_seen", "AttributeType": "S"},
-                {"AttributeName": "trend", "AttributeType": "S"},
+                {"AttributeName": "email", "AttributeType": "S"},
             ],
             "GlobalSecondaryIndexes": [
                 {
-                    "IndexName": "trend-index",
+                    "IndexName": "user-recipients-index",
                     "KeySchema": [
                         {"AttributeName": "user_id", "KeyType": "HASH"},
-                        {"AttributeName": "trend", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },
                 {
-                    "IndexName": "activity-index",
+                    "IndexName": "email-index",
                     "KeySchema": [
-                        {"AttributeName": "user_id", "KeyType": "HASH"},
-                        {"AttributeName": "last_seen", "KeyType": "RANGE"},
+                        {"AttributeName": "email", "KeyType": "HASH"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },
             ],
             "BillingMode": "PAY_PER_REQUEST",
             "Tags": [
-                {"Key": "Service", "Value": "MirrorGPT"},
-                {"Key": "Component", "Value": "PatternLoops"},
+                {"Key": "Service", "Value": "EchoVault"},
+                {"Key": "Component", "Value": "Recipients"},
+                {"Key": "Environment", "Value": environment},
+            ],
+        },
+        # ========================================
+        # GUARDIANS TABLE
+        # ========================================
+        {
+            "TableName": os.getenv("DYNAMODB_GUARDIANS_TABLE", "echo_guardians"),
+            "KeySchema": [
+                {"AttributeName": "guardian_id", "KeyType": "HASH"},
+            ],
+            "AttributeDefinitions": [
+                {"AttributeName": "guardian_id", "AttributeType": "S"},
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "email", "AttributeType": "S"},
+            ],
+            "GlobalSecondaryIndexes": [
                 {
-                    "Key": "Environment",
-                    "Value": os.getenv("ENVIRONMENT", "development"),
+                    "IndexName": "user-guardians-index",
+                    "KeySchema": [
+                        {"AttributeName": "user_id", "KeyType": "HASH"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
                 },
+                {
+                    "IndexName": "email-index",
+                    "KeySchema": [
+                        {"AttributeName": "email", "KeyType": "HASH"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
+                {"Key": "Service", "Value": "EchoVault"},
+                {"Key": "Component", "Value": "Guardians"},
+                {"Key": "Environment", "Value": environment},
             ],
         },
     ]
@@ -171,7 +188,6 @@ def create_mirrorgpt_tables():
         try:
             logger.info(f"Creating table: {table_name}")
 
-            # Create the table
             response = dynamodb.create_table(**table_config)
 
             logger.info(f"✅ Successfully initiated creation of table: {table_name}")
@@ -197,7 +213,7 @@ def create_mirrorgpt_tables():
 
     # Summary
     logger.info("\n" + "=" * 60)
-    logger.info("MIRRORGPT TABLE CREATION SUMMARY")
+    logger.info("ECHO VAULT TABLE CREATION SUMMARY")
     logger.info("=" * 60)
 
     if created_tables:
@@ -218,31 +234,23 @@ def create_mirrorgpt_tables():
 
     logger.info(f"\n🎉 Total tables processed: {len(tables)}")
     logger.info("\nNote: Tables may take a few moments to become fully active.")
-    logger.info(
-        "Use 'aws dynamodb describe-table --table-name <table_name>' to check status."
-    )
-    logger.info(
-        "\n📝 echo_signals table removed - "
-        "MirrorGPT analysis now stored in conversation_messages"
-    )
 
     return True
 
 
 def verify_tables():
-    """Verify that all MirrorGPT tables exist and are active"""
+    """Verify that all Echo Vault tables exist and are active"""
 
     dynamodb = get_dynamodb_client()
 
-    # Note: echo_signals removed from table list
     table_names = [
-        os.getenv("DYNAMODB_ARCHETYPE_PROFILES_TABLE", "user_archetype_profiles"),
-        os.getenv("DYNAMODB_MIRROR_MOMENTS_TABLE", "mirror_moments"),
-        os.getenv("DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"),
+        os.getenv("DYNAMODB_ECHOES_TABLE", "echoes"),
+        os.getenv("DYNAMODB_RECIPIENTS_TABLE", "echo_recipients"),
+        os.getenv("DYNAMODB_GUARDIANS_TABLE", "echo_guardians"),
     ]
 
     logger.info("\n" + "=" * 50)
-    logger.info("VERIFYING MIRRORGPT TABLES")
+    logger.info("VERIFYING ECHO VAULT TABLES")
     logger.info("=" * 50)
 
     all_active = True
@@ -271,24 +279,19 @@ def verify_tables():
             all_active = False
 
     if all_active:
-        logger.info("\n🎉 All MirrorGPT tables are active and ready!")
+        logger.info("\n🎉 All Echo Vault tables are active and ready!")
     else:
         logger.warning(
             "\n⚠️  Some tables are not active yet. Please wait and try again."
         )
 
-    logger.info(
-        "\n📝 Note: echo_signals table is no longer used "
-        "(MirrorGPT analysis stored in conversation_messages)"
-    )
-
     return all_active
 
 
-def delete_mirrorgpt_tables():
-    """Delete all MirrorGPT tables (use with caution!)"""
+def delete_echo_vault_tables():
+    """Delete all Echo Vault tables (use with caution!)"""
 
-    print("\n⚠️  WARNING: This will delete all MirrorGPT tables and their data!")
+    print("\n⚠️  WARNING: This will delete all Echo Vault tables and their data!")
     confirmation = input("Type 'DELETE' to confirm: ")
 
     if confirmation != "DELETE":
@@ -297,11 +300,10 @@ def delete_mirrorgpt_tables():
 
     dynamodb = get_dynamodb_client()
 
-    # Note: echo_signals removed from deletion list
     table_names = [
-        os.getenv("DYNAMODB_ARCHETYPE_PROFILES_TABLE", "user_archetype_profiles"),
-        os.getenv("DYNAMODB_MIRROR_MOMENTS_TABLE", "mirror_moments"),
-        os.getenv("DYNAMODB_PATTERN_LOOPS_TABLE", "pattern_loops"),
+        os.getenv("DYNAMODB_ECHOES_TABLE", "echoes"),
+        os.getenv("DYNAMODB_RECIPIENTS_TABLE", "echo_recipients"),
+        os.getenv("DYNAMODB_GUARDIANS_TABLE", "echo_guardians"),
     ]
 
     for table_name in table_names:
@@ -318,14 +320,13 @@ def delete_mirrorgpt_tables():
             logger.error(f"❌ Unexpected error deleting {table_name}: {e}")
 
     logger.info("\n🗑️  Table deletion initiated. This may take a few minutes.")
-    logger.info("📝 Note: echo_signals table was already removed from configuration")
     return True
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Manage MirrorGPT DynamoDB tables")
+    parser = argparse.ArgumentParser(description="Manage Echo Vault DynamoDB tables")
     parser.add_argument(
         "action", choices=["create", "verify", "delete"], help="Action to perform"
     )
@@ -335,7 +336,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    logger.info("MirrorGPT DynamoDB Table Management")
+    logger.info("Echo Vault DynamoDB Table Management")
     logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
     logger.info(f"AWS Region: {AWS_REGION}")
 
@@ -344,13 +345,8 @@ if __name__ == "__main__":
     else:
         logger.info("DynamoDB Endpoint: AWS (Cloud)")
 
-    logger.info(
-        "📝 Note: echo_signals table removed - "
-        "MirrorGPT analysis now in conversation_messages"
-    )
-
     if args.action == "create":
-        success = create_mirrorgpt_tables()
+        success = create_echo_vault_tables()
         sys.exit(0 if success else 1)
 
     elif args.action == "verify":
@@ -359,7 +355,7 @@ if __name__ == "__main__":
 
     elif args.action == "delete":
         if args.force:
-            success = delete_mirrorgpt_tables()
+            success = delete_echo_vault_tables()
         else:
             print("Use --force flag to confirm deletion")
             success = False

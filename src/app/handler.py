@@ -9,6 +9,7 @@ from mangum import Mangum
 
 from src.app.services.scheduler import start_scheduler
 
+from .api.echo_routes import router as echo_router
 from .api.mirrorgpt_routes import router as mirrorgpt_router
 from .api.models import HealthResponse
 from .api.routes import router as api_router
@@ -198,5 +199,8 @@ app.include_router(api_router, prefix="/api")
 
 # Mount MirrorGPT routes under /api
 app.include_router(mirrorgpt_router, prefix="/api")
+
+# Mount Echo Vault routes under /api
+app.include_router(echo_router, prefix="/api")
 
 handler = Mangum(app)
