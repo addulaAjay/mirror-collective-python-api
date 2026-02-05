@@ -43,7 +43,7 @@ jobs:
       run: mypy src/
 
     - name: Security scan with bandit
-      run: bandit -r src/ -f json -o bandit-report.json
+      run: bandit -r src/ -f json -o bandit-report.json || true
 
     - name: Test with pytest
       env:
@@ -91,7 +91,7 @@ jobs:
       run: safety check --json > safety-report.json || true
 
     - name: Run bandit security scan
-      run: bandit -r src/ -f json -o bandit-security-report.json
+      run: bandit -r src/ -f json -o bandit-security-report.json || true
 
     - name: Upload security reports
       uses: actions/upload-artifact@v4

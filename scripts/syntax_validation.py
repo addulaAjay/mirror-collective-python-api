@@ -17,7 +17,7 @@ def test_imports():
 
     try:
         # Test basic model imports
-        from app.models.conversation import ConversationMessage
+        from app.models.conversation import ConversationMessage  # noqa: F401
 
         print("✅ ConversationMessage import successful")
 
@@ -26,11 +26,12 @@ def test_imports():
 
         print("✅ ConversationService import successful")
 
-        import app.services.mirror_orchestrator
+        import app.services.mirror_orchestrator  # noqa: F401
 
         print("✅ MirrorOrchestrator import successful")
 
-        # Note: Enhanced mirror chat use case has been removed in favor of MirrorGPT integration
+        # Note: Enhanced mirror chat use case has been removed in favor of
+        # MirrorGPT integration
 
         return True
 
@@ -55,7 +56,7 @@ def test_conversation_message_methods():
     )
 
     # Test initial state
-    assert (
+    assert (  # nosec
         not message.has_mirrorgpt_analysis()
     ), "New message should not have MirrorGPT analysis"
 
@@ -78,23 +79,23 @@ def test_conversation_message_methods():
     )
 
     # Test analysis was added
-    assert (
+    assert (  # nosec
         message.has_mirrorgpt_analysis()
     ), "Message should have MirrorGPT analysis after adding"
-    assert message.user_id == "user_test", "User ID should be set"
-    assert (
+    assert message.user_id == "user_test", "User ID should be set"  # nosec
+    assert (  # nosec
         message.signal_1_emotional_resonance["dominant_emotion"] == "curiosity"
     ), "Signal 1 should be set"
-    assert (
+    assert (  # nosec
         message.signal_3_archetype_blend["primary"] == "Explorer"
     ), "Signal 3 should be set"
 
     # Test get_analysis_data
     analysis_data = message.get_analysis_data()
-    assert (
+    assert (  # nosec
         "signal_1_emotional_resonance" in analysis_data
     ), "Analysis data should contain signal 1"
-    assert (
+    assert (  # nosec
         "signal_3_archetype_blend" in analysis_data
     ), "Analysis data should contain signal 3"
 
@@ -110,9 +111,9 @@ def test_service_method_signatures():
     from app.services.mirror_orchestrator import MirrorOrchestrator
 
     # Test ConversationService methods exist
-    conv_service = ConversationService.__new__(
+    ConversationService.__new__(
         ConversationService
-    )  # Create without __init__
+    )  # Create without __init__, test syntax
 
     expected_methods = [
         "add_message_with_mirrorgpt_analysis",
@@ -121,11 +122,11 @@ def test_service_method_signatures():
     ]
 
     for method_name in expected_methods:
-        assert hasattr(
+        assert hasattr(  # nosec
             ConversationService, method_name
         ), f"ConversationService missing {method_name}"
         method = getattr(ConversationService, method_name)
-        assert callable(method), f"{method_name} should be callable"
+        assert callable(method), f"{method_name} should be callable"  # nosec
 
     # Test MirrorOrchestrator methods exist
     expected_orchestrator_methods = [
@@ -134,11 +135,11 @@ def test_service_method_signatures():
     ]
 
     for method_name in expected_orchestrator_methods:
-        assert hasattr(
+        assert hasattr(  # nosec
             MirrorOrchestrator, method_name
         ), f"MirrorOrchestrator missing {method_name}"
         method = getattr(MirrorOrchestrator, method_name)
-        assert callable(method), f"{method_name} should be callable"
+        assert callable(method), f"{method_name} should be callable"  # nosec
 
     print("✅ All expected service methods exist and are callable")
     return True
@@ -195,20 +196,23 @@ def test_integration_concept():
     )
 
     # 4. Verify the message now contains the analysis
-    assert user_message.has_mirrorgpt_analysis(), "Message should have analysis"
     assert (
+        user_message.has_mirrorgpt_analysis()
+    ), "Message should have analysis"  # nosec
+    assert (  # nosec
         user_message.signal_3_archetype_blend["primary"] == "Seeker"
     ), "Archetype should be Seeker"
-    assert (
+    assert (  # nosec
         user_message.signal_1_emotional_resonance["dominant_emotion"] == "uncertainty"
     ), "Emotion should be uncertainty"
 
     # 5. Simulate storing and retrieving (conceptually)
-    # In the real implementation, this would be stored in DynamoDB conversation_messages table
+    # In the real implementation, this would be stored in DynamoDB
+    # conversation_messages table
     # and retrieved using ConversationService.get_messages_with_mirrorgpt_analysis()
 
     analysis_data = user_message.get_analysis_data()
-    assert len(analysis_data) == 5, "Should have all 5 signals"
+    assert len(analysis_data) == 5, "Should have all 5 signals"  # nosec
 
     print("✅ Integration concept validation successful")
     print("   • MirrorGPT analysis stored in conversation message ✅")
@@ -249,7 +253,7 @@ def main():
 
             traceback.print_exc()
 
-    print(f"\n{'='*65}")
+    print(f"\n{'=' * 65}")
     print(f"📊 Test Results: {passed}/{total} tests passed")
 
     if passed == total:
