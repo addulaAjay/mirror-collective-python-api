@@ -7,7 +7,7 @@ on:
     branches: [main, develop]
 
 env:
-  PYTHON_VERSION: '3.12'
+  PYTHON_VERSION: '3.11'
 
 jobs:
   test:
@@ -126,7 +126,7 @@ jobs:
         cp requirements.txt build/
         cp serverless.yml build/
         # Create package.json for serverless plugins
-        echo '{"dependencies": {"serverless-python-requirements": "^5.4.0"}}' > build/package.json
+        echo '{"dependencies": {"serverless-python-requirements": "^6.0.0"}}' > build/package.json
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -170,6 +170,7 @@ jobs:
       run: |
         cd build
         npm install --production
+        docker --version
         serverless print --stage staging
 
     - name: Configure AWS credentials
@@ -228,6 +229,7 @@ jobs:
       run: |
         cd build
         npm install --production
+        docker --version
         serverless print --stage production
 
     - name: Configure AWS credentials
