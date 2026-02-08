@@ -3,7 +3,7 @@ frameworkVersion: '>=3.38.0 <4.0.0'
 
 provider:
   name: aws
-  runtime: python3.12
+  runtime: python3.11
   region: us-east-1
   stage: ${env:STAGE, 'staging'}
   memorySize: 512
@@ -35,7 +35,7 @@ provider:
     DYNAMODB_ECHOES_TABLE: ${self:service}-echoes-${self:provider.stage}
     DYNAMODB_RECIPIENTS_TABLE: ${self:service}-recipients-${self:provider.stage}
     DYNAMODB_GUARDIANS_TABLE: ${self:service}-guardians-${self:provider.stage}
-    ECHO_MEDIA_BUCKET: mirror-collective-echo-vault-media-${self:provider.stage}
+    ECHO_MEDIA_BUCKET: mirror-collective-vault-storage-${self:provider.stage}
   iam:
     role:
       statements:
@@ -84,20 +84,20 @@ provider:
                 - 'index/*'
             - Fn::GetAtt: [ DeviceTokensTable, Arn ]
             # Echo Vault Tables
-            - Fn::GetAtt: [ EchoesTable, Arn ]
+            - Fn::GetAtt: [ EchoVaultEchoesTable, Arn ]
             - Fn::Join:
               - '/'
-              - - Fn::GetAtt: [ EchoesTable, Arn ]
+              - - Fn::GetAtt: [ EchoVaultEchoesTable, Arn ]
                 - 'index/*'
-            - Fn::GetAtt: [ RecipientsTable, Arn ]
+            - Fn::GetAtt: [ EchoVaultRecipientsTable, Arn ]
             - Fn::Join:
               - '/'
-              - - Fn::GetAtt: [ RecipientsTable, Arn ]
+              - - Fn::GetAtt: [ EchoVaultRecipientsTable, Arn ]
                 - 'index/*'
-            - Fn::GetAtt: [ GuardiansTable, Arn ]
+            - Fn::GetAtt: [ EchoVaultGuardiansTable, Arn ]
             - Fn::Join:
               - '/'
-              - - Fn::GetAtt: [ GuardiansTable, Arn ]
+              - - Fn::GetAtt: [ EchoVaultGuardiansTable, Arn ]
                 - 'index/*'
         - Effect: Allow
           Action:
@@ -409,7 +409,7 @@ resources:
           WriteCapacityUnits: 1
 
     # Echo Vault Tables
-    EchoesTable:
+    EchoVaultEchoesTable:
       Type: AWS::DynamoDB::Table
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_ECHOES_TABLE}
@@ -464,7 +464,7 @@ resources:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
 
-    RecipientsTable:
+    EchoVaultRecipientsTable:
       Type: AWS::DynamoDB::Table
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_RECIPIENTS_TABLE}
@@ -502,7 +502,7 @@ resources:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
 
-    GuardiansTable:
+    EchoVaultGuardiansTable:
       Type: AWS::DynamoDB::Table
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_GUARDIANS_TABLE}
@@ -540,7 +540,7 @@ resources:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
 
-    EchoMediaBucket:
+    EchoVaultMediaBucket:
       Type: AWS::S3::Bucket
       Properties:
         BucketName: ${self:provider.environment.ECHO_MEDIA_BUCKET}
