@@ -1,8 +1,12 @@
+from dotenv import load_dotenv
+
+# Triggering reload to pick up new ENVs
+load_dotenv()
+
 import logging
 import os
 import time
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum

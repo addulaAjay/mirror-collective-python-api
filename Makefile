@@ -87,20 +87,29 @@ clean:  ## Clean up generated files
 
 run:  ## Run the application locally
 	@echo "🚀 Starting local server..."
-	uvicorn src.app.handler:app --reload --port 8001
+	uvicorn src.app.handler:app --reload --host 0.0.0.0 --port 8001
 
 dev:  ## Run in development mode with auto-reload
 	@echo "🚀 Starting development server..."
-	uvicorn src.app.handler:app --reload --port 8001 --log-level debug
+	uvicorn src.app.handler:app --reload --host 0.0.0.0 --port 8001 --log-level debug
+
+PYTHON ?= python3
+ifneq (,$(wildcard .venv/bin/python))
+    PYTHON = .venv/bin/python
+endif
 
 # Database
-db-create-tables:  ## Create DynamoDB tables locally
+db-create-tables:  ## Create all DynamoDB tables locally
 	@echo "🗄️ Creating DynamoDB tables..."
-	python scripts/create_mirrorgpt_tables.py create
+	$(PYTHON) scripts/create_dynamodb_tables.py
+	$(PYTHON) scripts/create_conversation_tables.py
+	$(PYTHON) scripts/create_mirrorgpt_tables.py create
+	$(PYTHON) scripts/create_echo_tables.py create
+	@echo "✅ All tables created successfully!"
 
 db-verify-tables:  ## Verify DynamoDB tables
 	@echo "🔍 Verifying DynamoDB tables..."
-	python scripts/create_mirrorgpt_tables.py verify
+	$(PYTHON) scripts/create_mirrorgpt_tables.py verify
 
 # Deployment
 deploy-staging:  ## Deploy to staging environment

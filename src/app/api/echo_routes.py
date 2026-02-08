@@ -15,7 +15,7 @@ from ..services.email_service import email_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/echoes", tags=["Echo Vault"])
+router = APIRouter(tags=["Echo Vault"])
 
 # Initialize service
 echo_service = EchoService()
@@ -51,6 +51,7 @@ class CreateRecipientRequest(BaseModel):
     name: str
     email: EmailStr
     relationship: Optional[str] = None
+    motif: Optional[str] = None
 
 
 class CreateGuardianRequest(BaseModel):
@@ -77,6 +78,7 @@ class EchoResponse(BaseModel):
     media_url: Optional[str] = None
     content: Optional[str] = None
     recipient_id: Optional[str] = None
+    recipient: Optional[Dict[str, Any]] = None
     created_at: str
     updated_at: str
 
@@ -87,6 +89,7 @@ class RecipientResponse(BaseModel):
     name: str
     email: str
     relationship: Optional[str] = None
+    motif: Optional[str] = None
     created_at: str
 
 
@@ -105,7 +108,7 @@ class GuardianResponse(BaseModel):
 # ========================================
 
 
-@router.post("", response_model=Dict[str, Any], status_code=201)
+@router.post("/echoes", response_model=Dict[str, Any], status_code=201)
 async def create_echo(
     request: CreateEchoRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -128,7 +131,7 @@ async def create_echo(
     }
 
 
-@router.post("/upload-url", response_model=Dict[str, Any])
+@router.post("/echoes/upload-url", response_model=Dict[str, Any])
 async def get_upload_url(
     request: UploadUrlRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -149,7 +152,7 @@ async def get_upload_url(
     }
 
 
-@router.get("", response_model=Dict[str, Any])
+@router.get("/echoes", response_model=Dict[str, Any])
 async def list_user_echoes(
     category: Optional[str] = Query(None, description="Filter by category"),
     recipient_id: Optional[str] = Query(None, description="Filter by recipient"),
@@ -178,6 +181,7 @@ async def list_user_echoes(
                 "echo_type": e.echo_type.value,
                 "status": e.status.value,
                 "recipient_id": e.recipient_id,
+                "recipient": e.recipient,
                 "created_at": e.created_at,
             }
             for e in echoes
@@ -186,7 +190,7 @@ async def list_user_echoes(
     }
 
 
-@router.get("/inbox", response_model=Dict[str, Any])
+@router.get("/echoes/inbox", response_model=Dict[str, Any])
 async def list_received_echoes(
     category: Optional[str] = Query(None, description="Filter by category"),
     sender_id: Optional[str] = Query(None, description="Filter by sender"),
@@ -221,7 +225,7 @@ async def list_received_echoes(
     }
 
 
-@router.get("/{echo_id}", response_model=Dict[str, Any])
+@router.get("/echoes/{echo_id}", response_model=Dict[str, Any])
 async def get_echo(
     echo_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -245,14 +249,15 @@ async def get_echo(
             "content": echo.content,
             "media_url": echo.media_url,
             "recipient_id": echo.recipient_id,
+            "recipient": echo.recipient,
             "created_at": echo.created_at,
             "updated_at": echo.updated_at,
         },
     }
 
 
-@router.put("/{echo_id}", response_model=Dict[str, Any])
-@router.patch("/{echo_id}", response_model=Dict[str, Any])
+@router.put("/echoes/{echo_id}", response_model=Dict[str, Any])
+@router.patch("/echoes/{echo_id}", response_model=Dict[str, Any])
 async def update_echo(
     echo_id: str,
     request: UpdateEchoRequest,
@@ -281,7 +286,7 @@ async def update_echo(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/{echo_id}", response_model=Dict[str, Any])
+@router.delete("/echoes/{echo_id}", response_model=Dict[str, Any])
 async def delete_echo(
     echo_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -322,6 +327,7 @@ async def list_recipients(
                 "name": r.name,
                 "email": r.email,
                 "relationship": r.relationship,
+                "motif": r.motif,
                 "created_at": r.created_at,
             }
             for r in recipients
@@ -357,6 +363,7 @@ async def create_recipient(
             "recipient_id": recipient.recipient_id,
             "name": recipient.name,
             "email": recipient.email,
+            "motif": recipient.motif,
         },
         "message": "Recipient added successfully",
     }
