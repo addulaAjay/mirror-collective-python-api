@@ -88,6 +88,9 @@ class Echo:
     # Soft delete
     deleted_at: Optional[str] = None
 
+    # Enriched data (not persisted in DynamoDB)
+    recipient: Optional[Dict[str, Any]] = None
+
     def to_dynamodb_item(self) -> Dict[str, Any]:
         """Convert to DynamoDB item format"""
         item = asdict(self)

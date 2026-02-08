@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import aioboto3
 from botocore.exceptions import ClientError
 
-from ..core.exceptions import InternalServerError, NotFoundError
+from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
 from ..models.echo import (
     Echo,
     EchoStatus,
@@ -41,8 +41,10 @@ class EchoService:
         """Initialize Echo service"""
         self.region = os.getenv("AWS_REGION", "us-east-1")
         self.echoes_table = os.getenv("DYNAMODB_ECHOES_TABLE", "echoes")
-        self.recipients_table = os.getenv("DYNAMODB_RECIPIENTS_TABLE", "recipients")
-        self.guardians_table = os.getenv("DYNAMODB_GUARDIANS_TABLE", "guardians")
+        self.recipients_table = os.getenv(
+            "DYNAMODB_RECIPIENTS_TABLE", "echo_recipients"
+        )
+        self.guardians_table = os.getenv("DYNAMODB_GUARDIANS_TABLE", "echo_guardians")
         self.endpoint_url = os.getenv("DYNAMODB_ENDPOINT_URL")  # For local DynamoDB
 
         # S3 configuration
@@ -148,7 +150,20 @@ class EchoService:
                     return None
 
                 # Sign media URL for access
-                return await self._sign_media_url(echo)
+                echo = await self._sign_media_url(echo)
+
+                # Enrich with recipient details if any
+                if echo.recipient_id:
+                    recipient = await self.get_recipient(echo.recipient_id, user_id)
+                    if recipient:
+                        echo.recipient = {
+                            "recipient_id": recipient.recipient_id,
+                            "name": recipient.name,
+                            "email": recipient.email,
+                            "motif": recipient.motif,
+                        }
+
+                return echo
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting echo: {e}")
@@ -203,6 +218,24 @@ class EchoService:
                     # Sign media URL for access
                     echo = await self._sign_media_url(echo)
                     echoes.append(echo)
+
+                # Enrich with recipient details if any
+                recipient_cache = {}
+                for echo in echoes:
+                    if echo.recipient_id:
+                        if echo.recipient_id not in recipient_cache:
+                            recipient = await self.get_recipient(
+                                echo.recipient_id, user_id
+                            )
+                            if recipient:
+                                recipient_cache[echo.recipient_id] = {
+                                    "recipient_id": recipient.recipient_id,
+                                    "name": recipient.name,
+                                    "email": recipient.email,
+                                    "motif": recipient.motif,
+                                }
+
+                        echo.recipient = recipient_cache.get(echo.recipient_id)
 
                 return echoes
 
@@ -454,17 +487,39 @@ class EchoService:
     async def create_recipient(self, user_id: str, data: Dict[str, Any]) -> Recipient:
         """Create a new recipient."""
         try:
-            recipient = Recipient(
-                user_id=user_id,
-                name=data.get("name", ""),
-                email=data.get("email", ""),
-                relationship=data.get("relationship"),
-            )
+            email = data.get("email", "").strip().lower()
 
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
                 table = await dynamodb.Table(self.recipients_table)
+
+                # Check for existing recipient with same email for this user
+                # Query by email index
+                response = await table.query(
+                    IndexName="email-index",
+                    KeyConditionExpression="email = :email",
+                    ExpressionAttributeValues={":email": email},
+                )
+
+                for item in response.get("Items", []):
+                    r = Recipient.from_dynamodb_item(item)
+                    if r.user_id == user_id and r.deleted_at is None:
+                        logger.warning(
+                            f"User {user_id} attempted to add duplicate recipient email {email}"
+                        )
+                        raise ValidationError(
+                            f"A recipient with email {email} already exists"
+                        )
+
+                recipient = Recipient(
+                    user_id=user_id,
+                    name=data.get("name", ""),
+                    email=email,
+                    relationship=data.get("relationship"),
+                    motif=data.get("motif"),
+                )
+
                 await table.put_item(Item=recipient.to_dynamodb_item())
 
             logger.info(
@@ -472,6 +527,8 @@ class EchoService:
             )
             return recipient
 
+        except ValidationError:
+            raise
         except Exception as e:
             logger.error(f"Error creating recipient: {e}")
             raise InternalServerError(f"Failed to create recipient: {str(e)}")
@@ -501,6 +558,32 @@ class EchoService:
         except ClientError as e:
             logger.error(f"Error getting recipients: {e}")
             raise InternalServerError(f"Failed to get recipients: {str(e)}")
+
+    async def get_recipient(
+        self, recipient_id: str, user_id: str
+    ) -> Optional[Recipient]:
+        """Get a specific recipient by ID."""
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.recipients_table)
+                response = await table.get_item(Key={"recipient_id": recipient_id})
+
+                if "Item" not in response:
+                    return None
+
+                recipient = Recipient.from_dynamodb_item(response["Item"])
+
+                # Security: Verify ownership
+                if recipient.user_id != user_id:
+                    return None
+
+                return recipient
+
+        except Exception as e:
+            logger.error(f"Error getting recipient {recipient_id}: {e}")
+            return None
 
     async def delete_recipient(self, recipient_id: str, user_id: str) -> bool:
         """Soft delete a recipient."""
@@ -536,23 +619,46 @@ class EchoService:
     async def create_guardian(self, user_id: str, data: Dict[str, Any]) -> Guardian:
         """Create a new guardian."""
         try:
-            guardian = Guardian(
-                user_id=user_id,
-                name=data.get("name", ""),
-                email=data.get("email", ""),
-                scope=GuardianScope(data.get("scope", "ALL")),
-                trigger=GuardianTrigger(data.get("trigger", "MANUAL")),
-            )
+            email = data.get("email", "").strip().lower()
 
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
                 table = await dynamodb.Table(self.guardians_table)
+
+                # Check for existing guardian with same email for this user
+                # Query by email index
+                response = await table.query(
+                    IndexName="email-index",
+                    KeyConditionExpression="email = :email",
+                    ExpressionAttributeValues={":email": email},
+                )
+
+                for item in response.get("Items", []):
+                    g = Guardian.from_dynamodb_item(item)
+                    if g.user_id == user_id and g.deleted_at is None:
+                        logger.warning(
+                            f"User {user_id} attempted to add duplicate guardian email {email}"
+                        )
+                        raise ValidationError(
+                            f"A guardian with email {email} already exists"
+                        )
+
+                guardian = Guardian(
+                    user_id=user_id,
+                    name=data.get("name", ""),
+                    email=email,
+                    scope=GuardianScope(data.get("scope", "ALL")),
+                    trigger=GuardianTrigger(data.get("trigger", "MANUAL")),
+                )
+
                 await table.put_item(Item=guardian.to_dynamodb_item())
 
             logger.info(f"Created guardian {guardian.guardian_id} for user {user_id}")
             return guardian
 
+        except ValidationError:
+            raise
         except Exception as e:
             logger.error(f"Error creating guardian: {e}")
             raise InternalServerError(f"Failed to create guardian: {str(e)}")
