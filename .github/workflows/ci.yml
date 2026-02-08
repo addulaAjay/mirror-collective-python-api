@@ -126,7 +126,7 @@ jobs:
         cp requirements.txt build/
         cp serverless.yml build/
         # Create package.json for serverless plugins
-        echo '{"dependencies": {"serverless-python-requirements": "^6.0.0"}}' > build/package.json
+        echo '{"dependencies": {"serverless-python-requirements": "5.4.0"}}' > build/package.json
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
