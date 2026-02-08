@@ -16,6 +16,11 @@ provider:
     RATE_LIMIT_WINDOW_SECONDS: ${env:RATE_LIMIT_WINDOW_SECONDS, 900}
     RATE_LIMIT_MAX_REQUESTS: ${env:RATE_LIMIT_MAX_REQUESTS, 100}
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
+    # SNS/SES Notifications
+    SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN, ''}
+    SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'noreply@mirrorcollective.com'}
+    APP_NAME: "Mirror Collective"
+    APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
     DYNAMODB_USERS_TABLE: ${self:service}-users-${self:provider.stage}
     DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
     DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}-v2
@@ -26,6 +31,11 @@ provider:
     DYNAMODB_PATTERN_LOOPS_TABLE: ${self:service}-pattern-loops-${self:provider.stage}
     DYNAMODB_QUIZ_RESULTS_TABLE: ${self:service}-quiz-results-${self:provider.stage}
     DYNAMODB_DEVICE_TOKENS_TABLE: ${self:service}-device-tokens-${self:provider.stage}
+    # Echo Vault Tables
+    DYNAMODB_ECHOES_TABLE: ${self:service}-echoes-${self:provider.stage}
+    DYNAMODB_RECIPIENTS_TABLE: ${self:service}-recipients-${self:provider.stage}
+    DYNAMODB_GUARDIANS_TABLE: ${self:service}-guardians-${self:provider.stage}
+    ECHO_MEDIA_BUCKET: mirror-collective-echo-vault-media-${self:provider.stage}
   iam:
     role:
       statements:
@@ -73,6 +83,44 @@ provider:
               - - Fn::GetAtt: [ QuizResultsTable, Arn ]
                 - 'index/*'
             - Fn::GetAtt: [ DeviceTokensTable, Arn ]
+            # Echo Vault Tables
+            - Fn::GetAtt: [ EchoesTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ EchoesTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ RecipientsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ RecipientsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ GuardiansTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ GuardiansTable, Arn ]
+                - 'index/*'
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${self:provider.environment.ECHO_MEDIA_BUCKET}
+            - arn:aws:s3:::${self:provider.environment.ECHO_MEDIA_BUCKET}/*
+        - Effect: Allow
+          Action:
+            - ses:SendEmail
+            - ses:SendRawEmail
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - sns:Publish
+            - sns:Subscribe
+            - sns:CreatePlatformEndpoint
+            - sns:DeleteEndpoint
+            - sns:GetEndpointAttributes
+            - sns:SetEndpointAttributes
+          Resource: "*"
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -359,6 +407,154 @@ resources:
         ProvisionedThroughput:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
+
+    # Echo Vault Tables
+    EchoesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_ECHOES_TABLE}
+        AttributeDefinitions:
+          - AttributeName: echo_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: status
+            AttributeType: S
+          - AttributeName: category
+            AttributeType: S
+          - AttributeName: recipient_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: echo_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-echoes-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: status
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: category-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: category
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: recipient-echoes-index
+            KeySchema:
+              - AttributeName: recipient_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    RecipientsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_RECIPIENTS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: recipient_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: recipient_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-recipients-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: email-index
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    GuardiansTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_GUARDIANS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: guardian_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: guardian_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-guardians-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: email-index
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    EchoMediaBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.ECHO_MEDIA_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
 
 plugins:
   - serverless-python-requirements
