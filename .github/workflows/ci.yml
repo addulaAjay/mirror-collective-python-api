@@ -188,6 +188,9 @@ jobs:
         COGNITO_CLIENT_ID: ${{ secrets.STAGING_COGNITO_CLIENT_ID }}
         COGNITO_CLIENT_SECRET: ${{ secrets.STAGING_COGNITO_CLIENT_SECRET }}
         OPENAI_API_KEY: ${{ secrets.STAGING_OPENAI_API_KEY }}
+        SES_SENDER_EMAIL: ${{ secrets.STAGING_SES_SENDER_EMAIL }}
+        SNS_TOPIC_ARN: ${{ secrets.STAGING_SNS_TOPIC_ARN }}
+        APP_URL: ${{ secrets.STAGING_APP_URL }}
 
   deploy-production:
     runs-on: ubuntu-latest
@@ -243,6 +246,9 @@ jobs:
         COGNITO_CLIENT_ID: ${{ secrets.PROD_COGNITO_CLIENT_ID }}
         COGNITO_CLIENT_SECRET: ${{ secrets.PROD_COGNITO_CLIENT_SECRET }}
         OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}
+        SES_SENDER_EMAIL: ${{ secrets.PROD_SES_SENDER_EMAIL }}
+        SNS_TOPIC_ARN: ${{ secrets.PROD_SNS_TOPIC_ARN }}
+        APP_URL: ${{ secrets.PROD_APP_URL }}
 
   notify:
     runs-on: ubuntu-latest
