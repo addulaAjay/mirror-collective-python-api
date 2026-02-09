@@ -242,7 +242,7 @@ jobs:
     - name: Deploy to production
       run: |
         cd build
-        serverless deploy --stage production --verbose
+        serverless deploy --stage prod --verbose
       env:
         COGNITO_USER_POOL_ID: ${{ secrets.PROD_COGNITO_USER_POOL_ID }}
         COGNITO_CLIENT_ID: ${{ secrets.PROD_COGNITO_CLIENT_ID }}
