@@ -17,6 +17,7 @@ from .api.echo_routes import router as echo_router
 from .api.mirrorgpt_routes import router as mirrorgpt_router
 from .api.models import HealthResponse
 from .api.routes import router as api_router
+from .api.subscription_routes import router as subscription_router
 from .core.error_handlers import setup_error_handlers
 from .core.logging_config import setup_logging
 
@@ -103,6 +104,16 @@ async def rate_limiting_middleware(request: Request, call_next):
     await rate_limit_middleware(request)
     response = await call_next(request)
     return response
+
+
+# Quota enforcement middleware for Echo Vault
+@app.middleware("http")
+async def quota_enforcement(request: Request, call_next):
+    from .core.quota_middleware import QuotaEnforcementMiddleware
+
+    # Create middleware instance and dispatch
+    quota_middleware = QuotaEnforcementMiddleware(app)
+    return await quota_middleware.dispatch(request, call_next)
 
 
 # Security headers middleware
@@ -206,5 +217,8 @@ app.include_router(mirrorgpt_router, prefix="/api")
 
 # Mount Echo Vault routes under /api
 app.include_router(echo_router, prefix="/api")
+
+# Mount Subscription routes
+app.include_router(subscription_router)
 
 handler = Mangum(app)

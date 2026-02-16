@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Add src to path to import config
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -65,7 +65,7 @@ def create_echo_vault_tables():
         # ECHOES TABLE
         # ========================================
         {
-            "TableName": os.getenv("DYNAMODB_ECHOES_TABLE", "echoes"),
+            "TableName": os.getenv("DYNAMODB_ECHOES_TABLE", f"echoes-{environment}"),
             "KeySchema": [
                 {"AttributeName": "echo_id", "KeyType": "HASH"},
             ],
@@ -97,6 +97,7 @@ def create_echo_vault_tables():
                     "IndexName": "recipient-echoes-index",
                     "KeySchema": [
                         {"AttributeName": "recipient_id", "KeyType": "HASH"},
+                        {"AttributeName": "status", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },
@@ -112,7 +113,9 @@ def create_echo_vault_tables():
         # RECIPIENTS TABLE
         # ========================================
         {
-            "TableName": os.getenv("DYNAMODB_RECIPIENTS_TABLE", "echo_recipients"),
+            "TableName": os.getenv(
+                "DYNAMODB_RECIPIENTS_TABLE", f"echo_recipients-{environment}"
+            ),
             "KeySchema": [
                 {"AttributeName": "recipient_id", "KeyType": "HASH"},
             ],
@@ -148,7 +151,9 @@ def create_echo_vault_tables():
         # GUARDIANS TABLE
         # ========================================
         {
-            "TableName": os.getenv("DYNAMODB_GUARDIANS_TABLE", "echo_guardians"),
+            "TableName": os.getenv(
+                "DYNAMODB_GUARDIANS_TABLE", f"echo_guardians-{environment}"
+            ),
             "KeySchema": [
                 {"AttributeName": "guardian_id", "KeyType": "HASH"},
             ],
@@ -191,6 +196,11 @@ def create_echo_vault_tables():
 
         try:
             logger.info(f"Creating table: {table_name}")
+
+            # For local DynamoDB, remove features not supported
+            if os.getenv("DYNAMODB_ENDPOINT_URL"):
+                if "Tags" in table_config:
+                    del table_config["Tags"]
 
             response = dynamodb.create_table(**table_config)
 

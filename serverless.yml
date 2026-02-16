@@ -36,6 +36,13 @@ provider:
     DYNAMODB_RECIPIENTS_TABLE: ${self:service}-recipients-${self:provider.stage}
     DYNAMODB_GUARDIANS_TABLE: ${self:service}-guardians-${self:provider.stage}
     ECHO_MEDIA_BUCKET: mirror-collective-vault-storage-${self:provider.stage}
+    # Subscription/IAP Tables
+    DYNAMODB_SUBSCRIPTIONS_TABLE: ${self:service}-subscriptions-${self:provider.stage}
+    DYNAMODB_SUBSCRIPTION_EVENTS_TABLE: ${self:service}-subscription-events-${self:provider.stage}
+    # Apple/Google IAP credentials
+    APPLE_SHARED_SECRET: ${env:APPLE_SHARED_SECRET, ''}
+    GOOGLE_SERVICE_ACCOUNT_KEY: ${env:GOOGLE_SERVICE_ACCOUNT_KEY, ''}
+    GOOGLE_PACKAGE_NAME: ${env:GOOGLE_PACKAGE_NAME, 'com.mirrorcollective.app'}
   iam:
     role:
       statements:
@@ -99,6 +106,17 @@ provider:
               - '/'
               - - Fn::GetAtt: [ EchoVaultGuardiansTable, Arn ]
                 - 'index/*'
+            # Subscription Tables
+            - Fn::GetAtt: [ SubscriptionsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ SubscriptionsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ SubscriptionEventsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ SubscriptionEventsTable, Arn ]
+                - 'index/*'
         - Effect: Allow
           Action:
             - s3:PutObject
@@ -147,6 +165,17 @@ functions:
     handler: src/app/handler.handler
     events:
       - httpApi: '*'
+
+  # Scheduled job for trial expiration checks
+  trialExpirationCheck:
+    handler: src/app/jobs/trial_expiration_job.lambda_handler
+    description: Daily check for trial expirations and notifications
+    timeout: 300
+    memorySize: 256
+    events:
+      - schedule:
+          rate: cron(0 12 * * ? *)  # Run daily at 12:00 UTC
+          description: Check trial expirations and send notifications
 
 resources:
   Resources:
@@ -555,6 +584,67 @@ resources:
               AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
               AllowedOrigins: ['*']
               MaxAge: 3000
+
+    # Subscription/IAP Tables
+    SubscriptionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_SUBSCRIPTIONS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: subscription_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: subscription_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: subscription-id-index
+            KeySchema:
+              - AttributeName: subscription_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    SubscriptionEventsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_SUBSCRIPTION_EVENTS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: event_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: S
+        KeySchema:
+          - AttributeName: event_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user-events-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: timestamp
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
 
 plugins:
   - serverless-python-requirements

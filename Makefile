@@ -105,7 +105,9 @@ db-create-tables:  ## Create all DynamoDB tables locally
 	$(PYTHON) scripts/create_conversation_tables.py
 	$(PYTHON) scripts/create_mirrorgpt_tables.py create
 	$(PYTHON) scripts/create_echo_tables.py create
-	@echo "✅ All tables created successfully!"
+	$(PYTHON) scripts/create_subscription_tables.py create
+	$(PYTHON) scripts/update_existing_tables.py
+	@echo "✅ All tables created and updated successfully!"
 
 db-verify-tables:  ## Verify DynamoDB tables
 	@echo "🔍 Verifying DynamoDB tables..."
