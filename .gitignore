@@ -161,3 +161,4 @@ logs/
 *.tmp
 *.temp
 node_modules
+commit_log.txt
