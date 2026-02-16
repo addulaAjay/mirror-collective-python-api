@@ -24,37 +24,51 @@ from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
-load_dotenv()
+load_dotenv(override=True)
 
 
 def create_users_table(dynamodb, table_name):
     """Create the users table with GSI on email"""
     try:
-        table = dynamodb.create_table(
-            TableName=table_name,
-            KeySchema=[
+        table_config = {
+            "TableName": table_name,
+            "KeySchema": [
                 {"AttributeName": "user_id", "KeyType": "HASH"}  # Partition key
             ],
-            AttributeDefinitions=[
+            "AttributeDefinitions": [
                 {"AttributeName": "user_id", "AttributeType": "S"},
                 {"AttributeName": "email", "AttributeType": "S"},
+                {"AttributeName": "subscription_status", "AttributeType": "S"},
             ],
-            GlobalSecondaryIndexes=[
+            "GlobalSecondaryIndexes": [
                 {
                     "IndexName": "email-index",
                     "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
-                }
+                },
+                {
+                    "IndexName": "subscription-status-index",
+                    "KeySchema": [
+                        {"AttributeName": "subscription_status", "KeyType": "HASH"}
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
             ],
-            BillingMode="PAY_PER_REQUEST",
-            Tags=[
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
                 {
                     "Key": "Environment",
                     "Value": os.getenv("ENVIRONMENT", "development"),
                 },
                 {"Key": "Service", "Value": "mirror-collective-api"},
             ],
-        )
+        }
+
+        if os.getenv("DYNAMODB_ENDPOINT_URL"):
+            if "Tags" in table_config:
+                del table_config["Tags"]
+
+        table = dynamodb.create_table(**table_config)
 
         # Wait for table to be created
         print(f"Creating table {table_name}...")
@@ -74,25 +88,40 @@ def create_users_table(dynamodb, table_name):
 def create_activity_table(dynamodb, table_name):
     """Create the user activity table"""
     try:
-        table = dynamodb.create_table(
-            TableName=table_name,
-            KeySchema=[
+        table_config = {
+            "TableName": table_name,
+            "KeySchema": [
                 {"AttributeName": "user_id", "KeyType": "HASH"},  # Partition key
                 {"AttributeName": "activity_date", "KeyType": "RANGE"},  # Sort key
             ],
-            AttributeDefinitions=[
+            "AttributeDefinitions": [
                 {"AttributeName": "user_id", "AttributeType": "S"},
                 {"AttributeName": "activity_date", "AttributeType": "S"},
             ],
-            BillingMode="PAY_PER_REQUEST",
-            Tags=[
+            "GlobalSecondaryIndexes": [
+                {
+                    "IndexName": "activity-date-index",
+                    "KeySchema": [
+                        {"AttributeName": "activity_date", "KeyType": "HASH"}
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
                 {
                     "Key": "Environment",
                     "Value": os.getenv("ENVIRONMENT", "development"),
                 },
                 {"Key": "Service", "Value": "mirror-collective-api"},
             ],
-        )
+        }
+
+        if os.getenv("DYNAMODB_ENDPOINT_URL"):
+            if "Tags" in table_config:
+                del table_config["Tags"]
+
+        table = dynamodb.create_table(**table_config)
 
         # Wait for table to be created
         print(f"Creating table {table_name}...")
@@ -112,17 +141,17 @@ def create_activity_table(dynamodb, table_name):
 def create_conversations_table(dynamodb, table_name):
     """Create the conversations table with GSI on user_id"""
     try:
-        table = dynamodb.create_table(
-            TableName=table_name,
-            KeySchema=[
+        table_config = {
+            "TableName": table_name,
+            "KeySchema": [
                 {"AttributeName": "conversation_id", "KeyType": "HASH"}  # Partition key
             ],
-            AttributeDefinitions=[
+            "AttributeDefinitions": [
                 {"AttributeName": "conversation_id", "AttributeType": "S"},
                 {"AttributeName": "user_id", "AttributeType": "S"},
                 {"AttributeName": "last_message_at", "AttributeType": "S"},
             ],
-            GlobalSecondaryIndexes=[
+            "GlobalSecondaryIndexes": [
                 {
                     "IndexName": "user-conversations-index",
                     "KeySchema": [
@@ -132,15 +161,21 @@ def create_conversations_table(dynamodb, table_name):
                     "Projection": {"ProjectionType": "ALL"},
                 }
             ],
-            BillingMode="PAY_PER_REQUEST",
-            Tags=[
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
                 {
                     "Key": "Environment",
                     "Value": os.getenv("ENVIRONMENT", "development"),
                 },
                 {"Key": "Service", "Value": "mirror-collective-api"},
             ],
-        )
+        }
+
+        if os.getenv("DYNAMODB_ENDPOINT_URL"):
+            if "Tags" in table_config:
+                del table_config["Tags"]
+
+        table = dynamodb.create_table(**table_config)
 
         # Wait for table to be created
         print(f"Creating table {table_name}...")
@@ -160,9 +195,9 @@ def create_conversations_table(dynamodb, table_name):
 def create_messages_table(dynamodb, table_name):
     """Create the conversation messages table"""
     try:
-        table = dynamodb.create_table(
-            TableName=table_name,
-            KeySchema=[
+        table_config = {
+            "TableName": table_name,
+            "KeySchema": [
                 {
                     "AttributeName": "conversation_id",
                     "KeyType": "HASH",  # Partition key
@@ -172,27 +207,78 @@ def create_messages_table(dynamodb, table_name):
                     "KeyType": "RANGE",  # Sort key for chronological order
                 },
             ],
-            AttributeDefinitions=[
+            "AttributeDefinitions": [
                 {"AttributeName": "conversation_id", "AttributeType": "S"},
                 {"AttributeName": "timestamp", "AttributeType": "S"},
                 {"AttributeName": "message_id", "AttributeType": "S"},
             ],
-            GlobalSecondaryIndexes=[
+            "GlobalSecondaryIndexes": [
                 {
                     "IndexName": "message-id-index",
                     "KeySchema": [{"AttributeName": "message_id", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
                 }
             ],
-            BillingMode="PAY_PER_REQUEST",
-            Tags=[
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
                 {
                     "Key": "Environment",
                     "Value": os.getenv("ENVIRONMENT", "development"),
                 },
                 {"Key": "Service", "Value": "mirror-collective-api"},
             ],
-        )
+        }
+
+        if os.getenv("DYNAMODB_ENDPOINT_URL"):
+            if "Tags" in table_config:
+                del table_config["Tags"]
+
+        table = dynamodb.create_table(**table_config)
+
+        # Wait for table to be created
+        print(f"Creating table {table_name}...")
+        table.wait_until_exists()
+        print(f"✅ Table {table_name} created successfully!")
+        return True
+
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceInUseException":
+            print(f"⚠️  Table {table_name} already exists")
+            return True
+        else:
+            print(f"❌ Error creating table {table_name}: {e}")
+            return False
+
+
+def create_device_tokens_table(dynamodb, table_name):
+    """Create the device tokens table"""
+    try:
+        table_config = {
+            "TableName": table_name,
+            "KeySchema": [
+                {"AttributeName": "user_id", "KeyType": "HASH"},  # Partition key
+                {"AttributeName": "device_token", "KeyType": "RANGE"},  # Sort key
+            ],
+            "AttributeDefinitions": [
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "device_token", "AttributeType": "S"},
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
+                {
+                    "Key": "Environment",
+                    "Value": os.getenv("ENVIRONMENT", "development"),
+                },
+                {"Key": "Service", "Value": "mirror-collective-api"},
+            ],
+        }
+
+        # For local DynamoDB, remove features not supported
+        if os.getenv("DYNAMODB_ENDPOINT_URL"):
+            if "Tags" in table_config:
+                del table_config["Tags"]
+
+        table = dynamodb.create_table(**table_config)
 
         # Wait for table to be created
         print(f"Creating table {table_name}...")
@@ -227,6 +313,9 @@ def main():
     messages_table = os.getenv(
         "DYNAMODB_MESSAGES_TABLE", f"conversation_messages-{environment}"
     )
+    tokens_table = os.getenv(
+        "DYNAMODB_DEVICE_TOKENS_TABLE", f"user_device_tokens-{environment}"
+    )
 
     # Determine if running locally or on AWS
     is_local = endpoint_url is not None
@@ -241,6 +330,7 @@ def main():
     print(f"📈 Activity table: {activity_table}")
     print(f"💬 Conversations table: {conversations_table}")
     print(f"📝 Messages table: {messages_table}")
+    print(f"📱 Tokens table: {tokens_table}")
     print()
 
     try:
@@ -280,9 +370,16 @@ def main():
             dynamodb, conversations_table
         )
         messages_success = create_messages_table(dynamodb, messages_table)
+        tokens_success = create_device_tokens_table(dynamodb, tokens_table)
 
         all_success = all(
-            [users_success, activity_success, conversations_success, messages_success]
+            [
+                users_success,
+                activity_success,
+                conversations_success,
+                messages_success,
+                tokens_success,
+            ]
         )
         if all_success:
             print()
