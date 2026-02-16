@@ -5,7 +5,7 @@ User profile models for DynamoDB persistence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class UserStatus(Enum):
@@ -43,8 +43,29 @@ class UserProfile:
 
     # Application-specific data
     preferences: Optional[Dict[str, Any]] = None
-    subscription_tier: str = "free"
+    subscription_tier: str = "free"  # free | trial | core | core_plus
     conversation_count: int = 0
+
+    # Subscription management
+    # Note: subscription_status uses string values that match SubscriptionStatus enum
+    # Values: "none" | "trial" | "trial_expired" | "active" | "expired"
+    subscription_status: str = "none"
+    trial_started_at: Optional[str] = None  # ISO 8601
+    trial_expires_at: Optional[str] = None  # ISO 8601
+    has_used_trial: bool = False
+    trial_notifications_sent: Optional[List[str]] = (
+        None  # ["7_day", "3_day", "1_day", "expired"]
+    )
+
+    # Storage quota management
+    echo_vault_quota_gb: float = 0.0  # 0 (free) | 50 (core/trial) | 150 (core+storage)
+    echo_vault_used_gb: float = 0.0  # Calculated from S3
+    storage_add_on_active: bool = False
+
+    # Subscription references
+    primary_subscription_id: Optional[str] = None  # Reference to core subscription
+    storage_subscription_id: Optional[str] = None  # Reference to storage add-on
+    last_subscription_check: Optional[str] = None  # ISO 8601
 
     # Timestamps
     created_at: Optional[str] = None
@@ -59,6 +80,9 @@ class UserProfile:
         """Set defaults after initialization"""
         if self.preferences is None:
             self.preferences = {}
+
+        if self.trial_notifications_sent is None:
+            self.trial_notifications_sent = []
 
         current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         if self.created_at is None:

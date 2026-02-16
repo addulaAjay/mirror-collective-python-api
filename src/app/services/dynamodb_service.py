@@ -1408,6 +1408,7 @@ class DynamoDBService:
         table_name: str,
         key_condition: str,
         expression_values: Dict[str, Any],
+        index_name: Optional[str] = None,
         limit: Optional[int] = None,
         scan_index_forward: bool = True,
         filter_expression: Optional[str] = None,
@@ -1420,6 +1421,7 @@ class DynamoDBService:
             table_name: DynamoDB table name
             key_condition: KeyConditionExpression
             expression_values: ExpressionAttributeValues
+            index_name: Optional Global Secondary Index name
             limit: Limit number of items
             scan_index_forward: Sort order
             filter_expression: FilterExpression
@@ -1439,6 +1441,9 @@ class DynamoDBService:
                     "ExpressionAttributeValues": expression_values,
                     "ScanIndexForward": scan_index_forward,
                 }
+
+                if index_name:
+                    query_kwargs["IndexName"] = index_name
 
                 if limit:
                     query_kwargs["Limit"] = limit
@@ -1598,3 +1603,52 @@ class DynamoDBService:
         except Exception as e:
             logger.error(f"Error deleting archetype profile for {user_id}: {e}")
             return False
+
+    # ========================================
+    # SUBSCRIPTION & TRIAL MANAGEMENT METHODS
+    # ========================================
+
+    async def scan_users_with_trials(self) -> List[UserProfile]:
+        """
+        Scan all users with active trials for expiration checking
+
+        Used by scheduled job to check trial expiration and send notifications
+
+        Returns:
+            List of UserProfile objects with active trials
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.users_table)
+
+                # Scan for users with trial status
+                response = await table.scan(
+                    FilterExpression="subscription_status = :trial",
+                    ExpressionAttributeValues={":trial": "trial"},
+                )
+
+                user_profiles = []
+                for item in response.get("Items", []):
+                    user_profiles.append(UserProfile.from_dynamodb_item(item))
+
+                # Handle pagination if there are more items
+                while "LastEvaluatedKey" in response:
+                    response = await table.scan(
+                        FilterExpression="subscription_status = :trial",
+                        ExpressionAttributeValues={":trial": "trial"},
+                        ExclusiveStartKey=response["LastEvaluatedKey"],
+                    )
+                    for item in response.get("Items", []):
+                        user_profiles.append(UserProfile.from_dynamodb_item(item))
+
+                logger.info(f"Found {len(user_profiles)} users with active trials")
+                return user_profiles
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error scanning users with trials: {e}")
+            raise InternalServerError(f"Failed to scan users with trials: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error scanning users with trials: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
