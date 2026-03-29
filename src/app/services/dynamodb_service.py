@@ -318,6 +318,9 @@ class DynamoDBService:
             UserProfile if found, None otherwise
         """
         try:
+            # Normalize email to lowercase for case-insensitive matching
+            normalized_email = email.lower().strip()
+
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
@@ -327,7 +330,7 @@ class DynamoDBService:
                 response = await table.query(
                     IndexName="email-index",
                     KeyConditionExpression="email = :email",
-                    ExpressionAttributeValues={":email": email},
+                    ExpressionAttributeValues={":email": normalized_email},
                 )
 
                 if response["Items"]:

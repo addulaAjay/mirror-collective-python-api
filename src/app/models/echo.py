@@ -77,6 +77,7 @@ class Echo:
     # Lock/Release scheduling
     lock_date: Optional[str] = None  # When echo was locked
     release_date: Optional[str] = None  # When to auto-release (optional)
+    unlock_on_death: bool = False  # If true, guardian releases upon creator's death
 
     # Guardian linkage
     guardian_id: Optional[str] = None  # Guardian who can manage release
@@ -146,6 +147,9 @@ class Recipient:
     # Contact info
     name: str = ""
     email: str = ""
+    recipient_user_id: Optional[str] = (
+        None  # Cognito sub of the recipient (if they have an account)
+    )
 
     # Optional metadata
     motif: Optional[str] = None  # Personal motif/symbol

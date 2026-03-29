@@ -178,7 +178,9 @@ class UserProfile:
 
         return cls(
             user_id=user_id,
-            email=attributes.get("email", ""),  # Will be validated in service layer
+            email=attributes.get("email", "")
+            .lower()
+            .strip(),  # Normalize for case-insensitive matching
             first_name=attributes.get("given_name"),
             last_name=attributes.get("family_name"),
             status=status,
@@ -197,8 +199,8 @@ class UserProfile:
             for attr in cognito_user_data["UserAttributes"]:
                 attributes[attr["Name"]] = attr["Value"]
 
-        # Update fields that come from Cognito
-        self.email = attributes.get("email", self.email)
+        # Update fields that come from Cognito (normalize email for consistency)
+        self.email = attributes.get("email", self.email).lower().strip()
         if attributes.get("given_name"):
             self.first_name = attributes["given_name"]
         if attributes.get("family_name"):

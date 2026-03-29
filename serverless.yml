@@ -504,6 +504,8 @@ resources:
             AttributeType: S
           - AttributeName: email
             AttributeType: S
+          - AttributeName: recipient_user_id
+            AttributeType: S
         KeySchema:
           - AttributeName: recipient_id
             KeyType: HASH
@@ -520,6 +522,15 @@ resources:
           - IndexName: email-index
             KeySchema:
               - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+          - IndexName: recipient-user-id-index
+            KeySchema:
+              - AttributeName: recipient_user_id
                 KeyType: HASH
             Projection:
               ProjectionType: ALL

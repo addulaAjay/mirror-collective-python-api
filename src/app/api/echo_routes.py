@@ -33,6 +33,7 @@ class CreateEchoRequest(BaseModel):
     recipient_id: Optional[str] = None
     guardian_id: Optional[str] = None
     release_date: Optional[str] = None  # ISO 8601 for scheduled release
+    unlock_on_death: Optional[bool] = False  # If true, echo released when creator dies
     content: Optional[str] = None  # For text echoes
 
     @validator("release_date")
@@ -227,12 +228,17 @@ async def list_received_echoes(
 ):
     """List echoes received by the current user (inbox view)."""
     user_id = current_user.get("id", "")
+    user_email = current_user.get("email", "")
 
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID not found")
+    if not user_id and not user_email:
+        raise HTTPException(
+            status_code=400, detail="User ID or email not found in token"
+        )
 
+    # Prefer user_id matching, fallback to email
     echoes = await echo_service.get_received_echoes(
-        user_id=user_id,
+        user_id=user_id if user_id else None,
+        recipient_email=user_email if user_email else None,
         category=category,
         sender_id=sender_id,
     )

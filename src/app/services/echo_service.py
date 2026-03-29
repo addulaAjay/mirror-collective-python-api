@@ -57,6 +57,11 @@ class EchoService:
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
 
+        # Initialize DynamoDB service for user lookups
+        from src.app.services.dynamodb_service import DynamoDBService
+
+        self.dynamodb_service = DynamoDBService()
+
         target = "Local DynamoDB" if self.endpoint_url else "AWS DynamoDB"
         logger.info(
             f"EchoService initialized - Target: {target}, "
@@ -109,6 +114,7 @@ class EchoService:
                 recipient_id=data.get("recipient_id"),
                 guardian_id=data.get("guardian_id"),
                 release_date=data.get("release_date"),
+                unlock_on_death=data.get("unlock_on_death", False),
                 content=data.get("content"),  # For text type
             )
 
@@ -328,16 +334,19 @@ class EchoService:
 
     async def get_received_echoes(
         self,
-        user_id: str,
+        user_id: Optional[str] = None,
+        recipient_email: Optional[str] = None,
         category: Optional[str] = None,
         sender_id: Optional[str] = None,
     ) -> List[Echo]:
         """
         Get echoes received by a user (inbox view).
         Only returns RELEASED echoes.
+        Prefers user_id matching (more reliable), falls back to email matching.
 
         Args:
-            user_id: User's ID (Cognito sub)
+            user_id: Logged-in user's Cognito sub (preferred)
+            recipient_email: Logged-in user's email (fallback)
             category: Filter by category
             sender_id: Filter by sender
 
@@ -345,26 +354,50 @@ class EchoService:
             List of received echoes
         """
         try:
-            # First, find recipients for this user to get recipient_ids
+            recipient_ids = []
+
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
                 recipients_table = await dynamodb.Table(self.recipients_table)
 
-                # Query by user-recipients-index
-                recipient_response = await recipients_table.query(
-                    IndexName="user-recipients-index",
-                    KeyConditionExpression="user_id = :uid",
-                    ExpressionAttributeValues={":uid": user_id},
-                )
+                # Strategy 1: Query by recipient_user_id (preferred, more reliable)
+                if user_id:
+                    try:
+                        recipient_response = await recipients_table.query(
+                            IndexName="recipient-user-id-index",
+                            KeyConditionExpression="recipient_user_id = :user_id",
+                            ExpressionAttributeValues={":user_id": user_id},
+                        )
+                        recipient_ids = [
+                            item["recipient_id"]
+                            for item in recipient_response.get("Items", [])
+                        ]
+                        if recipient_ids:
+                            logger.info(
+                                f"Found {len(recipient_ids)} recipients by user_id: {user_id}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Could not query by recipient_user_id: {e}")
 
-                if not recipient_response.get("Items"):
+                # Strategy 2: Fallback to email query if no results from user_id
+                if not recipient_ids and recipient_email:
+                    recipient_response = await recipients_table.query(
+                        IndexName="email-index",
+                        KeyConditionExpression="email = :email",
+                        ExpressionAttributeValues={":email": recipient_email.lower()},
+                    )
+                    recipient_ids = [
+                        item["recipient_id"]
+                        for item in recipient_response.get("Items", [])
+                    ]
+                    if recipient_ids:
+                        logger.info(
+                            f"Found {len(recipient_ids)} recipients by email: {recipient_email}"
+                        )
+
+                if not recipient_ids:
                     return []
-
-                # Collect all recipient IDs for this user
-                recipient_ids = [
-                    item["recipient_id"] for item in recipient_response["Items"]
-                ]
 
                 # Query echoes for these recipients with RELEASED status
                 echoes_table = await dynamodb.Table(self.echoes_table)
@@ -751,10 +784,23 @@ class EchoService:
                             f"A recipient with email {email} already exists"
                         )
 
+                # Check if recipient email matches an existing user account
+                recipient_user_id = None
+                try:
+                    existing_user = await self.dynamodb_service.get_user_by_email(email)
+                    if existing_user:
+                        recipient_user_id = existing_user.user_id
+                        logger.info(
+                            f"Linking recipient to user account: {recipient_user_id}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not check for existing user by email: {e}")
+
                 recipient = Recipient(
                     user_id=user_id,
                     name=data.get("name", ""),
                     email=email,
+                    recipient_user_id=recipient_user_id,
                     relationship=data.get("relationship"),
                     motif=data.get("motif"),
                 )
