@@ -228,12 +228,17 @@ async def list_received_echoes(
 ):
     """List echoes received by the current user (inbox view)."""
     user_id = current_user.get("id", "")
+    user_email = current_user.get("email", "")
 
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID not found")
+    if not user_id and not user_email:
+        raise HTTPException(
+            status_code=400, detail="User ID or email not found in token"
+        )
 
+    # Prefer user_id matching, fallback to email
     echoes = await echo_service.get_received_echoes(
-        user_id=user_id,
+        user_id=user_id if user_id else None,
+        recipient_email=user_email if user_email else None,
         category=category,
         sender_id=sender_id,
     )

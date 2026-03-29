@@ -147,6 +147,9 @@ class Recipient:
     # Contact info
     name: str = ""
     email: str = ""
+    recipient_user_id: Optional[str] = (
+        None  # Cognito sub of the recipient (if they have an account)
+    )
 
     # Optional metadata
     motif: Optional[str] = None  # Personal motif/symbol

@@ -1483,3 +1483,257 @@ class TestLockEchoEndpoint:
             response = echo_client.patch("/api/echoes/e-abc-123/lock")
 
         assert response.status_code == 400
+
+
+class TestRecipientUserIdLinking:
+    """Test suite for recipient_user_id linking functionality."""
+
+    @pytest.mark.asyncio
+    async def test_create_recipient_links_to_existing_user(self):
+        """create_recipient should link to existing user when email matches."""
+        from src.app.models.user_profile import UserProfile
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Mock get_user_by_email to return an existing user
+        existing_user = UserProfile(
+            user_id="user-123",
+            email="alice@example.com",
+        )
+
+        captured_items = []
+
+        mock_recipients_table = AsyncMock()
+        mock_recipients_table.query.return_value = {
+            "Items": []
+        }  # No existing recipient
+        mock_recipients_table.put_item = AsyncMock(
+            side_effect=lambda Item: captured_items.append(Item)
+        )
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_recipients_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            with patch.object(
+                service.dynamodb_service,
+                "get_user_by_email",
+                new_callable=AsyncMock,
+                return_value=existing_user,
+            ):
+                recipient = await service.create_recipient(
+                    user_id="creator-456",
+                    data={
+                        "name": "Alice",
+                        "email": "alice@example.com",
+                    },
+                )
+
+        # Verify recipient_user_id was set to existing user's ID
+        assert recipient.recipient_user_id == "user-123"
+        assert recipient.email == "alice@example.com"
+        assert recipient.user_id == "creator-456"
+
+        # Verify the persisted item has recipient_user_id
+        assert len(captured_items) == 1
+        assert captured_items[0]["recipient_user_id"] == "user-123"
+
+    @pytest.mark.asyncio
+    async def test_create_recipient_no_link_when_user_not_found(self):
+        """create_recipient should set recipient_user_id=None when user doesn't exist."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        captured_items = []
+
+        mock_recipients_table = AsyncMock()
+        mock_recipients_table.query.return_value = {"Items": []}
+        mock_recipients_table.put_item = AsyncMock(
+            side_effect=lambda Item: captured_items.append(Item)
+        )
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_recipients_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            with patch.object(
+                service.dynamodb_service,
+                "get_user_by_email",
+                new_callable=AsyncMock,
+                return_value=None,
+            ):
+                recipient = await service.create_recipient(
+                    user_id="creator-456",
+                    data={
+                        "name": "Bob",
+                        "email": "bob@example.com",
+                    },
+                )
+
+        # Verify recipient_user_id is None
+        assert recipient.recipient_user_id is None
+        assert recipient.email == "bob@example.com"
+        assert recipient.user_id == "creator-456"
+
+        # Verify the persisted item doesn't have recipient_user_id
+        assert len(captured_items) == 1
+        assert "recipient_user_id" not in captured_items[0]
+
+    @pytest.mark.asyncio
+    async def test_get_received_echoes_prefers_user_id_query(self):
+        """get_received_echoes should prefer recipient_user_id query over email."""
+        from src.app.models.echo import EchoStatus
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        mock_recipients_table = AsyncMock()
+        mock_echoes_table = AsyncMock()
+
+        # Mock recipient query by recipient_user_id
+        mock_recipients_table.query.return_value = {
+            "Items": [
+                {
+                    "recipient_id": "rec-123",
+                    "recipient_user_id": "user-123",
+                    "email": "alice@example.com",
+                    "name": "Alice",
+                    "user_id": "creator-456",
+                }
+            ]
+        }
+
+        # Mock echo query
+        mock_echoes_table.query.return_value = {
+            "Items": [
+                {
+                    "echo_id": "echo-abc",
+                    "recipient_id": "rec-123",
+                    "user_id": "creator-456",
+                    "status": EchoStatus.RELEASED.value,
+                    "title": "Test Echo",
+                    "category": "personal",
+                    "echo_type": "TEXT",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+
+        mock_dynamodb = AsyncMock()
+
+        def get_table(table_name):
+            if "recipients" in table_name.lower():
+                return mock_recipients_table
+            return mock_echoes_table
+
+        mock_dynamodb.Table = AsyncMock(side_effect=get_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            echoes = await service.get_received_echoes(
+                user_id="user-123",
+                recipient_email="alice@example.com",
+            )
+
+        # Verify we got results
+        assert len(echoes) == 1
+        assert echoes[0].echo_id == "echo-abc"
+
+        # Verify recipient_user_id query was used
+        calls = mock_recipients_table.query.call_args_list
+        assert len(calls) >= 1
+        first_call_kwargs = calls[0][1]
+        assert first_call_kwargs.get("IndexName") == "recipient-user-id-index"
+
+    @pytest.mark.asyncio
+    async def test_get_received_echoes_fallback_to_email(self):
+        """get_received_echoes should fallback to email query when user_id returns no results."""
+        from src.app.models.echo import EchoStatus
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        mock_recipients_table = AsyncMock()
+        mock_echoes_table = AsyncMock()
+
+        # First query (by recipient_user_id) returns empty
+        # Second query (by email) returns result
+        mock_recipients_table.query.side_effect = [
+            {"Items": []},  # No results from user_id query
+            {
+                "Items": [
+                    {
+                        "recipient_id": "rec-456",
+                        "recipient_user_id": None,
+                        "email": "alice@example.com",
+                        "name": "Alice",
+                        "user_id": "creator-789",
+                    }
+                ]
+            },  # Results from email query
+        ]
+
+        # Mock echo query
+        mock_echoes_table.query.return_value = {
+            "Items": [
+                {
+                    "echo_id": "echo-xyz",
+                    "recipient_id": "rec-456",
+                    "user_id": "creator-789",
+                    "status": EchoStatus.RELEASED.value,
+                    "title": "Fallback Echo",
+                    "category": "work",
+                    "echo_type": "VIDEO",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+
+        mock_dynamodb = AsyncMock()
+
+        def get_table(table_name):
+            if "recipients" in table_name.lower():
+                return mock_recipients_table
+            return mock_echoes_table
+
+        mock_dynamodb.Table = AsyncMock(side_effect=get_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            echoes = await service.get_received_echoes(
+                user_id="user-999",  # User ID that won't match
+                recipient_email="alice@example.com",
+            )
+
+        # Verify we got results from email fallback
+        assert len(echoes) == 1
+        assert echoes[0].echo_id == "echo-xyz"
+
+        # Verify both queries were called (user_id first, then email fallback)
+        assert mock_recipients_table.query.call_count == 2
+
+        # First call should be recipient-user-id-index
+        first_call_kwargs = mock_recipients_table.query.call_args_list[0][1]
+        assert first_call_kwargs.get("IndexName") == "recipient-user-id-index"
+
+        # Second call should be email-index
+        second_call_kwargs = mock_recipients_table.query.call_args_list[1][1]
+        assert second_call_kwargs.get("IndexName") == "email-index"
