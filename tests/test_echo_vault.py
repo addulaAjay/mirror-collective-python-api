@@ -369,15 +369,23 @@ class TestEchoServiceReleaseEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_notification",
-                new_callable=AsyncMock,
-                return_value=True,
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_recipient", new_callable=AsyncMock, return_value=recipient
             ):
-                released_echo = await service.release_echo(
-                    echo_id="e-abc-123", user_id="u-001"
-                )
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_notification",
+                        new_callable=AsyncMock,
+                        return_value=True,
+                    ):
+                        released_echo = await service.release_echo(
+                            echo_id="e-abc-123", user_id="u-001"
+                        )
 
         assert released_echo.status == EchoStatus.RELEASED
 
@@ -433,13 +441,21 @@ class TestEchoServiceReleaseEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_notification",
-                new_callable=AsyncMock,
-                return_value=True,
-            ) as mock_send:
-                await service.release_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_recipient", new_callable=AsyncMock, return_value=recipient
+            ):
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_notification",
+                        new_callable=AsyncMock,
+                        return_value=True,
+                    ) as mock_send:
+                        await service.release_echo(echo_id="e-abc-123", user_id="u-001")
 
         call_kwargs = mock_send.call_args
         # Accept both positional and keyword invocations
@@ -470,8 +486,14 @@ class TestEchoServiceReleaseEcho:
 
         service = EchoService()
 
-        with pytest.raises(NotFoundError):
-            await service.release_echo(echo_id="does-not-exist", user_id="u-001")
+        with patch.object(
+            service,
+            "get_echo",
+            new_callable=AsyncMock,
+            side_effect=NotFoundError("Echo does-not-exist not found"),
+        ):
+            with pytest.raises(NotFoundError):
+                await service.release_echo(echo_id="does-not-exist", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_release_echo_raises_validation_error_when_no_recipient(self):
@@ -482,8 +504,11 @@ class TestEchoServiceReleaseEcho:
         service = EchoService()
         echo = self._make_echo(recipient_id=None)
 
-        with pytest.raises(ValidationError, match="recipient"):
-            await service.release_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="recipient"):
+                await service.release_echo(echo_id="e-abc-123", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_release_echo_raises_validation_error_when_guardian_set(self):
@@ -497,8 +522,11 @@ class TestEchoServiceReleaseEcho:
         service = EchoService()
         echo = self._make_echo(guardian_id="g-999")
 
-        with pytest.raises(ValidationError, match="guardian"):
-            await service.release_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="guardian"):
+                await service.release_echo(echo_id="e-abc-123", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_release_echo_raises_validation_error_when_already_released(self):
@@ -509,8 +537,11 @@ class TestEchoServiceReleaseEcho:
         service = EchoService()
         echo = self._make_echo(status="RELEASED")
 
-        with pytest.raises(ValidationError, match="[Aa]lready released"):
-            await service.release_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="[Aa]lready released"):
+                await service.release_echo(echo_id="e-abc-123", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_release_echo_raises_validation_error_when_locked(self):
@@ -524,8 +555,11 @@ class TestEchoServiceReleaseEcho:
         service = EchoService()
         echo = self._make_echo(status="LOCKED")
 
-        with pytest.raises(ValidationError, match="[Ll]ocked"):
-            await service.release_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="[Ll]ocked"):
+                await service.release_echo(echo_id="e-abc-123", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_release_echo_persists_to_dynamodb(self):
@@ -545,13 +579,21 @@ class TestEchoServiceReleaseEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_notification",
-                new_callable=AsyncMock,
-                return_value=True,
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_recipient", new_callable=AsyncMock, return_value=recipient
             ):
-                await service.release_echo(echo_id="e-abc-123", user_id="u-001")
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_notification",
+                        new_callable=AsyncMock,
+                        return_value=True,
+                    ):
+                        await service.release_echo(echo_id="e-abc-123", user_id="u-001")
 
         assert len(put_calls) == 1
         assert put_calls[0]["status"] == "RELEASED"
@@ -577,16 +619,24 @@ class TestEchoServiceReleaseEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_notification",
-                new_callable=AsyncMock,
-                side_effect=Exception("SES timeout"),
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_recipient", new_callable=AsyncMock, return_value=recipient
             ):
-                # Must not raise
-                released_echo = await service.release_echo(
-                    echo_id="e-abc-123", user_id="u-001"
-                )
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_notification",
+                        new_callable=AsyncMock,
+                        side_effect=Exception("SES timeout"),
+                    ):
+                        # Must not raise
+                        released_echo = await service.release_echo(
+                            echo_id="e-abc-123", user_id="u-001"
+                        )
 
         assert released_echo.status == EchoStatus.RELEASED
 
@@ -969,15 +1019,23 @@ class TestEchoServiceLockEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_pending_notification",
-                new_callable=AsyncMock,
-                return_value=True,
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_guardian", new_callable=AsyncMock, return_value=guardian
             ):
-                locked_echo = await service.lock_echo(
-                    echo_id="e-abc-123", user_id="u-001"
-                )
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_pending_notification",
+                        new_callable=AsyncMock,
+                        return_value=True,
+                    ):
+                        locked_echo = await service.lock_echo(
+                            echo_id="e-abc-123", user_id="u-001"
+                        )
 
         assert locked_echo.status == EchoStatus.LOCKED
 
@@ -998,14 +1056,22 @@ class TestEchoServiceLockEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_pending_notification",
-                new_callable=AsyncMock,
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_guardian", new_callable=AsyncMock, return_value=guardian
             ):
-                locked_echo = await service.lock_echo(
-                    echo_id="e-abc-123", user_id="u-001"
-                )
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_pending_notification",
+                        new_callable=AsyncMock,
+                    ):
+                        locked_echo = await service.lock_echo(
+                            echo_id="e-abc-123", user_id="u-001"
+                        )
 
         assert locked_echo.lock_date is not None
 
@@ -1026,14 +1092,22 @@ class TestEchoServiceLockEcho:
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            with patch(
-                "src.app.services.echo_service.email_service.send_echo_pending_notification",
-                new_callable=AsyncMock,
-            ) as mock_email:
-                await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with patch.object(
+                service, "get_guardian", new_callable=AsyncMock, return_value=guardian
+            ):
+                with patch.object(
+                    service.session, "resource", return_value=mock_resource_ctx
+                ):
+                    with patch(
+                        "src.app.services.echo_service.email_service.send_echo_pending_notification",
+                        new_callable=AsyncMock,
+                    ) as mock_email:
+                        await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
 
-                mock_email.assert_called_once()
+                        mock_email.assert_called_once()
                 # Verify the arguments passed
                 call_kwargs = mock_email.call_args[1]
                 assert call_kwargs["guardian_email"] == "alice@guardian.com"
@@ -1048,8 +1122,14 @@ class TestEchoServiceLockEcho:
 
         service = EchoService()
 
-        with pytest.raises(NotFoundError):
-            await service.lock_echo(echo_id="missing", user_id="u-001")
+        with patch.object(
+            service,
+            "get_echo",
+            new_callable=AsyncMock,
+            side_effect=NotFoundError("Echo missing not found"),
+        ):
+            with pytest.raises(NotFoundError):
+                await service.lock_echo(echo_id="missing", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_lock_echo_raises_validation_error_when_no_guardian(self):
@@ -1060,8 +1140,11 @@ class TestEchoServiceLockEcho:
         service = EchoService()
         echo = self._make_echo(guardian_id=None)
 
-        with pytest.raises(ValidationError, match="no guardian"):
-            await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="no guardian"):
+                await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_lock_echo_raises_validation_error_when_already_locked(self):
@@ -1072,8 +1155,11 @@ class TestEchoServiceLockEcho:
         service = EchoService()
         echo = self._make_echo(status="LOCKED")
 
-        with pytest.raises(ValidationError, match="already locked"):
-            await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="already locked"):
+                await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
 
     @pytest.mark.asyncio
     async def test_lock_echo_raises_validation_error_when_released(self):
@@ -1084,8 +1170,11 @@ class TestEchoServiceLockEcho:
         service = EchoService()
         echo = self._make_echo(status="RELEASED")
 
-        with pytest.raises(ValidationError, match="already released"):
-            await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
+        with patch.object(
+            service, "get_echo", new_callable=AsyncMock, return_value=echo
+        ):
+            with pytest.raises(ValidationError, match="already released"):
+                await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
 
 
 # ============================================================
