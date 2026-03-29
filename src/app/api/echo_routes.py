@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 
 from ..core.security import get_current_user
 from ..services.echo_service import EchoService
@@ -32,7 +32,35 @@ class CreateEchoRequest(BaseModel):
     echo_type: str = "TEXT"  # TEXT, AUDIO, VIDEO
     recipient_id: Optional[str] = None
     guardian_id: Optional[str] = None
+    release_date: Optional[str] = None  # ISO 8601 for scheduled release
     content: Optional[str] = None  # For text echoes
+
+    @validator("release_date")
+    def validate_release_date(cls, v):
+        """Validate release_date is valid ISO 8601 format."""
+        if v is not None:
+            try:
+                from datetime import datetime, timedelta, timezone
+
+                dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+
+                # Prevent unreasonably old dates (> 1 year in past)
+                if dt < now - timedelta(days=365):
+                    raise ValueError(
+                        "release_date cannot be more than 1 year in the past"
+                    )
+
+                # Prevent unreasonably far future dates (> 50 years)
+                if dt > now + timedelta(days=365 * 50):
+                    raise ValueError(
+                        "release_date cannot be more than 50 years in the future"
+                    )
+            except (ValueError, AttributeError) as e:
+                raise ValueError(
+                    f"release_date must be valid ISO 8601 format: {str(e)}"
+                )
+        return v
 
 
 class UpdateEchoRequest(BaseModel):

@@ -86,12 +86,18 @@ class EchoService:
         """
         Create a new echo in the vault.
 
+        Auto-release logic:
+        - If has recipient_id, no guardian_id, and no release_date → release immediately
+        - If has recipient_id, no guardian_id, and release_date in past → release immediately
+        - If has recipient_id, no guardian_id, and release_date in future → save as DRAFT (needs scheduler)
+        - If has guardian_id → always save as DRAFT (guardian workflow)
+
         Args:
             user_id: Owner's user ID
-            data: Echo data (title, category, echo_type, etc.)
+            data: Echo data (title, category, echo_type, release_date, etc.)
 
         Returns:
-            Created Echo
+            Created Echo (potentially auto-released)
         """
         try:
             # Build Echo from data
@@ -102,6 +108,7 @@ class EchoService:
                 echo_type=EchoType(data.get("echo_type", "TEXT")),
                 recipient_id=data.get("recipient_id"),
                 guardian_id=data.get("guardian_id"),
+                release_date=data.get("release_date"),
                 content=data.get("content"),  # For text type
             )
 
@@ -112,6 +119,80 @@ class EchoService:
                 await table.put_item(Item=echo.to_dynamodb_item())
 
             logger.info(f"Created echo {echo.echo_id} for user {user_id}")
+
+            # Auto-release: Check if immediate release is needed
+            should_release_now = False
+            if echo.recipient_id and not echo.guardian_id:
+                if not echo.release_date:
+                    # No scheduled date → release immediately
+                    should_release_now = True
+                    logger.info(
+                        f"No release_date specified for echo {echo.echo_id}, releasing immediately"
+                    )
+                else:
+                    # Check if release_date has passed
+                    release_time = datetime.fromisoformat(
+                        echo.release_date.replace("Z", "+00:00")
+                    )
+                    now = datetime.now(timezone.utc)
+                    if release_time <= now:
+                        should_release_now = True
+                        logger.info(
+                            f"Release date {echo.release_date} has passed for echo {echo.echo_id}, releasing now"
+                        )
+                    else:
+                        logger.info(
+                            f"Echo {echo.echo_id} scheduled for future release at {echo.release_date}"
+                        )
+
+            if should_release_now:
+                logger.info(
+                    f"Auto-releasing echo {echo.echo_id} to recipient {echo.recipient_id}"
+                )
+                echo.release()
+
+                # Update status in DynamoDB
+                async with self.session.resource(
+                    "dynamodb", **self._get_dynamodb_kwargs()
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.echoes_table)
+                    await table.update_item(
+                        Key={"echo_id": echo.echo_id},
+                        UpdateExpression="SET #status = :status, updated_at = :updated_at",
+                        ExpressionAttributeNames={"#status": "status"},
+                        ExpressionAttributeValues={
+                            ":status": echo.status.value,
+                            ":updated_at": echo.updated_at,
+                        },
+                    )
+
+                # Get recipient details for notification
+                if echo.recipient_id:
+                    recipient = await self.get_recipient(echo.recipient_id, user_id)
+                    if recipient:
+                        # Fire-and-forget notification
+                        try:
+                            await email_service.send_echo_notification(
+                                recipient_email=recipient.email,
+                                recipient_name=recipient.name,
+                                sender_name=user_id,  # TODO: fetch actual user name
+                                echo_title=echo.title,
+                                echo_category=echo.category,
+                                echo_type=echo.echo_type.value,
+                            )
+                            logger.info(
+                                f"Sent auto-release notification for echo {echo.echo_id}"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send auto-release notification: {e}",
+                                exc_info=True,
+                            )
+                    else:
+                        logger.warning(
+                            f"Recipient {echo.recipient_id} not found for auto-release of echo {echo.echo_id}"
+                        )
+
             return echo
 
         except ClientError as e:
