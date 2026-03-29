@@ -302,6 +302,198 @@ class TestEchoServiceCreateEcho:
 
 
 # ============================================================
+# SECTION 2b — Auto-release tests
+# ============================================================
+
+
+class TestEchoServiceAutoRelease:
+    """Test automatic echo release logic during creation."""
+
+    @pytest.mark.asyncio
+    async def test_create_echo_with_recipient_no_guardian_no_date_auto_releases(self):
+        """Echo with recipient, no guardian, no release_date should auto-release immediately."""
+        from src.app.models.echo import EchoStatus, Recipient
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Mock database operations
+        mock_table = AsyncMock()
+        mock_table.put_item = AsyncMock(return_value=None)
+        mock_table.update_item = AsyncMock(return_value=None)
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock get_recipient
+        mock_recipient = Recipient(
+            recipient_id="r-001",
+            user_id="u-001",
+            name="Jane Doe",
+            email="jane@example.com",
+        )
+
+        with (
+            patch.object(service.session, "resource", return_value=mock_resource_ctx),
+            patch.object(
+                service, "get_recipient", new=AsyncMock(return_value=mock_recipient)
+            ),
+        ):
+            echo = await service.create_echo(
+                user_id="u-001",
+                data={
+                    "title": "Immediate Echo",
+                    "category": "Memory",
+                    "echo_type": "TEXT",
+                    "recipient_id": "r-001",
+                    "content": "This should release now",
+                },
+            )
+
+        # Verify auto-release happened
+        assert echo.status == EchoStatus.RELEASED
+        assert mock_table.update_item.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_create_echo_with_past_release_date_auto_releases(self):
+        """Echo with release_date in the past should auto-release immediately."""
+        from datetime import datetime, timedelta, timezone
+
+        from src.app.models.echo import EchoStatus, Recipient
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Past date (1 hour ago)
+        past_date = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+        # Mock database operations
+        mock_table = AsyncMock()
+        mock_table.put_item = AsyncMock(return_value=None)
+        mock_table.update_item = AsyncMock(return_value=None)
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock get_recipient
+        mock_recipient = Recipient(
+            recipient_id="r-001",
+            user_id="u-001",
+            name="Jane Doe",
+            email="jane@example.com",
+        )
+
+        with (
+            patch.object(service.session, "resource", return_value=mock_resource_ctx),
+            patch.object(
+                service, "get_recipient", new=AsyncMock(return_value=mock_recipient)
+            ),
+        ):
+            echo = await service.create_echo(
+                user_id="u-001",
+                data={
+                    "title": "Past Scheduled Echo",
+                    "category": "Memory",
+                    "echo_type": "TEXT",
+                    "recipient_id": "r-001",
+                    "release_date": past_date,
+                    "content": "Should release immediately",
+                },
+            )
+
+        # Verify auto-release happened
+        assert echo.status == EchoStatus.RELEASED
+        assert mock_table.update_item.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_create_echo_with_future_release_date_stays_draft(self):
+        """Echo with release_date in the future should stay DRAFT."""
+        from datetime import datetime, timedelta, timezone
+
+        from src.app.models.echo import EchoStatus
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Future date (1 day from now)
+        future_date = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+        # Mock database operations
+        mock_table = AsyncMock()
+        mock_table.put_item = AsyncMock(return_value=None)
+        mock_table.update_item = AsyncMock(return_value=None)
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            echo = await service.create_echo(
+                user_id="u-001",
+                data={
+                    "title": "Future Scheduled Echo",
+                    "category": "Memory",
+                    "echo_type": "TEXT",
+                    "recipient_id": "r-001",
+                    "release_date": future_date,
+                    "content": "Will release later",
+                },
+            )
+
+        # Verify stays DRAFT (no auto-release)
+        assert echo.status == EchoStatus.DRAFT
+        assert echo.release_date == future_date
+        # Should NOT call update_item for status change
+        assert mock_table.update_item.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_create_echo_with_guardian_never_auto_releases(self):
+        """Echo with guardian_id should never auto-release, regardless of date."""
+        from src.app.models.echo import EchoStatus
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Mock database operations
+        mock_table = AsyncMock()
+        mock_table.put_item = AsyncMock(return_value=None)
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            echo = await service.create_echo(
+                user_id="u-001",
+                data={
+                    "title": "Guardian Controlled",
+                    "category": "Memory",
+                    "echo_type": "TEXT",
+                    "recipient_id": "r-001",
+                    "guardian_id": "g-001",
+                },
+            )
+
+        # Verify stays DRAFT (no auto-release with guardian)
+        assert echo.status == EchoStatus.DRAFT
+        assert echo.guardian_id == "g-001"
+
+
+# ============================================================
 # SECTION 3 — Unit tests: EchoService.release_echo (B-01)
 # ============================================================
 
