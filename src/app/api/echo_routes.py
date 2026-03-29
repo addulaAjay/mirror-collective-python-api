@@ -31,6 +31,7 @@ class CreateEchoRequest(BaseModel):
     category: str
     echo_type: str = "TEXT"  # TEXT, AUDIO, VIDEO
     recipient_id: Optional[str] = None
+    guardian_id: Optional[str] = None
     content: Optional[str] = None  # For text echoes
 
 
@@ -303,6 +304,88 @@ async def delete_echo(
         "success": True,
         "message": "Echo deleted successfully",
     }
+
+
+@router.patch("/echoes/{echo_id}/release", response_model=Dict[str, Any])
+async def release_echo(
+    echo_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    Release an echo directly to its recipient (no-guardian path).
+
+    Preconditions (all checked by EchoService.release_echo):
+    - Echo must be a DRAFT owned by the caller.
+    - Echo must have a recipient_id.
+    - Echo must NOT have a guardian_id (those echoes go via guardian flow).
+
+    On success the echo status transitions to RELEASED and the recipient
+    receives a notification email.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echo = await echo_service.release_echo(echo_id=echo_id, user_id=user_id)
+
+        return {
+            "success": True,
+            "data": {
+                "echo_id": echo.echo_id,
+                "status": echo.status.value,
+                "updated_at": echo.updated_at,
+            },
+            "message": "Echo released successfully",
+        }
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error releasing echo {echo_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to release echo")
+
+
+@router.patch("/echoes/{echo_id}/lock", response_model=Dict[str, Any])
+async def lock_echo(
+    echo_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    Lock an echo with a guardian (Phase 2).
+
+    Preconditions (all checked by EchoService.lock_echo):
+    - Echo must be a DRAFT owned by the caller.
+    - Echo must have a guardian_id.
+
+    On success the echo status transitions to LOCKED, lock_date is set,
+    and the guardian receives a notification email.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echo = await echo_service.lock_echo(echo_id=echo_id, user_id=user_id)
+
+        return {
+            "success": True,
+            "data": {
+                "echo_id": echo.echo_id,
+                "status": echo.status.value,
+                "lock_date": echo.lock_date,
+                "updated_at": echo.updated_at,
+            },
+            "message": "Echo locked successfully",
+        }
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error locking echo {echo_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to lock echo")
 
 
 # ========================================

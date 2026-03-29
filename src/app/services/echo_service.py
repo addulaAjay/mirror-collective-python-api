@@ -22,6 +22,7 @@ from ..models.echo import (
     GuardianTrigger,
     Recipient,
 )
+from .email_service import email_service
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ class EchoService:
                 category=data.get("category", ""),
                 echo_type=EchoType(data.get("echo_type", "TEXT")),
                 recipient_id=data.get("recipient_id"),
+                guardian_id=data.get("guardian_id"),
                 content=data.get("content"),  # For text type
             )
 
@@ -401,6 +403,162 @@ class EchoService:
             logger.error(f"Error deleting echo: {e}")
             return False
 
+    async def release_echo(self, echo_id: str, user_id: str) -> Echo:
+        """
+        Directly release an echo to its recipient (no-guardian path).
+
+        Rules
+        -----
+        - Echo must exist and be owned by user_id.
+        - Echo must have a recipient_id.
+        - Echo must NOT have a guardian_id (those go through the guardian flow).
+        - Echo must be in DRAFT status (LOCKED / RELEASED are rejected).
+
+        After validation:
+        1. Call echo.release() to set status = RELEASED.
+        2. Persist updated echo to DynamoDB.
+        3. Fire send_echo_notification to the recipient (fire-and-forget).
+
+        Args:
+            echo_id: ID of the echo to release.
+            user_id: Authenticated caller's user ID (ownership check).
+
+        Returns:
+            The updated Echo with status RELEASED.
+
+        Raises:
+            NotFoundError: Echo does not exist or is not owned by user_id.
+            ValidationError: Echo fails one of the pre-release checks.
+        """
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+
+        if not echo.recipient_id:
+            raise ValidationError(
+                "Echo has no recipient — cannot release without a recipient"
+            )
+
+        if echo.guardian_id:
+            raise ValidationError(
+                "Echo has a guardian assigned — use the guardian release flow"
+            )
+
+        if echo.status == EchoStatus.RELEASED:
+            raise ValidationError("Already released — echo has already been released")
+
+        if echo.status == EchoStatus.LOCKED:
+            raise ValidationError("Locked echo must be released via guardian flow")
+
+        # Transition to RELEASED
+        echo.release()
+
+        # Persist to DynamoDB
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.echoes_table)
+                await table.put_item(Item=echo.to_dynamodb_item())
+        except Exception as e:
+            logger.error(f"DynamoDB error persisting released echo {echo_id}: {e}")
+            raise InternalServerError(f"Failed to persist released echo: {str(e)}")
+
+        logger.info(f"Echo {echo_id} released to recipient {echo.recipient_id}")
+
+        # Fire-and-forget notification email
+        try:
+            recipient = await self.get_recipient(echo.recipient_id, user_id)
+            if recipient:
+                await email_service.send_echo_notification(
+                    recipient_email=recipient.email,
+                    recipient_name=recipient.name,
+                    sender_name=user_id,  # Caller's display name not available here;
+                    # use user_id as fallback — routes layer can enrich if desired
+                    echo_title=echo.title,
+                    echo_category=echo.category,
+                    echo_type=echo.echo_type.value,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to send echo notification for echo {echo_id}: {e}")
+
+        return echo
+
+    async def lock_echo(self, echo_id: str, user_id: str) -> Echo:
+        """
+        Lock an echo with a guardian, preventing further edits and notifying the guardian.
+
+        Rules
+        -----
+        - Echo must exist and be owned by user_id.
+        - Echo must have a guardian_id assigned.
+        - Echo must be in DRAFT status (LOCKED / RELEASED are rejected).
+
+        After validation:
+        1. Call echo.lock() to set status = LOCKED and lock_date.
+        2. Persist updated echo to DynamoDB.
+        3. Send guardian notification email (fire-and-forget).
+
+        Args:
+            echo_id: ID of the echo to lock.
+            user_id: Authenticated caller's user ID (ownership check).
+
+        Returns:
+            The updated Echo with status LOCKED.
+
+        Raises:
+            NotFoundError: Echo does not exist or is not owned by user_id.
+            ValidationError: Echo fails one of the pre-lock checks.
+        """
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+
+        if not echo.guardian_id:
+            raise ValidationError(
+                "Echo has no guardian — cannot lock without a guardian"
+            )
+
+        if echo.status == EchoStatus.LOCKED:
+            raise ValidationError("Echo is already locked")
+
+        if echo.status == EchoStatus.RELEASED:
+            raise ValidationError("Echo is already released — cannot lock")
+
+        # Transition to LOCKED
+        echo.lock()
+
+        # Persist to DynamoDB
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.echoes_table)
+                await table.put_item(Item=echo.to_dynamodb_item())
+        except Exception as e:
+            logger.error(f"DynamoDB error persisting locked echo {echo_id}: {e}")
+            raise InternalServerError(f"Failed to persist locked echo: {str(e)}")
+
+        logger.info(f"Echo {echo_id} locked with guardian {echo.guardian_id}")
+
+        # Fire-and-forget guardian notification email
+        try:
+            guardian = await self.get_guardian(echo.guardian_id, user_id)
+            if guardian:
+                await email_service.send_echo_pending_notification(
+                    guardian_email=guardian.email,
+                    guardian_name=guardian.name,
+                    owner_name=user_id,  # Fallback to user_id; routes layer can enrich
+                    echo_title=echo.title,
+                    echo_category=echo.category,
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to send guardian notification for echo {echo_id}: {e}"
+            )
+
+        return echo
+
     # ========================================
     # S3 PRESIGNED URL GENERATION
     # ========================================
@@ -688,6 +846,33 @@ class EchoService:
         except ClientError as e:
             logger.error(f"Error getting guardians: {e}")
             raise InternalServerError(f"Failed to get guardians: {str(e)}")
+
+    async def get_guardian(self, guardian_id: str, user_id: str) -> Guardian:
+        """Get a specific guardian by ID."""
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.guardians_table)
+
+                response = await table.get_item(Key={"guardian_id": guardian_id})
+                if "Item" not in response:
+                    raise NotFoundError(f"Guardian {guardian_id} not found")
+
+                guardian = Guardian.from_dynamodb_item(response["Item"])
+                if guardian.user_id != user_id:
+                    raise NotFoundError(f"Guardian {guardian_id} not found")
+
+                if guardian.deleted_at is not None:
+                    raise NotFoundError(f"Guardian {guardian_id} not found")
+
+                return guardian
+
+        except NotFoundError:
+            raise
+        except ClientError as e:
+            logger.error(f"Error getting guardian: {e}")
+            raise InternalServerError(f"Failed to get guardian: {str(e)}")
 
     async def update_guardian_permissions(
         self, guardian_id: str, user_id: str, data: Dict[str, Any]

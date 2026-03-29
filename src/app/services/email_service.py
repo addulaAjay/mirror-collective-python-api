@@ -323,6 +323,106 @@ Echoes are meaningful messages shared through {self.app_name}.
             text_body=text_body,
         )
 
+    async def send_echo_pending_notification(
+        self,
+        guardian_email: str,
+        guardian_name: str,
+        owner_name: str,
+        echo_title: str,
+        echo_category: str,
+    ) -> bool:
+        """
+        Send notification to guardian when an echo is locked and awaiting their action.
+
+        Args:
+            guardian_email: Email address of the guardian
+            guardian_name: Name of the guardian
+            owner_name: Name of the echo creator
+            echo_title: Title of the echo
+            echo_category: Category of the echo
+
+        Returns:
+            True if email was sent successfully
+        """
+        subject = f"An Echo from {owner_name} is awaiting your action"
+
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Inter', Arial, sans-serif; background: #1a1a2e; color: #fdfdf9; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 40px 20px; }}
+                .header {{ text-align: center; margin-bottom: 40px; }}
+                .logo {{ color: #f2e2b1; font-size: 28px; font-family: 'Cormorant Garamond', serif; }}
+                .content {{ background: rgba(255,255,255,0.05); border-radius: 12px; padding: 30px; }}
+                .highlight {{ color: #f2e2b1; }}
+                .footer {{ text-align: center; margin-top: 40px; color: #a3b3cc; font-size: 12px; }}
+                .button {{ display: inline-block; background: linear-gradient(135deg, #f2e2b1, #d4c79e);
+                          color: #1a1a2e; padding: 14px 28px; border-radius: 8px;
+                          text-decoration: none; font-weight: 600; margin-top: 20px; }}
+                .echo-card {{ background: rgba(242,226,177,0.1); border-radius: 8px;
+                             padding: 20px; margin: 20px 0; }}
+                .echo-title {{ font-size: 18px; color: #f2e2b1; margin-bottom: 5px; font-weight: 600; }}
+                .echo-meta {{ font-size: 12px; color: #a3b3cc; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <div class="logo">Mirror Collective</div>
+                </div>
+                <div class="content">
+                    <p>Hello <span class="highlight">{guardian_name}</span>,</p>
+                    <p><strong>{owner_name}</strong> has locked an echo that is now under your guardianship.</p>
+
+                    <div class="echo-card">
+                        <div class="echo-title">{echo_title}</div>
+                        <div class="echo-meta">{echo_category}</div>
+                    </div>
+
+                    <p>As the guardian, you have the responsibility to manage when this echo is released
+                    to its intended recipient. You can review pending echoes and take action when the time is right.</p>
+
+                    <div style="text-align: center;">
+                        <a href="{self.app_url}" class="button">View Pending Echoes</a>
+                    </div>
+                </div>
+                <div class="footer">
+                    <p>You are receiving this as a trusted Echo Guardian.</p>
+                    <p>This is an automated message from {self.app_name}.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        text_body = f"""
+Hello {guardian_name},
+
+{owner_name} has locked an echo that is now under your guardianship.
+
+Echo: {echo_title}
+Category: {echo_category}
+
+As the guardian, you have the responsibility to manage when this echo is released
+to its intended recipient. You can review pending echoes and take action when
+the time is right.
+
+View Pending Echoes: {self.app_url}
+
+---
+You are receiving this as a trusted Echo Guardian.
+This is an automated message from {self.app_name}.
+        """
+
+        return await self._send_email(
+            to_email=guardian_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+        )
+
     async def _send_email(
         self,
         to_email: str,
