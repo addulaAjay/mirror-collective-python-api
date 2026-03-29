@@ -4,6 +4,7 @@ User profile models for DynamoDB persistence
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -124,7 +125,12 @@ class UserProfile:
                 continue  # Skip None values
             if k == "email" and (not v or not v.strip()):
                 continue  # Skip empty email values to avoid index errors
-            filtered_item[k] = v
+            if isinstance(v, float):
+                filtered_item[k] = Decimal(
+                    str(v)
+                )  # DynamoDB requires Decimal not float
+            else:
+                filtered_item[k] = v
 
         return filtered_item
 
