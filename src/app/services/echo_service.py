@@ -109,6 +109,7 @@ class EchoService:
                 recipient_id=data.get("recipient_id"),
                 guardian_id=data.get("guardian_id"),
                 release_date=data.get("release_date"),
+                unlock_on_death=data.get("unlock_on_death", False),
                 content=data.get("content"),  # For text type
             )
 

@@ -33,6 +33,7 @@ class CreateEchoRequest(BaseModel):
     recipient_id: Optional[str] = None
     guardian_id: Optional[str] = None
     release_date: Optional[str] = None  # ISO 8601 for scheduled release
+    unlock_on_death: Optional[bool] = False  # If true, echo released when creator dies
     content: Optional[str] = None  # For text echoes
 
     @validator("release_date")
