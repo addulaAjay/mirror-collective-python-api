@@ -328,7 +328,7 @@ class EchoService:
 
     async def get_received_echoes(
         self,
-        recipient_email: str,
+        user_id: str,
         category: Optional[str] = None,
         sender_id: Optional[str] = None,
     ) -> List[Echo]:
@@ -337,7 +337,7 @@ class EchoService:
         Only returns RELEASED echoes.
 
         Args:
-            recipient_email: Recipient's email
+            user_id: User's ID (Cognito sub)
             category: Filter by category
             sender_id: Filter by sender
 
@@ -345,23 +345,23 @@ class EchoService:
             List of received echoes
         """
         try:
-            # First, find recipient by email to get recipient_id
+            # First, find recipients for this user to get recipient_ids
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
                 recipients_table = await dynamodb.Table(self.recipients_table)
 
-                # Query by email index
+                # Query by user-recipients-index
                 recipient_response = await recipients_table.query(
-                    IndexName="email-index",
-                    KeyConditionExpression="email = :email",
-                    ExpressionAttributeValues={":email": recipient_email},
+                    IndexName="user-recipients-index",
+                    KeyConditionExpression="user_id = :uid",
+                    ExpressionAttributeValues={":uid": user_id},
                 )
 
                 if not recipient_response.get("Items"):
                     return []
 
-                # Collect all recipient IDs for this email
+                # Collect all recipient IDs for this user
                 recipient_ids = [
                     item["recipient_id"] for item in recipient_response["Items"]
                 ]

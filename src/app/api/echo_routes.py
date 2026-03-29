@@ -226,13 +226,13 @@ async def list_received_echoes(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """List echoes received by the current user (inbox view)."""
-    user_email = current_user.get("email", "")
+    user_id = current_user.get("id", "")
 
-    if not user_email:
-        raise HTTPException(status_code=400, detail="User email not found")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID not found")
 
     echoes = await echo_service.get_received_echoes(
-        recipient_email=user_email,
+        user_id=user_id,
         category=category,
         sender_id=sender_id,
     )
