@@ -307,21 +307,20 @@ class CognitoService:
         try:
             logger.info("Starting refresh token operation")
 
-            # For refresh token operations, don't include SECRET_HASH as it's not needed
-            # and causes "SecretHash does not match" errors
+            # SECRET_HASH is NOT included for refresh token operations:
+            # 1. Cognito validates the refresh token itself without needing SECRET_HASH
+            # 2. Computing it with an empty username generates an invalid hash that
+            #    causes "SecretHash does not match" / NotAuthorizedException errors
             params: Dict[str, Any] = {
                 "ClientId": self.client_id,
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
                 "AuthParameters": {
                     "REFRESH_TOKEN": refresh_token,
-                    "SECRET_HASH": self._get_secret_hash(""),
                 },
             }
 
-            # Note: SECRET_HASH is NOT required for refresh token operations
-            # AWS Cognito validates the refresh token itself without needing SECRET_HASH
             msg = (
-                "Refresh token params (without SECRET_HASH): "
+                "Refresh token params: "
                 f"ClientId={self.client_id}, AuthFlow=REFRESH_TOKEN_AUTH"
             )
             logger.debug(msg)

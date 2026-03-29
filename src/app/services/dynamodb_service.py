@@ -106,7 +106,12 @@ class DynamoDBService:
                 response = await table.get_item(Key={"user_id": user_id})
 
                 if "Item" in response:
-                    return UserProfile.from_dynamodb_item(response["Item"])
+                    item = response["Item"]
+                    # email is required but may be absent for profiles created
+                    # before the field was enforced — default to empty string
+                    # so the caller can repair it with Cognito data
+                    item.setdefault("email", "")
+                    return UserProfile.from_dynamodb_item(item)
                 return None
 
         except ClientError as e:
