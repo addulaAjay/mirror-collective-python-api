@@ -4,6 +4,7 @@ Storage quota service for Echo Vault storage management
 
 import logging
 import os
+from decimal import Decimal
 from typing import Dict
 
 import boto3
@@ -120,7 +121,12 @@ class StorageQuotaService:
             user_profile.echo_vault_used_gb = current_usage
             await self.dynamodb.update_user_profile(user_profile)
 
-            quota_gb = user_profile.echo_vault_quota_gb
+            # Convert Decimal to float for arithmetic operations
+            quota_gb = (
+                float(user_profile.echo_vault_quota_gb)
+                if user_profile.echo_vault_quota_gb
+                else 0.0
+            )
             percent_used = (current_usage / quota_gb * 100) if quota_gb > 0 else 0
 
             return {
@@ -165,7 +171,13 @@ class StorageQuotaService:
 
             # Calculate what usage would be after upload
             file_size_gb = file_size_bytes / (1024**3)
-            projected_usage = quota_status["usage_gb"] + file_size_gb
+            # Ensure usage_gb is float for arithmetic
+            current_usage_gb = (
+                float(quota_status["usage_gb"])
+                if isinstance(quota_status["usage_gb"], Decimal)
+                else quota_status["usage_gb"]
+            )
+            projected_usage = current_usage_gb + file_size_gb
 
             if projected_usage > quota_status["quota_gb"]:
                 return {
