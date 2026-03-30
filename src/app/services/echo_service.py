@@ -178,6 +178,9 @@ class EchoService:
                     if recipient:
                         # Fire-and-forget notification
                         try:
+                            # Check if recipient is registered (has recipient_user_id)
+                            is_registered = recipient.recipient_user_id is not None
+
                             await email_service.send_echo_notification(
                                 recipient_email=recipient.email,
                                 recipient_name=recipient.name,
@@ -185,9 +188,10 @@ class EchoService:
                                 echo_title=echo.title,
                                 echo_category=echo.category,
                                 echo_type=echo.echo_type.value,
+                                is_registered=is_registered,
                             )
                             logger.info(
-                                f"Sent auto-release notification for echo {echo.echo_id}"
+                                f"Sent auto-release notification for echo {echo.echo_id} (registered={is_registered})"
                             )
                         except Exception as e:
                             logger.error(
@@ -231,10 +235,26 @@ class EchoService:
 
                 echo = Echo.from_dynamodb_item(response["Item"])
 
-                # Security: Verify ownership
-                if echo.user_id != user_id:
+                # Security: Verify access - user must be either owner OR recipient
+                is_owner = echo.user_id == user_id
+                is_recipient = False
+                cached_recipient = None
+
+                # Check if user is the recipient
+                if not is_owner and echo.recipient_id:
+                    recipient = await self.get_recipient(
+                        echo.recipient_id, echo.user_id
+                    )
+                    if recipient and recipient.recipient_user_id == user_id:
+                        is_recipient = True
+                        cached_recipient = recipient  # Cache for later use
+                        logger.info(
+                            f"User {user_id} accessing echo {echo_id} as recipient (recipient_id: {echo.recipient_id})"
+                        )
+
+                if not is_owner and not is_recipient:
                     logger.warning(
-                        f"User {user_id} attempted to access echo {echo_id} owned by {echo.user_id}"
+                        f"User {user_id} attempted to access echo {echo_id} owned by {echo.user_id} - not owner or recipient"
                     )
                     return None
 
@@ -243,7 +263,10 @@ class EchoService:
 
                 # Enrich with recipient details if any
                 if echo.recipient_id:
-                    recipient = await self.get_recipient(echo.recipient_id, user_id)
+                    # Use cached recipient if available, otherwise fetch
+                    recipient = cached_recipient or await self.get_recipient(
+                        echo.recipient_id, echo.user_id
+                    )
                     if recipient:
                         echo.recipient = {
                             "recipient_id": recipient.recipient_id,
@@ -584,6 +607,9 @@ class EchoService:
         try:
             recipient = await self.get_recipient(echo.recipient_id, user_id)
             if recipient:
+                # Check if recipient is registered (has recipient_user_id)
+                is_registered = recipient.recipient_user_id is not None
+
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
@@ -592,6 +618,10 @@ class EchoService:
                     echo_title=echo.title,
                     echo_category=echo.category,
                     echo_type=echo.echo_type.value,
+                    is_registered=is_registered,
+                )
+                logger.info(
+                    f"Sent echo notification for {echo_id} (registered={is_registered})"
                 )
         except Exception as e:
             logger.warning(f"Failed to send echo notification for echo {echo_id}: {e}")
@@ -786,15 +816,23 @@ class EchoService:
 
                 # Check if recipient email matches an existing user account
                 recipient_user_id = None
+                logger.info(f"Checking for existing user with email: {email}")
                 try:
                     existing_user = await self.dynamodb_service.get_user_by_email(email)
                     if existing_user:
                         recipient_user_id = existing_user.user_id
                         logger.info(
-                            f"Linking recipient to user account: {recipient_user_id}"
+                            f"✅ Linking recipient to user account: {recipient_user_id} (email: {email})"
+                        )
+                    else:
+                        logger.info(
+                            f"No existing user found for email: {email} - recipient_user_id will be None"
                         )
                 except Exception as e:
-                    logger.warning(f"Could not check for existing user by email: {e}")
+                    logger.error(
+                        f"❌ Could not check for existing user by email ({email}): {e}",
+                        exc_info=True,
+                    )
 
                 recipient = Recipient(
                     user_id=user_id,
@@ -805,7 +843,23 @@ class EchoService:
                     motif=data.get("motif"),
                 )
 
+                logger.info(
+                    f"Creating recipient: id={recipient.recipient_id}, email={email}, "
+                    f"recipient_user_id={recipient_user_id or 'None (not linked)'}"
+                )
+
                 await table.put_item(Item=recipient.to_dynamodb_item())
+
+                # Log what was actually persisted
+                persisted_item = recipient.to_dynamodb_item()
+                logger.info(
+                    f"Persisted recipient to DynamoDB: id={persisted_item.get('recipient_id')}, "
+                    f"has_recipient_user_id={'recipient_user_id' in persisted_item}"
+                )
+                if "recipient_user_id" in persisted_item:
+                    logger.info(
+                        f"recipient_user_id value: {persisted_item['recipient_user_id']}"
+                    )
 
             logger.info(
                 f"Created recipient {recipient.recipient_id} for user {user_id}"

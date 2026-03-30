@@ -29,6 +29,13 @@ class EmailService:
         )
         self.app_name = os.getenv("APP_NAME", "Mirror Collective")
         self.app_url = os.getenv("APP_URL", "https://mirrorcollective.com")
+        self.app_store_url = os.getenv(
+            "APP_STORE_URL", "https://apps.apple.com/app/mirror-collective"
+        )
+        self.play_store_url = os.getenv(
+            "PLAY_STORE_URL",
+            "https://play.google.com/store/apps/details?id=com.mirrorcollective",
+        )
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -230,9 +237,12 @@ If you didn't expect this email, please contact us.
         echo_title: str,
         echo_category: str,
         echo_type: str,
+        is_registered: bool = True,
     ) -> bool:
         """
         Send notification when an echo is released to a recipient.
+
+        If recipient is not registered, sends invitation to download app.
 
         Args:
             recipient_email: Email address of the recipient
@@ -241,10 +251,23 @@ If you didn't expect this email, please contact us.
             echo_title: Title of the echo
             echo_category: Category of the echo
             echo_type: Type of echo (TEXT, AUDIO, VIDEO)
+            is_registered: Whether recipient has an account (default True for backward compatibility)
 
         Returns:
             True if email was sent successfully
         """
+        if not is_registered:
+            # Send invitation email encouraging them to register
+            return await self._send_echo_invitation_to_register(
+                recipient_email=recipient_email,
+                recipient_name=recipient_name,
+                sender_name=sender_name,
+                echo_title=echo_title,
+                echo_category=echo_category,
+                echo_type=echo_type,
+            )
+
+        # Send standard notification for registered users
         subject = f"You've received an Echo from {sender_name}"
 
         type_icon = {"TEXT": "📝", "AUDIO": "🎤", "VIDEO": "🎬"}.get(echo_type, "✨")
@@ -314,6 +337,149 @@ View Echo: {self.app_url}
 
 ---
 Echoes are meaningful messages shared through {self.app_name}.
+        """
+
+        return await self._send_email(
+            to_email=recipient_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+        )
+
+    async def _send_echo_invitation_to_register(
+        self,
+        recipient_email: str,
+        recipient_name: str,
+        sender_name: str,
+        echo_title: str,
+        echo_category: str,
+        echo_type: str,
+    ) -> bool:
+        """
+        Send invitation email to non-registered recipient encouraging them to download app.
+
+        Args:
+            recipient_email: Email address of the recipient
+            recipient_name: Name of the recipient
+            sender_name: Name who created the echo
+            echo_title: Title of the echo
+            echo_category: Category of the echo
+            echo_type: Type of echo (TEXT, AUDIO, VIDEO)
+
+        Returns:
+            True if email was sent successfully
+        """
+        subject = f"💫 {sender_name} sent you a personal message on {self.app_name}"
+
+        type_icon = {"TEXT": "📝", "AUDIO": "🎤", "VIDEO": "🎬"}.get(echo_type, "✨")
+
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Inter', Arial, sans-serif; background: #1a1a2e; color: #fdfdf9; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 40px 20px; }}
+                .header {{ text-align: center; margin-bottom: 40px; }}
+                .logo {{ color: #f2e2b1; font-size: 28px; font-family: 'Cormorant Garamond', serif; }}
+                .content {{ background: rgba(255,255,255,0.05); border-radius: 12px; padding: 30px; }}
+                .highlight {{ color: #f2e2b1; }}
+                .footer {{ text-align: center; margin-top: 40px; color: #a3b3cc; font-size: 12px; }}
+                .cta-section {{ text-align: center; margin: 30px 0; }}
+                .cta-text {{ font-size: 18px; color: #f2e2b1; margin-bottom: 20px; font-weight: 600; }}
+                .download-buttons {{ display: flex; justify-content: center; gap: 15px; margin-top: 20px; }}
+                .download-button {{ display: inline-block; background: linear-gradient(135deg, #f2e2b1, #d4c79e);
+                          color: #1a1a2e; padding: 12px 24px; border-radius: 8px;
+                          text-decoration: none; font-weight: 600; }}
+                .echo-preview {{ background: rgba(242,226,177,0.1); border-radius: 8px;
+                             padding: 20px; margin: 20px 0; text-align: center; border: 2px dashed #f2e2b1; }}
+                .echo-icon {{ font-size: 48px; margin-bottom: 10px; }}
+                .echo-title {{ font-size: 20px; color: #f2e2b1; margin-bottom: 5px; }}
+                .echo-meta {{ font-size: 12px; color: #a3b3cc; }}
+                .info-box {{ background: rgba(242,226,177,0.1); border-left: 3px solid #f2e2b1;
+                            padding: 15px; margin: 20px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <div class="logo">Mirror Collective</div>
+                </div>
+                <div class="content">
+                    <p>Hello <span class="highlight">{recipient_name}</span>,</p>
+                    <p><strong>{sender_name}</strong> has created a meaningful message especially for you
+                    through {self.app_name}.</p>
+
+                    <div class="echo-preview">
+                        <div class="echo-icon">{type_icon}</div>
+                        <div class="echo-title">"{echo_title}"</div>
+                        <div class="echo-meta">{echo_category} • {echo_type}</div>
+                        <p style="margin-top: 15px; font-style: italic; color: #a3b3cc;">
+                            This personal echo is waiting for you...
+                        </p>
+                    </div>
+
+                    <div class="info-box">
+                        <p><strong>To view this message, you'll need to download {self.app_name}:</strong></p>
+                        <ol style="text-align: left; color: #fdfdf9;">
+                            <li>Download the app using the buttons below</li>
+                            <li>Sign up with this email address: <span class="highlight">{recipient_email}</span></li>
+                            <li>Your echo will be waiting for you in your inbox</li>
+                        </ol>
+                    </div>
+
+                    <div class="cta-section">
+                        <div class="cta-text">Download {self.app_name} now</div>
+                        <div class="download-buttons">
+                            <a href="{self.app_store_url}" class="download-button">
+                                📱 App Store
+                            </a>
+                            <a href="{self.play_store_url}" class="download-button">
+                                🤖 Google Play
+                            </a>
+                        </div>
+                    </div>
+
+                    <p style="margin-top: 30px; text-align: center; color: #a3b3cc;">
+                        {sender_name} chose to share something meaningful with you.
+                        Join {self.app_name} to experience it.
+                    </p>
+                </div>
+                <div class="footer">
+                    <p>This message was sent from {self.app_name}, a space for meaningful connections.</p>
+                    <p>If you didn't expect this message, you can safely ignore it.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        text_body = f"""
+Hello {recipient_name},
+
+{sender_name} has created a meaningful message especially for you through {self.app_name}.
+
+{type_icon} "{echo_title}"
+{echo_category} • {echo_type}
+
+This personal echo is waiting for you...
+
+TO VIEW THIS MESSAGE:
+You'll need to download {self.app_name}:
+
+1. Download the app:
+   - iOS: {self.app_store_url}
+   - Android: {self.play_store_url}
+
+2. Sign up with this email address: {recipient_email}
+
+3. Your echo will be waiting for you in your inbox
+
+{sender_name} chose to share something meaningful with you. Join {self.app_name} to experience it.
+
+---
+This message was sent from {self.app_name}, a space for meaningful connections.
+If you didn't expect this message, you can safely ignore it.
         """
 
         return await self._send_email(
