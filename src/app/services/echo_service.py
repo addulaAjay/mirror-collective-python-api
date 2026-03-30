@@ -480,9 +480,18 @@ class EchoService:
             if not echo:
                 raise NotFoundError(f"Echo {echo_id} not found")
 
-            # Prevent updates to locked/released echoes (metadata only)
-            if echo.status != EchoStatus.DRAFT:
-                logger.warning(f"Attempted to update non-draft echo {echo_id}")
+            # Special case: Allow media attachment on RELEASED echoes (first-time only)
+            is_media_only_update = (
+                "media_url" in data
+                and set(data.keys()) <= {"media_url", "echo_type"}
+                and not echo.media_url  # Only if media_url is currently empty
+            )
+
+            # Prevent updates to locked/released echoes (except first-time media attachment)
+            if echo.status != EchoStatus.DRAFT and not is_media_only_update:
+                logger.warning(
+                    f"Attempted to update non-draft echo {echo_id} (status={echo.status.value})"
+                )
                 raise InternalServerError("Cannot update locked or released echo")
 
             # Apply updates
@@ -494,6 +503,14 @@ class EchoService:
                 echo.content = data["content"]
             if "media_url" in data:
                 echo.media_url = data["media_url"]
+                logger.info(
+                    f"Attached media to echo {echo_id} (status={echo.status.value})"
+                )
+            if "echo_type" in data:
+                try:
+                    echo.echo_type = EchoType(data["echo_type"])
+                except (ValueError, KeyError):
+                    pass  # Keep existing type if invalid
             if "recipient_id" in data:
                 echo.recipient_id = data["recipient_id"]
 
