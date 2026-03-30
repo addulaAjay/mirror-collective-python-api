@@ -238,16 +238,22 @@ class EchoService:
                 # Security: Verify access - user must be either owner OR recipient
                 is_owner = echo.user_id == user_id
                 is_recipient = False
-                cached_recipient = None
+                recipient_from_access_check = None
+
+                if is_owner:
+                    logger.info(f"User {user_id} accessing echo {echo_id} as owner")
 
                 # Check if user is the recipient
                 if not is_owner and echo.recipient_id:
+                    # get_recipient verifies that recipient belongs to echo.user_id (the echo owner)
                     recipient = await self.get_recipient(
                         echo.recipient_id, echo.user_id
                     )
                     if recipient and recipient.recipient_user_id == user_id:
                         is_recipient = True
-                        cached_recipient = recipient  # Cache for later use
+                        recipient_from_access_check = (
+                            recipient  # Save to avoid duplicate query
+                        )
                         logger.info(
                             f"User {user_id} accessing echo {echo_id} as recipient (recipient_id: {echo.recipient_id})"
                         )
@@ -263,8 +269,8 @@ class EchoService:
 
                 # Enrich with recipient details if any
                 if echo.recipient_id:
-                    # Use cached recipient if available, otherwise fetch
-                    recipient = cached_recipient or await self.get_recipient(
+                    # Reuse recipient from access check if available, otherwise fetch
+                    recipient = recipient_from_access_check or await self.get_recipient(
                         echo.recipient_id, echo.user_id
                     )
                     if recipient:
