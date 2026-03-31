@@ -8,6 +8,8 @@ class UserRegistrationRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
     fullName: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z\s\'-]+$")
+    phoneNumber: Optional[str] = None
+    termsAcceptedAt: Optional[str] = None
     anonymousId: Optional[str] = None  # For linking anonymous quiz data
 
     @field_validator("password")
@@ -64,6 +66,7 @@ class EmailVerificationRequest(BaseModel):
     email: EmailStr
     verificationCode: str = Field(min_length=1)
     anonymousId: Optional[str] = None  # For linking anonymous quiz data
+    termsAcceptedAt: Optional[str] = None  # Passed through from registration flow
 
 
 class ResendVerificationCodeRequest(BaseModel):

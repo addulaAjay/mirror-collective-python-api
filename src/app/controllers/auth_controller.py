@@ -33,8 +33,8 @@ class AuthController:
     def __init__(self):
         self.cognito_service = CognitoService()
         self.user_service = UserService()
-        dynamodb_service = DynamoDBService()
-        self.linking_service = UserLinkingService(dynamodb_service)
+        self.dynamodb_service = DynamoDBService()
+        self.linking_service = UserLinkingService(self.dynamodb_service)
 
     async def register(self, payload: UserRegistrationRequest) -> AuthResponse:
         """Register a new user account"""
@@ -49,6 +49,7 @@ class AuthController:
             password=payload.password,
             first_name=first_name,
             last_name=last_name,
+            phone_number=payload.phoneNumber,
         )
 
         # Store anonymousId temporarily for linking after email verification
@@ -214,6 +215,26 @@ class AuthController:
                 logger.info(
                     f"Created user profile in DynamoDB for user: {user_profile.user_id}"
                 )
+
+                # Apply terms acceptance passed through from registration
+                if payload.termsAcceptedAt:
+                    try:
+                        await self.user_service.update_user_profile(
+                            user_profile.user_id,
+                            {
+                                "terms_accepted_at": payload.termsAcceptedAt,
+                                "terms_version": "1.0",
+                            },
+                        )
+                        logger.info(
+                            f"Applied terms to user profile: {user_profile.user_id}"
+                        )
+                    except Exception as terms_error:
+                        logger.error(
+                            f"Failed to apply terms for {user_profile.user_id}: "
+                            f"{terms_error}"
+                        )
+                        # Don't fail confirmation if terms update fails
 
                 # Link anonymous quiz data if anonymousId was provided
                 if payload.anonymousId:
