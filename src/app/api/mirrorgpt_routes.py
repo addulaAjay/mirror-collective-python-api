@@ -141,6 +141,11 @@ def get_conversation_service() -> "ConversationService":
     return ConversationService()
 
 
+def get_dynamodb_service() -> DynamoDBService:
+    """Dependency injection for DynamoDBService"""
+    return DynamoDBService()
+
+
 @router.post("/chat", response_model=MirrorGPTChatResponse)
 async def mirrorgpt_chat(
     request: MirrorGPTChatRequest,
@@ -327,19 +332,32 @@ async def submit_archetype_quiz(
     request: ArchetypeQuizRequest,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
+    dynamodb_service: DynamoDBService = Depends(get_dynamodb_service),
 ):
     """
-    Submit archetype quiz results and create initial user profile
+    Submit archetype quiz and calculate results server-side (V1 Spec)
 
-    Supports both authenticated users and anonymous submissions via anonymousId.
+    This endpoint:
+    1. Receives raw quiz answers from frontend
+    2. Calculates archetype using weighted scoring logic
+    3. Returns calculated result with assignment reason
+    4. Stores profile with calculated archetype
+
+    Supports both authenticated users and anonymous submissions.
     """
+    import json
+    import os
+    from pathlib import Path
+
+    from ..services.quiz_scoring import QuizAnswer as ScoringQuizAnswer
+    from ..services.quiz_scoring import calculate_quiz_result
 
     try:
+        # 1. Determine user ID
         user_id = None
         if current_user:
             user_id = current_user["id"]
         elif request.anonymousId:
-            # Use anonymous ID as temporary user ID
             user_id = f"anon_{request.anonymousId}"
         else:
             raise HTTPException(
@@ -347,56 +365,135 @@ async def submit_archetype_quiz(
                 detail="Authentication required or anonymousId must be provided",
             )
 
-        # Convert quiz answers to a format suitable for storage
-        quiz_answers = []
-        for answer in request.answers:
-            # Handle both text and image answers
-            answer_data = {
-                "question_id": answer.questionId,
-                "question": answer.question,
-                "answered_at": answer.answeredAt,
-                "type": answer.type,
-            }
+        # 2. Load questions from DynamoDB or fallback to questions.json
+        questions_list = []
+        questions_json = {}
 
-            # Store answer based on type
-            if answer.type == "image" and isinstance(answer.answer, dict):
-                # Image answer with label and image file
-                answer_data["answer"] = {
-                    "label": answer.answer.get("label", ""),
-                    "image": answer.answer.get("image", ""),
-                }
+        try:
+            questions_data = await dynamodb_service.get_quiz_questions()
+            questions_list = questions_data if isinstance(questions_data, list) else []
+        except Exception as e:
+            logger.warning(
+                f"Failed to load questions from DynamoDB: {e}, using fallback"
+            )
+            # Fallback to questions.json
+            questions_file = Path(__file__).parent.parent / "data" / "questions.json"
+            if questions_file.exists():
+                with open(questions_file, "r") as f:
+                    questions_json = json.load(f)
+                    questions_list = questions_json.get("questions", [])
             else:
-                # Text or multiple choice answer
-                answer_data["answer"] = str(answer.answer)
+                raise HTTPException(
+                    status_code=500, detail="Quiz questions not available"
+                )
 
-            quiz_answers.append(answer_data)
+        if not questions_list:
+            raise HTTPException(status_code=500, detail="No quiz questions found")
 
-        # Prepare detailed result data if provided
-        detailed_result = None
-        confidence_score = None
+        # If we got questions from DynamoDB, we still need archetypes from file
+        if not questions_json:
+            questions_file = Path(__file__).parent.parent / "data" / "questions.json"
+            if questions_file.exists():
+                with open(questions_file, "r") as f:
+                    questions_json = json.load(f)
 
-        if request.detailedResult:
-            detailed_result = {
-                "scores": request.detailedResult.scores,
-                "primary_archetype": request.detailedResult.primaryArchetype,
-                "confidence": request.detailedResult.confidence,
-                "analysis": {
-                    "strengths": request.detailedResult.analysis.strengths,
-                    "challenges": request.detailedResult.analysis.challenges,
-                    "recommendations": request.detailedResult.analysis.recommendations,
-                },
+        # 3. Extract quiz config for dynamic scoring
+        quiz_config = questions_json.get("config", {})
+
+        # Build list of core question IDs from question data (dynamic)
+        core_question_ids = [
+            q.get("id") for q in questions_list if q.get("core", False)
+        ]
+        if not core_question_ids:
+            # Fallback to default if no core questions specified
+            core_question_ids = [1, 3, 5]
+
+        # Add core questions to config for scoring engine
+        if quiz_config and "coreQuestions" not in quiz_config:
+            quiz_config["coreQuestions"] = core_question_ids
+
+        # 4. Build question ID to archetype mapping
+        # Map: {question_id: {answer_text: archetype}}
+        question_map = {}
+        for q in questions_list:
+            q_id = q.get("id")
+            options = q.get("options", [])
+            question_map[q_id] = {
+                opt.get("text") or opt.get("label"): opt.get("archetype")
+                for opt in options
             }
-            confidence_score = request.detailedResult.confidence
 
-        # Create initial archetype profile
+        # 5. Map user answers to archetypes using question data
+        scoring_answers: List[ScoringQuizAnswer] = []
+        quiz_answers_for_storage = []  # For DynamoDB storage
+
+        for answer in request.answers:
+            q_id = answer.questionId
+            answer_text = None
+
+            # Extract answer text based on type
+            if isinstance(answer.answer, dict):
+                answer_text = answer.answer.get("label", "")
+            else:
+                answer_text = str(answer.answer)
+
+            # Look up archetype from question options
+            if q_id not in question_map:
+                raise HTTPException(
+                    status_code=400, detail=f"Question {q_id} not found in quiz data"
+                )
+
+            archetype = question_map[q_id].get(answer_text)
+            if not archetype:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Answer '{answer_text}' not valid for question {q_id}",
+                )
+
+            # Create scoring answer
+            is_core = q_id in [1, 3, 5]  # Q1, Q3, Q5 are core
+            scoring_answer = ScoringQuizAnswer(
+                question_id=q_id,
+                question=answer.question,
+                archetype=archetype,
+                is_core=is_core,
+            )
+            scoring_answers.append(scoring_answer)
+
+            # Store for database
+            quiz_answers_for_storage.append(
+                {
+                    "question_id": q_id,
+                    "question": answer.question,
+                    "answer": answer_text,
+                    "archetype": archetype,
+                    "answered_at": answer.answeredAt,
+                    "type": answer.type,
+                }
+            )
+
+        # 5. Calculate quiz result using V1 weighted scoring
+        quiz_result = calculate_quiz_result(scoring_answers)
+
+        # 7. Create initial archetype profile with calculated result
         result = await orchestrator.create_initial_archetype_profile(
             user_id=user_id,
-            initial_archetype=request.archetypeResult.id,
-            quiz_answers=quiz_answers,
+            initial_archetype=quiz_result["final_archetype"],
+            quiz_answers=quiz_answers_for_storage,
             quiz_completed_at=request.completedAt,
             quiz_version=request.quizVersion,
-            assignment_reason=request.assignmentReason,
-            detailed_result=detailed_result,
+            quiz_type=request.quiz_type,  # Store quiz type identifier
+            assignment_reason=quiz_result["assignment_reason"],
+            detailed_result={
+                "scores": quiz_result["total_scores"],
+                "primary_archetype": quiz_result["final_archetype"],
+                "confidence": 0.85,  # High confidence from quiz
+                "analysis": {
+                    "strengths": [],
+                    "challenges": [],
+                    "recommendations": [],
+                },
+            },
         )
 
         if not result.get("success"):
@@ -405,25 +502,41 @@ async def submit_archetype_quiz(
                 detail=result.get("error", "Failed to create archetype profile"),
             )
 
-        # Format response data
+        # 8. Load archetype metadata for response
+        archetype_key = quiz_result["final_archetype"].lower()
+        archetype_metadata = questions_json.get("archetypes", {}).get(archetype_key)
+
+        if not archetype_metadata:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Archetype metadata not found for {quiz_result['final_archetype']}",
+            )
+
+        # 9. Format response with calculated result and metadata
         quiz_data = ArchetypeQuizData(
+            quiz_type=request.quiz_type,  # Include quiz type in response
             user_id=user_id,
-            initial_archetype=request.archetypeResult.id,
+            final_archetype=quiz_result["final_archetype"],
+            assignment_reason=quiz_result["assignment_reason"],
+            total_scores=quiz_result["total_scores"],
+            archetype_details=archetype_metadata,
             quiz_completed_at=request.completedAt,
             quiz_version=request.quizVersion,
-            assignment_reason=request.assignmentReason,
             profile_created=result.get("profile_created", True),
             answers_stored=result.get("quiz_stored", True),
-            detailed_result_stored=result.get(
-                "detailed_result_stored", bool(detailed_result)
-            ),
-            confidence_score=confidence_score,
         )
 
         msg = (
-            f"Initial {request.archetypeResult.name} archetype profile "
-            f"created successfully. Your journey with MirrorGPT begins now."
+            f"Initial {quiz_result['final_archetype']} archetype profile "
+            f"created successfully (reason: {quiz_result['assignment_reason']}). "
+            "Your journey with MirrorGPT begins now."
         )
+
+        logger.info(
+            f"Quiz calculated for user {user_id}: {quiz_result['final_archetype']} "
+            f"(reason: {quiz_result['assignment_reason']}, scores: {quiz_result['total_scores']})"
+        )
+
         return ArchetypeQuizResponse(
             success=True,
             data=quiz_data,
@@ -434,6 +547,9 @@ async def submit_archetype_quiz(
         raise
     except Exception as e:
         logger.error(f"Quiz submission failed: {str(e)}")
+        import traceback
+
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Quiz submission failed: {str(e)}")
 
 

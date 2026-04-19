@@ -910,6 +910,7 @@ class MirrorOrchestrator:
         quiz_answers: List[Dict[str, Any]],
         quiz_completed_at: str,
         quiz_version: str = "1.0",
+        quiz_type: str = "archetype",  # Quiz identifier for multi-quiz support
         assignment_reason: Optional[str] = None,
         detailed_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -922,6 +923,7 @@ class MirrorOrchestrator:
             quiz_answers: List of quiz answers for reference
             quiz_completed_at: When the quiz was completed
             quiz_version: Version of the quiz taken
+            quiz_type: Quiz identifier (archetype, career_path, etc.)
             assignment_reason: Why this archetype was assigned (core_override, highest_score, etc.)
             detailed_result: Optional detailed quiz results with scores
                 and analysis
