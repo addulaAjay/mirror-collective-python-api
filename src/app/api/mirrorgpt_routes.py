@@ -376,7 +376,9 @@ async def submit_archetype_quiz(
             logger.warning(
                 f"Failed to load questions from DynamoDB: {e}, using fallback"
             )
-            # Fallback to questions.json
+
+        # Fallback to questions.json if DynamoDB didn't provide questions
+        if not questions_list:
             questions_file = Path(__file__).parent.parent / "data" / "questions.json"
             if questions_file.exists():
                 with open(questions_file, "r") as f:
