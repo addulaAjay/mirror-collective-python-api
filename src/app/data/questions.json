@@ -1,4 +1,8 @@
 {
+  "quiz_type": "archetype",
+  "quiz_name": "Archetype Discovery Quiz",
+  "quiz_description": "Discover your core archetype - Seeker, Guardian, Flamebearer, or Weaver",
+  "version": "1.0",
   "config": {
     "archetypes": ["Seeker", "Guardian", "Flamebearer", "Weaver"],
     "weights": {

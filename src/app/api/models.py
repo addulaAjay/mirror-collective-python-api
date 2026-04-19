@@ -350,27 +350,38 @@ class ArchetypeResult(BaseModel):
 
 
 class ArchetypeQuizRequest(BaseModel):
+    """Quiz submission request - sends raw answers for server-side calculation"""
+
+    quiz_type: str = "archetype"  # Quiz identifier (archetype, career_path, etc.)
     answers: List[QuizAnswer]
     completedAt: str
-    archetypeResult: ArchetypeResult
     quizVersion: str = "1.0"
-    assignmentReason: Optional[str] = (
-        None  # core_override | highest_score | tie_break_*
-    )
-    detailedResult: Optional[DetailedResult] = None  # Enhanced quiz results
     anonymousId: Optional[str] = None  # For unauthenticated submissions
 
 
+class ArchetypeMetadata(BaseModel):
+    """Archetype display metadata"""
+
+    id: str
+    name: str
+    title: str
+    description: str
+    imagePath: str
+
+
 class ArchetypeQuizData(BaseModel):
+    """Quiz submission response with server-calculated results"""
+
+    quiz_type: str  # Quiz identifier (archetype, career_path, etc.)
     user_id: str
-    initial_archetype: str
+    final_archetype: str  # Server calculated
+    assignment_reason: str  # core_override | highest_score | tie_break_*
+    total_scores: Dict[str, int]  # Scores for all archetypes
+    archetype_details: ArchetypeMetadata  # Full metadata for display
     quiz_completed_at: str
     quiz_version: str
-    assignment_reason: Optional[str] = None
     profile_created: bool = True
     answers_stored: bool = True
-    detailed_result_stored: bool = True
-    confidence_score: Optional[float] = None
 
 
 class ArchetypeQuizResponse(BaseModel):
