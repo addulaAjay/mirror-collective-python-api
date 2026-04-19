@@ -354,6 +354,9 @@ class ArchetypeQuizRequest(BaseModel):
     completedAt: str
     archetypeResult: ArchetypeResult
     quizVersion: str = "1.0"
+    assignmentReason: Optional[str] = (
+        None  # core_override | highest_score | tie_break_*
+    )
     detailedResult: Optional[DetailedResult] = None  # Enhanced quiz results
     anonymousId: Optional[str] = None  # For unauthenticated submissions
 
@@ -363,6 +366,7 @@ class ArchetypeQuizData(BaseModel):
     initial_archetype: str
     quiz_completed_at: str
     quiz_version: str
+    assignment_reason: Optional[str] = None
     profile_created: bool = True
     answers_stored: bool = True
     detailed_result_stored: bool = True

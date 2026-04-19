@@ -108,6 +108,21 @@ python scripts/create_mirrorgpt_tables_clean.py
 
 print_success "Database tables created"
 
+# Populate quiz questions
+print_status "Populating quiz questions..."
+if [ -f "src/app/data/questions.json" ]; then
+    python scripts/populate_quiz_questions.py
+    if [ $? -eq 0 ]; then
+        print_success "Quiz questions populated (5 questions)"
+    else
+        print_warning "Failed to populate quiz questions"
+    fi
+else
+    print_warning "Quiz questions file not found at src/app/data/questions.json"
+    print_warning "Copy from frontend:"
+    echo "   cp ../mirror_collective_app/MirrorCollectiveApp/assets/questions.json src/app/data/"
+fi
+
 # Verify tables were created
 print_status "Verifying table creation..."
 TABLE_COUNT=$(aws dynamodb list-tables --endpoint-url http://localhost:8000 --region us-east-1 --output json | jq '.TableNames | length')

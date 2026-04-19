@@ -910,6 +910,7 @@ class MirrorOrchestrator:
         quiz_answers: List[Dict[str, Any]],
         quiz_completed_at: str,
         quiz_version: str = "1.0",
+        assignment_reason: Optional[str] = None,
         detailed_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -921,6 +922,7 @@ class MirrorOrchestrator:
             quiz_answers: List of quiz answers for reference
             quiz_completed_at: When the quiz was completed
             quiz_version: Version of the quiz taken
+            assignment_reason: Why this archetype was assigned (core_override, highest_score, etc.)
             detailed_result: Optional detailed quiz results with scores
                 and analysis
 
@@ -974,6 +976,7 @@ class MirrorOrchestrator:
                     "initial_archetype": initial_archetype,
                     "quiz_version": quiz_version,
                     "completed_at": quiz_completed_at,
+                    "assignment_reason": assignment_reason,
                     # Store first 5 answers for reference
                     "answers": quiz_answers[:5],
                     "detailed_result": detailed_result,  # Store analysis
@@ -1006,6 +1009,7 @@ class MirrorOrchestrator:
                 "quiz_version": quiz_version,
                 "completed_at": quiz_completed_at,
                 "initial_archetype": initial_archetype,
+                "assignment_reason": assignment_reason,
                 "answers": quiz_answers,
                 "detailed_result": detailed_result,  # Store detailed analysis
                 "created_at": datetime.utcnow().isoformat(),
