@@ -72,6 +72,60 @@ Each environment should have a corresponding configuration. Reference `.env.exam
 
 ---
 
+## 🎯 Managing Quiz Questions
+
+Quiz questions are stored in `src/app/data/questions.json` and automatically seeded to DynamoDB.
+
+### Local Development
+Questions are auto-populated when running `./setup-local.sh`.
+
+### Updating Quiz Questions
+
+**1. Edit the source:**
+```bash
+# Questions are managed in the frontend
+mirror_collective_app/MirrorCollectiveApp/assets/questions.json
+```
+
+**2. Sync to backend:**
+```bash
+cp mirror_collective_app/MirrorCollectiveApp/assets/questions.json \
+   mirror_collective_python_api/src/app/data/questions.json
+
+# Commit the change
+git add src/app/data/questions.json
+git commit -m "feat: update quiz questions"
+```
+
+**3. Deploy and seed:**
+```bash
+# Deploy to staging
+serverless deploy --stage staging
+
+# Seed questions to staging database
+python scripts/seed_quiz_questions_remote.py staging
+
+# For production
+serverless deploy --stage production
+python scripts/seed_quiz_questions_remote.py production
+```
+
+### Manual Database Seeding
+```bash
+# Local
+python scripts/populate_quiz_questions.py
+
+# Staging
+export STAGE=staging
+python scripts/seed_quiz_questions_remote.py staging
+
+# Production
+export STAGE=production
+python scripts/seed_quiz_questions_remote.py production
+```
+
+---
+
 ## 🛠 Project Structure
 
 - `src/app/api/`: API route definitions and Pydantic models.

@@ -395,6 +395,7 @@ async def submit_archetype_quiz(
             quiz_answers=quiz_answers,
             quiz_completed_at=request.completedAt,
             quiz_version=request.quizVersion,
+            assignment_reason=request.assignmentReason,
             detailed_result=detailed_result,
         )
 
@@ -410,6 +411,7 @@ async def submit_archetype_quiz(
             initial_archetype=request.archetypeResult.id,
             quiz_completed_at=request.completedAt,
             quiz_version=request.quizVersion,
+            assignment_reason=request.assignmentReason,
             profile_created=result.get("profile_created", True),
             answers_stored=result.get("quiz_stored", True),
             detailed_result_stored=result.get(

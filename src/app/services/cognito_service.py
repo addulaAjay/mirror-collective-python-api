@@ -119,19 +119,30 @@ class CognitoService:
             )
 
     async def sign_up_user(
-        self, email: str, password: str, first_name: str, last_name: str
+        self,
+        email: str,
+        password: str,
+        first_name: str,
+        last_name: str,
+        phone_number: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register a new user in Cognito using SignUpCommand (self-registration)"""
         try:
+            user_attributes = [
+                {"Name": "email", "Value": email},
+                {"Name": "given_name", "Value": first_name},
+                {"Name": "family_name", "Value": last_name},
+            ]
+            if phone_number:
+                user_attributes.append(
+                    {"Name": "phone_number", "Value": phone_number.strip()}
+                )
+
             params = {
                 "ClientId": self.client_id,
                 "Username": email,  # Use email as username for self-registration
                 "Password": password,
-                "UserAttributes": [
-                    {"Name": "email", "Value": email},
-                    {"Name": "given_name", "Value": first_name},
-                    {"Name": "family_name", "Value": last_name},
-                ],
+                "UserAttributes": user_attributes,
             }
 
             if self.client_secret:

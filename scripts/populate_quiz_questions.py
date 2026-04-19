@@ -11,31 +11,47 @@ from src.app.services.dynamodb_service import DynamoDBService  # noqa: E402
 
 
 def load_questions():
-    """Load questions from local JSON file"""
+    """
+    Load questions from backend's local data directory
+    This copy is deployed with the Lambda function and seeded to DynamoDB
+    """
+    # Primary path: backend's data directory (works in all environments)
     json_path = os.path.join(
+        os.path.dirname(__file__), "../src/app/data/questions.json"
+    )
+
+    # Fallback: try to load from frontend repo (local dev only)
+    fallback_path = os.path.join(
         os.path.dirname(__file__),
         "../../mirror_collective_app/MirrorCollectiveApp/src/assets/questions.json",
     )
 
-    # Adjust path if needed based on actual location relative to this script
-    # This assumes the script is run from mirror_collective_python_api root
-    # and the app is at ../mirror_collective_app
+    # Try primary path first
+    if os.path.exists(json_path):
+        print(f"✓ Loading questions from backend data: {json_path}")
+        with open(json_path, "r") as f:
+            data = json.load(f, parse_float=Decimal)
+            return data.get("questions", [])
 
-    # Let's try to find the file dynamically if the hardcoded one fails
-    if not os.path.exists(json_path):
-        print(f"Path not found: {json_path}")
-        # Try a different relative path assuming running from python api root
-        json_path = (
-            "../../mirror_collective_app/MirrorCollectiveApp/src/assets/questions.json"
+    # Fallback to frontend (local dev convenience)
+    elif os.path.exists(fallback_path):
+        print(f"⚠️  Loading from frontend fallback: {fallback_path}")
+        print(f"   Consider copying to: {json_path}")
+        with open(fallback_path, "r") as f:
+            data = json.load(f, parse_float=Decimal)
+            return data.get("questions", [])
+
+    # Neither path exists
+    else:
+        print(f"❌ questions.json not found!")
+        print(f"   Expected: {json_path}")
+        print(f"   Fallback: {fallback_path}")
+        print(f"\n💡 Copy questions.json to backend data directory:")
+        print(
+            f"   cp mirror_collective_app/MirrorCollectiveApp/assets/questions.json \\"
         )
-
-    if not os.path.exists(json_path):
-        print(f"Could not find questions.json at {json_path}")
+        print(f"      mirror_collective_python_api/src/app/data/questions.json")
         return None
-
-    with open(json_path, "r") as f:
-        data = json.load(f, parse_float=Decimal)
-        return data.get("questions", [])
 
 
 async def populate_questions():

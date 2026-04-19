@@ -37,6 +37,9 @@ class UserProfile:
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     display_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    terms_accepted_at: Optional[str] = None
+    terms_version: Optional[str] = None
 
     # Account status (synced with Cognito)
     status: UserStatus = UserStatus.UNCONFIRMED
@@ -189,6 +192,7 @@ class UserProfile:
             .strip(),  # Normalize for case-insensitive matching
             first_name=attributes.get("given_name"),
             last_name=attributes.get("family_name"),
+            phone_number=attributes.get("phone_number"),
             status=status,
             email_verified=attributes.get("email_verified", "false").lower() == "true",
             cognito_username=cognito_user_data.get("Username"),
