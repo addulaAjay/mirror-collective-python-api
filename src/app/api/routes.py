@@ -1,13 +1,15 @@
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from ..controllers.auth_controller import AuthController
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
 from ..services.dynamodb_service import DynamoDBService
 from ..services.sns_service import SNSService
+from ..services.user_service import UserService
 from .models import (
     AuthResponse,
     DeviceRegistrationRequest,
@@ -32,6 +34,11 @@ router = APIRouter()
 auth_controller = AuthController()
 sns_service = SNSService()
 dynamodb_service = DynamoDBService()
+user_service = UserService()
+
+
+class UpdateProfileRequest(BaseModel):
+    profile_image_url: Optional[str] = None
 
 
 # Dependency injection for controllers
@@ -100,8 +107,42 @@ async def get_current_user_profile(
     current_user: Dict[str, Any] = Depends(get_user_with_profile),
     auth_controller=Depends(get_auth_controller),
 ):
-    """Get current authenticated user profile"""
+    """Get current authenticated user profile (Cognito attrs + DynamoDB extras)."""
+    user_id = current_user.get("id") or current_user.get("sub", "")
+    # Merge DynamoDB profile extras (profile_image_url, preferences, etc.) on top
+    if user_id:
+        try:
+            db_profile = await user_service.get_user_profile(user_id)
+            if db_profile and db_profile.profile_image_url:
+                current_user = {
+                    **current_user,
+                    "profile_image_url": db_profile.profile_image_url,
+                }
+        except Exception as e:
+            logger.warning(f"Could not fetch DynamoDB profile for /auth/me: {e}")
     return await auth_controller.get_current_user_profile(current_user)
+
+
+@router.patch("/auth/me")
+async def update_current_user_profile(
+    request: UpdateProfileRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Update the current user's profile (e.g. save uploaded profile_image_url)."""
+    user_id = current_user.get("id") or current_user.get("sub", "")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID not found in token")
+
+    updates = request.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        await user_service.update_user_profile(user_id, updates)
+        return {"success": True, "message": "Profile updated successfully"}
+    except Exception as e:
+        logger.error(f"Failed to update profile for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update profile")
 
 
 @router.post("/auth/logout", response_model=GeneralApiResponse)

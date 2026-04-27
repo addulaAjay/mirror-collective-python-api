@@ -73,8 +73,12 @@ class UpdateEchoRequest(BaseModel):
 
 
 class UploadUrlRequest(BaseModel):
-    file_type: str  # MIME type: audio/mp4, video/mp4
+    file_type: str  # MIME type: audio/mp4, video/mp4, image/jpeg
     echo_id: Optional[str] = None
+    # 'echo' → echoes/{user_id}/ path
+    # 'profile' → profiles/{user_id}/ path (recipient / guardian photo)
+    # 'user_profile' → user_profiles/{user_id}/ path (own avatar)
+    upload_type: Optional[str] = "echo"
 
 
 class CreateRecipientRequest(BaseModel):
@@ -82,6 +86,7 @@ class CreateRecipientRequest(BaseModel):
     email: EmailStr
     relationship: Optional[str] = None
     motif: Optional[str] = None
+    profile_image_url: Optional[str] = None  # S3 URL returned by upload-url flow
 
 
 class CreateGuardianRequest(BaseModel):
@@ -89,6 +94,7 @@ class CreateGuardianRequest(BaseModel):
     email: EmailStr
     scope: str = "ALL"  # ALL, SELECTED
     trigger: str = "MANUAL"  # MANUAL, AUTOMATIC
+    profile_image_url: Optional[str] = None  # S3 URL returned by upload-url flow
 
 
 class UpdateGuardianPermissionsRequest(BaseModel):
@@ -173,6 +179,7 @@ async def get_upload_url(
         user_id=user_id,
         file_type=request.file_type,
         echo_id=request.echo_id,
+        upload_type=request.upload_type or "echo",
     )
 
     return {
@@ -445,6 +452,7 @@ async def list_recipients(
                 "email": r.email,
                 "relationship": r.relationship,
                 "motif": r.motif,
+                "profile_image_url": r.profile_image_url,
                 "created_at": r.created_at,
             }
             for r in recipients
@@ -481,6 +489,7 @@ async def create_recipient(
             "name": recipient.name,
             "email": recipient.email,
             "motif": recipient.motif,
+            "profile_image_url": recipient.profile_image_url,
         },
         "message": "Recipient added successfully",
     }
@@ -528,6 +537,7 @@ async def list_guardians(
                 "email": g.email,
                 "scope": g.scope.value,
                 "trigger": g.trigger.value,
+                "profile_image_url": g.profile_image_url,
                 "created_at": g.created_at,
             }
             for g in guardians
@@ -566,6 +576,7 @@ async def create_guardian(
             "email": guardian.email,
             "scope": guardian.scope.value,
             "trigger": guardian.trigger.value,
+            "profile_image_url": guardian.profile_image_url,
         },
         "message": "Guardian added successfully",
     }

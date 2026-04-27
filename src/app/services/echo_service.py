@@ -279,6 +279,7 @@ class EchoService:
                             "name": recipient.name,
                             "email": recipient.email,
                             "motif": recipient.motif,
+                            "profile_image_url": recipient.profile_image_url,
                         }
 
                 return echo
@@ -351,6 +352,7 @@ class EchoService:
                                     "name": recipient.name,
                                     "email": recipient.email,
                                     "motif": recipient.motif,
+                                    "profile_image_url": recipient.profile_image_url,
                                 }
 
                         echo.recipient = recipient_cache.get(echo.recipient_id)
@@ -735,29 +737,48 @@ class EchoService:
         user_id: str,
         file_type: str,
         echo_id: Optional[str] = None,
+        upload_type: str = "echo",
     ) -> Dict[str, Any]:
         """
         Generate S3 presigned URL for direct upload.
 
         Args:
             user_id: User ID
-            file_type: MIME type (e.g., "audio/mp4", "video/mp4")
-            echo_id: Optional echo ID (if updating existing)
+            file_type: MIME type (e.g., "audio/mp4", "video/mp4", "image/jpeg")
+            echo_id: Optional echo ID (required for upload_type='echo')
+            upload_type: 'echo' | 'profile' | 'user_profile'
+                - 'echo': echoes/{user_id}/{echo_id}_{ts}.ext
+                - 'profile': profiles/{user_id}/{ts}.ext  (recipient / guardian photo)
+                - 'user_profile': user_profiles/{user_id}/{ts}.ext  (own avatar)
 
         Returns:
-            Dict with 'upload_url' and 'key'
+            Dict with 'upload_url', 'media_url', 'key', 'bucket', 'expires_in'
         """
         try:
-            # Determine file extension from type
-            extension = "mp4"  # Default
+            # Determine file extension from MIME type
+            extension = "mp4"  # default for video
             if "audio" in file_type:
                 extension = "m4a"
             elif "video" in file_type:
                 extension = "mp4"
+            elif "image" in file_type:
+                ext_map = {
+                    "image/jpeg": "jpg",
+                    "image/png": "png",
+                    "image/webp": "webp",
+                    "image/heic": "heic",
+                }
+                extension = ext_map.get(file_type, "jpg")
 
-            # Generate unique key
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-            key = f"echoes/{user_id}/{echo_id or 'new'}_{timestamp}.{extension}"
+
+            if upload_type == "profile":
+                key = f"profiles/{user_id}/{timestamp}.{extension}"
+            elif upload_type == "user_profile":
+                key = f"user_profiles/{user_id}/{timestamp}.{extension}"
+            else:
+                # echo — echo_id may be None for new echoes
+                key = f"echoes/{user_id}/{echo_id or 'new'}_{timestamp}.{extension}"
 
             async with self.session.client("s3", region_name=self.region) as s3:
                 presigned_url = await s3.generate_presigned_url(
@@ -864,6 +885,7 @@ class EchoService:
                     recipient_user_id=recipient_user_id,
                     relationship=data.get("relationship"),
                     motif=data.get("motif"),
+                    profile_image_url=data.get("profile_image_url"),
                 )
 
                 logger.info(
@@ -1012,6 +1034,7 @@ class EchoService:
                     email=email,
                     scope=GuardianScope(data.get("scope", "ALL")),
                     trigger=GuardianTrigger(data.get("trigger", "MANUAL")),
+                    profile_image_url=data.get("profile_image_url"),
                 )
 
                 await table.put_item(Item=guardian.to_dynamodb_item())
