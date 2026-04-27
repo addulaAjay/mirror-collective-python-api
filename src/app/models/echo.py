@@ -154,6 +154,7 @@ class Recipient:
     # Optional metadata
     motif: Optional[str] = None  # Personal motif/symbol
     relationship: Optional[str] = None  # e.g., "Family", "Friend", "Work"
+    profile_image_url: Optional[str] = None  # S3 URL of uploaded profile photo
 
     # Timestamps
     created_at: str = field(default_factory=_current_timestamp)
@@ -192,6 +193,9 @@ class Guardian:
     # Contact info
     name: str = ""
     email: str = ""
+
+    # Optional profile photo
+    profile_image_url: Optional[str] = None  # S3 URL of uploaded profile photo
 
     # Permissions
     scope: GuardianScope = GuardianScope.ALL

@@ -71,6 +71,9 @@ class UserProfile:
     storage_subscription_id: Optional[str] = None  # Reference to storage add-on
     last_subscription_check: Optional[str] = None  # ISO 8601
 
+    # Profile photo (S3 URL uploaded via /api/echoes/upload-url with upload_type='user_profile')
+    profile_image_url: Optional[str] = None
+
     # Timestamps
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
