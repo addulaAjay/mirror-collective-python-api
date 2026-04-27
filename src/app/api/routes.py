@@ -8,6 +8,7 @@ from ..controllers.auth_controller import AuthController
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
 from ..services.dynamodb_service import DynamoDBService
+from ..services.echo_service import EchoService
 from ..services.sns_service import SNSService
 from ..services.user_service import UserService
 from .models import (
@@ -35,6 +36,7 @@ auth_controller = AuthController()
 sns_service = SNSService()
 dynamodb_service = DynamoDBService()
 user_service = UserService()
+echo_service = EchoService()
 
 
 class UpdateProfileRequest(BaseModel):
@@ -114,9 +116,12 @@ async def get_current_user_profile(
         try:
             db_profile = await user_service.get_user_profile(user_id)
             if db_profile and db_profile.profile_image_url:
+                signed_url = await echo_service._sign_profile_url(
+                    db_profile.profile_image_url
+                )
                 current_user = {
                     **current_user,
-                    "profile_image_url": db_profile.profile_image_url,
+                    "profile_image_url": signed_url,
                 }
         except Exception as e:
             logger.warning(f"Could not fetch DynamoDB profile for /auth/me: {e}")

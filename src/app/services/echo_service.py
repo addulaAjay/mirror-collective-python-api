@@ -279,7 +279,9 @@ class EchoService:
                             "name": recipient.name,
                             "email": recipient.email,
                             "motif": recipient.motif,
-                            "profile_image_url": recipient.profile_image_url,
+                            "profile_image_url": await self._sign_profile_url(
+                                recipient.profile_image_url
+                            ),
                         }
 
                 return echo
@@ -352,7 +354,9 @@ class EchoService:
                                     "name": recipient.name,
                                     "email": recipient.email,
                                     "motif": recipient.motif,
-                                    "profile_image_url": recipient.profile_image_url,
+                                    "profile_image_url": await self._sign_profile_url(
+                                        recipient.profile_image_url
+                                    ),
                                 }
 
                         echo.recipient = recipient_cache.get(echo.recipient_id)
@@ -806,6 +810,28 @@ class EchoService:
             logger.error(f"S3 error generating presigned URL: {e}")
             raise InternalServerError(f"Failed to generate upload URL: {str(e)}")
 
+    async def _sign_profile_url(self, url: Optional[str]) -> Optional[str]:
+        """Generate presigned GET URL for a profile/avatar image stored in S3.
+
+        Profile images live in the same private bucket as echo media.
+        TTL is 12 hours — the maximum safe value for Lambda IAM role sessions.
+        Called on every list/get request so the URL is always fresh.
+        """
+        if not url or "amazonaws.com" not in url:
+            return url
+        try:
+            key = url.split("amazonaws.com/")[-1]
+            async with self.session.client("s3", region_name=self.region) as s3:
+                presigned = await s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": self.s3_bucket, "Key": key},
+                    ExpiresIn=43200,  # 12 h — max for temporary Lambda credentials
+                )
+            return presigned
+        except Exception as e:
+            logger.error(f"Failed to sign profile URL: {e}")
+            return url  # Return original on error; image will 403 but app won't crash
+
     async def _sign_media_url(self, echo: Echo) -> Echo:
         """Generate presigned GET URL for secure media playback."""
         if echo.media_url and "amazonaws.com" in echo.media_url:
@@ -935,6 +961,9 @@ class EchoService:
                 for item in response.get("Items", []):
                     recipient = Recipient.from_dynamodb_item(item)
                     if recipient.deleted_at is None:
+                        recipient.profile_image_url = await self._sign_profile_url(
+                            recipient.profile_image_url
+                        )
                         recipients.append(recipient)
 
                 return recipients
@@ -1066,6 +1095,9 @@ class EchoService:
                 for item in response.get("Items", []):
                     guardian = Guardian.from_dynamodb_item(item)
                     if guardian.deleted_at is None:
+                        guardian.profile_image_url = await self._sign_profile_url(
+                            guardian.profile_image_url
+                        )
                         guardians.append(guardian)
 
                 return guardians
