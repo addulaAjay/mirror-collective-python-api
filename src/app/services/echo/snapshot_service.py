@@ -15,11 +15,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from ...core.exceptions import NotFoundError
+from ...core.exceptions import NotFoundError, SessionExpired
 from ...models.echo_loop_state import EchoLoopState
 from ...models.reflection_session import ReflectionSession
 from ...repositories.echo_loop_state_repo import EchoLoopStateRepo
 from ...repositories.reflection_session_repo import ReflectionSessionRepo
+from ..reflection.session_lifecycle import is_active
 from .tone_library_loader import load_tone_library
 
 V1_SUPPORTED_LOOPS = frozenset(
@@ -161,17 +162,25 @@ async def _resolve_session(
     session_id: Optional[str],
     sessions_repo: ReflectionSessionRepo,
 ) -> ReflectionSession:
+    """Resolve a session and require it to be active.
+
+    Expired sessions are treated as "no active session" — the caller's last
+    quiz aged past midnight in their timezone. The FE should render the
+    take-the-quiz affordance instead of stale data.
+    """
     if session_id:
         session = await sessions_repo.get(session_id)
         if session is None or session.user_id != user_id:
             # Don't leak that a session exists for another user.
             raise NotFoundError(f"session not found: {session_id}")
-        return session
+    else:
+        session = await sessions_repo.get_latest_for_user(user_id)
+        if session is None:
+            raise NotFoundError("no reflection session for user")
 
-    latest = await sessions_repo.get_latest_for_user(user_id)
-    if latest is None:
-        raise NotFoundError("no reflection session for user")
-    return latest
+    if not is_active(session):
+        raise SessionExpired()
+    return session
 
 
 def _now_iso() -> str:

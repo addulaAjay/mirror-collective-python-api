@@ -202,3 +202,20 @@ class ConfigLoadError(BaseAPIException):
 
     def __init__(self, message: str = "Configuration file load failed"):
         super().__init__(message, 500, "CONFIG_LOAD_ERROR")
+
+
+class SessionExpired(BaseAPIException):
+    """Raised when the user's reflection session has expired (past midnight in
+    user_tz). FE should render the 'take the quiz' affordance.
+
+    Distinguished from ``NotFoundError`` so clients can switch on errorCode:
+      * ``SESSION_EXPIRED`` (this) — user had a session that aged out
+      * ``NOT_FOUND`` — user has never started a session
+    Both return HTTP 404; FE can show "take the quiz" for either.
+    """
+
+    def __init__(
+        self,
+        message: str = "Reflection session has expired; take the quiz again",
+    ):
+        super().__init__(message, 404, "SESSION_EXPIRED")

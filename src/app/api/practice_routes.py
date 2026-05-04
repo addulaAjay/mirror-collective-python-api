@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, confloat
 
-from ..core.exceptions import NotFoundError
+from ..core.exceptions import NotFoundError, SessionExpired
 from ..core.security import get_current_user
 from ..models.practice_completion import PracticeCompletion
 from ..repositories.echo_loop_state_repo import EchoLoopStateRepo
@@ -25,6 +25,7 @@ from ..services.echo.loop_state_updater import apply_completion_delta
 from ..services.echo.snapshot_service import V1_SUPPORTED_LOOPS, build_snapshot
 from ..services.practice.personalization_loader import load_personalization_defaults
 from ..services.practice.personalizer import bucket_for_now
+from ..services.reflection.session_lifecycle import is_active
 from ..services.telemetry.reflection_events import (
     EVENT_PRACTICE_COMPLETE,
     EVENT_PRACTICE_HELPFUL,
@@ -87,7 +88,12 @@ class SnapshotOut(BaseModel):
 
 class CompletePracticeResponse(BaseModel):
     completion_id: str
-    snapshot: SnapshotOut
+    # Optional: PATCH /practice/complete/{id}/helpful may run against an
+    # expired session (late vote days after the practice). The completion
+    # update + telemetry still apply; the caller just doesn't get a refreshed
+    # snapshot. POST /practice/complete always returns one (active session
+    # required).
+    snapshot: Optional[SnapshotOut] = None
 
 
 class UpdateHelpfulRequest(BaseModel):
@@ -220,6 +226,9 @@ async def complete_practice(
     session = await sessions.get(request.session_id)
     if session is None or session.user_id != user_id:
         raise NotFoundError(f"session not found: {request.session_id}")
+    # Expired session → user must take the quiz again before logging practices.
+    if not is_active(session):
+        raise SessionExpired()
 
     completed_dt = _parse_iso(request.completed_at) or datetime.now(timezone.utc)
     completed_iso = completed_dt.isoformat().replace("+00:00", "Z")
@@ -375,14 +384,22 @@ async def update_helpful(
         rule_id=updated.rule_id,
     )
 
-    snapshot_out = await _build_snapshot_out(
-        user_id, updated.session_id, sessions, loop_states
-    )
+    # Late-vote tolerance: if the session has expired, skip the snapshot
+    # refresh and return the completion alone. The vote / state delta /
+    # telemetry above already applied.
+    snapshot_out: Optional[SnapshotOut]
+    try:
+        snapshot_out = await _build_snapshot_out(
+            user_id, updated.session_id, sessions, loop_states
+        )
+    except (NotFoundError, SessionExpired):
+        snapshot_out = None
+
     response = CompletePracticeResponse(
         completion_id=updated.completion_id, snapshot=snapshot_out
     )
     return {
         "success": True,
-        "data": response.model_dump(),
+        "data": response.model_dump(exclude_none=True),
         "message": "Helpfulness updated",
     }
