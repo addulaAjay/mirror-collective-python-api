@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "weights": {
+    "helpful_vote": 2.0,
+    "not_helpful_vote": -2.0,
+    "time_of_day_match": 0.5,
+    "recent_use_penalty": -1.0
+  },
+  "decay": {
+    "recency_decay_half_life_days": 21
+  },
+  "global": {
+    "disallow_types": []
+  },
+  "user_flags_default": {
+    "no_breathwork": false,
+    "reduced_motion": false,
+    "private_mode": false
+  },
+  "cooldowns": {
+    "default_hours": 12,
+    "grief_hours": 24
+  },
+  "time_of_day_buckets": {
+    "_comment": "Bucket boundaries computed using the user's user_tz (or default_user_tz if missing). Hours are local. Bucket names are stable; only ranges may change.",
+    "morning": [5, 11],
+    "midday":  [11, 16],
+    "evening": [16, 21],
+    "night":   [21, 5]
+  }
+}

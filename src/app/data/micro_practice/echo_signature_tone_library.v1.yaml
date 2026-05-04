@@ -1,0 +1,62 @@
+version: 1
+loops:
+  pressure:
+    icon: "🔺"
+    label: "Pressure"
+    tones:
+      rising:
+        reflection_line: "Pressure is climbing. You don't have to meet every demand at full force."
+      steady:
+        reflection_line: "Pressure is steady — a constant hum in the background. What's it asking of you?"
+      softening:
+        reflection_line: "Pressure is easing. Notice what's loosened, even slightly."
+  overwhelm:
+    icon: "🌊"
+    label: "Overwhelm"
+    tones:
+      rising:
+        reflection_line: "The waves are getting bigger. You don't have to hold all of it at once."
+      steady:
+        reflection_line: "There's a steady flood you're navigating. Small footing first."
+      softening:
+        reflection_line: "The water is calming. Let yourself rest here."
+  grief:
+    icon: "🌿"
+    label: "Grief"
+    tones:
+      rising:
+        reflection_line: "Grief is surfacing. It's asking for presence, not resolution."
+      steady:
+        reflection_line: "Grief sits with you today. You're not behind for feeling it."
+      softening:
+        reflection_line: "Something in the grief is opening. Notice what feels lighter."
+  self_silencing:
+    icon: "🕊"
+    label: "Self-Silencing"
+    tones:
+      rising:
+        reflection_line: "You're swallowing something true. What would you say if it were safe?"
+      steady:
+        reflection_line: "There's a sentence you keep not finishing. It's still yours."
+      softening:
+        reflection_line: "Your voice is finding its way back. Don't rush it."
+  agency:
+    icon: "🔑"
+    label: "Agency"
+    tones:
+      rising:
+        reflection_line: "Something in you is ready to choose. The next move is yours."
+      steady:
+        reflection_line: "You're sitting with your own power. What does it want to do?"
+      softening:
+        reflection_line: "You don't have to act today. Holding agency is also a use of it."
+  transition:
+    icon: "🌉"
+    label: "Transition"
+    tones:
+      rising:
+        reflection_line: "You're stepping onto the bridge. Both sides are real."
+      steady:
+        reflection_line: "You're mid-crossing. The middle is its own place."
+      softening:
+        reflection_line: "You're nearly through. Let yourself land before naming what's next."

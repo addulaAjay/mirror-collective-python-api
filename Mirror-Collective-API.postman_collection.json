@@ -17,8 +17,12 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/health",
-              "host": ["{{base_url}}"],
-              "path": ["health"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
             },
             "description": "Basic health check endpoint"
           },
@@ -31,8 +35,13 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/health/detailed",
-              "host": ["{{base_url}}"],
-              "path": ["health", "detailed"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "detailed"
+              ]
             },
             "description": "Detailed health check with dependency validation"
           },
@@ -45,8 +54,13 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/health",
-              "host": ["{{base_url}}"],
-              "path": ["api", "health"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
             },
             "description": "API health check endpoint"
           },
@@ -59,8 +73,12 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api",
-              "host": ["{{base_url}}"],
-              "path": ["api"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api"
+              ]
             },
             "description": "API information and service discovery"
           },
@@ -104,8 +122,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/register",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "register"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
             },
             "description": "Register a new user account"
           },
@@ -133,13 +157,13 @@
                   "            pm.environment.set('user_name', responseJson.data.user.fullName);",
                   "        }",
                   "        ",
-                  "        console.log('✅ Authentication tokens successfully stored');",
+                  "        console.log('\u2705 Authentication tokens successfully stored');",
                   "        console.log('Access Token:', responseJson.data.tokens.accessToken.substring(0, 20) + '...');",
                   "    } else {",
-                  "        console.log('❌ Login failed - no tokens in response');",
+                  "        console.log('\u274c Login failed - no tokens in response');",
                   "    }",
                   "} else {",
-                  "    console.log('❌ Login failed with status:', pm.response.code);",
+                  "    console.log('\u274c Login failed with status:', pm.response.code);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -165,8 +189,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "login"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
             },
             "description": "## Login User\n\n**Purpose:** Authenticate user and automatically store JWT tokens in environment variables.\n\n**Prerequisites:** \n- Valid user account (use Register User first)\n- Update `test_email` and `test_password` in environment\n\n**What this does:**\n- Authenticates user with email/password\n- Automatically stores `access_token`, `refresh_token`, and `id_token` in environment\n- Stores user info (`user_id`, `user_email`, `user_name`) for reference\n\n**Testing Steps:**\n1. Update `test_email` and `test_password` in environment\n2. Send this request\n3. Check that tokens are automatically stored in environment\n4. Verify subsequent authenticated requests work\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"tokens\": {\n      \"accessToken\": \"eyJhbGciOiJSUzI1NiIs...\",\n      \"refreshToken\": \"eyJjdHkiOiJKV1QiLCJlb...\",\n      \"idToken\": \"eyJraWQiOiJUODB6bTNCV...\"\n    },\n    \"user\": {\n      \"id\": \"user-uuid\",\n      \"email\": \"test@example.com\",\n      \"fullName\": \"Test User\",\n      \"isVerified\": true\n    }\n  }\n}\n```\n\n**Notes:**\n- Access token expires in 1 hour\n- Refresh token expires in 30 days\n- Use Refresh Token request if access token expires"
           },
@@ -188,8 +218,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/confirm-email",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "confirm-email"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "confirm-email"
+              ]
             },
             "description": "Confirm email address with verification code"
           },
@@ -211,8 +247,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/resend-verification-code",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "resend-verification-code"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "resend-verification-code"
+              ]
             },
             "description": "Resend email verification code"
           },
@@ -234,8 +276,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/forgot-password",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "forgot-password"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password"
+              ]
             },
             "description": "Initiate password reset process"
           },
@@ -257,8 +305,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/reset-password",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "reset-password"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password"
+              ]
             },
             "description": "Reset password using verification code"
           },
@@ -299,8 +353,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "refresh"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
             },
             "description": "Refresh access token using refresh token"
           },
@@ -325,8 +385,14 @@
             ],
             "url": {
               "raw": "{{base_url}}/api/auth/me",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "me"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
             },
             "description": "Get current authenticated user profile"
           },
@@ -345,8 +411,14 @@
             ],
             "url": {
               "raw": "{{base_url}}/api/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "logout"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
             },
             "description": "Logout current user and invalidate tokens"
           },
@@ -365,8 +437,14 @@
             ],
             "url": {
               "raw": "{{base_url}}/api/auth/account",
-              "host": ["{{base_url}}"],
-              "path": ["api", "auth", "account"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "account"
+              ]
             },
             "description": "Delete current user account"
           },
@@ -391,7 +469,7 @@
                   "    if (responseJson.success && responseJson.data) {",
                   "        pm.environment.set('initial_archetype', responseJson.data.initial_archetype);",
                   "        pm.environment.set('quiz_completed_at', responseJson.data.quiz_completed_at);",
-                  "        console.log('✅ Archetype quiz submitted successfully');",
+                  "        console.log('\u2705 Archetype quiz submitted successfully');",
                   "        console.log('Initial Archetype:', responseJson.data.initial_archetype);",
                   "    }",
                   "}"
@@ -424,8 +502,14 @@
             },
             "url": {
               "raw": "{{base_url}}/api/quiz/submit",
-              "host": ["{{base_url}}"],
-              "path": ["api", "quiz", "submit"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "quiz",
+                "submit"
+              ]
             },
             "description": "## Submit Archetype Quiz\n\n**Purpose:** Submit quiz results and create initial archetype profile for the user with enhanced scoring and analysis.\n\n**Prerequisites:**\n- User must be authenticated (login first)\n- User should complete archetype quiz in your app\n\n**What this does:**\n- Creates initial archetype profile based on quiz results\n- Stores detailed quiz answers including image responses\n- Saves comprehensive scoring breakdown for all archetypes\n- Records confidence levels and detailed analysis\n- Sets up foundation for MirrorGPT analysis with enhanced precision\n\n**Testing Steps:**\n1. Ensure you're logged in (access_token is set)\n2. Modify the sample quiz answers in the request body\n3. Update both simple and detailed results\n4. Include image answers if your quiz has visual components\n5. Send the request and verify enhanced data storage\n\n**Enhanced Request Body Fields:**\n- `answers`: Array of quiz responses supporting both text and image answers\n  - Text answers: `{\"questionId\": 1, \"answer\": \"text response\", \"type\": \"text\"}`\n  - Image answers: `{\"questionId\": 4, \"answer\": {\"label\": \"Choice Name\", \"image\": \"url\"}, \"type\": \"image\"}`\n- `completedAt`: When the quiz was completed (ISO timestamp)\n- `archetypeResult`: The determined primary archetype (id, name, title)\n- `detailedResult`: Enhanced scoring and analysis data\n  - `scores`: Numeric scores for all evaluated archetypes\n  - `confidence`: Confidence level (0.0 to 1.0) in primary archetype\n  - `analysis`: Detailed insights with strengths, challenges, and recommendations\n- `quizVersion`: Quiz version for tracking changes (use \"2.0\" for enhanced format)\n\n**Answer Types:**\n- **Text Answers**: Standard text responses for open-ended questions\n- **Image Answers**: Visual selection answers with label and image URL\n  - Supports quiz questions with visual components\n  - Enables richer personality assessment through visual preferences\n\n**Sample Archetypes:**\n- `sage` - The Wisdom Seeker\n- `innocent` - The Pure Spirit\n- `explorer` - The Freedom Seeker\n- `rebel` - The Revolutionary\n- `hero` - The Warrior\n- `lover` - The Romantic\n- `creator` - The Artist\n- `jester` - The Entertainer\n- `caregiver` - The Nurturer\n- `ruler` - The Leader\n- `magician` - The Transformer\n- `everyman` - The Realist\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"user_id\": \"user-uuid\",\n    \"initial_archetype\": \"sage\",\n    \"quiz_completed_at\": \"2025-09-09T14:20:30Z\",\n    \"quiz_version\": \"2.0\",\n    \"confidence_score\": 0.85,\n    \"detailed_analysis_stored\": true,\n    \"profile_created\": true,\n    \"answers_stored\": true\n  },\n  \"message\": \"Enhanced The Sage archetype profile created with detailed analysis. Your journey with MirrorGPT begins now.\"\n}\n```"
           },
@@ -445,7 +529,7 @@
                   "        pm.environment.set('session_id', responseJson.data.session_id);",
                   "        pm.environment.set('current_archetype', responseJson.data.user_archetype);",
                   "        pm.environment.set('archetype_confidence', responseJson.data.archetype_confidence);",
-                  "        console.log('✅ Session greeting retrieved');",
+                  "        console.log('\u2705 Session greeting retrieved');",
                   "        console.log('Session ID:', responseJson.data.session_id);",
                   "        console.log('Current Archetype:', responseJson.data.user_archetype);",
                   "        console.log('Greeting:', responseJson.data.greeting_message);",
@@ -467,8 +551,14 @@
             ],
             "url": {
               "raw": "{{base_url}}/api/session/greeting",
-              "host": ["{{base_url}}"],
-              "path": ["api", "session", "greeting"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "session",
+                "greeting"
+              ]
             },
             "description": "## Get Session Greeting\n\n**Purpose:** Get personalized welcome message and start new MirrorGPT session.\n\n**Prerequisites:**\n- User must be authenticated\n- Ideally user has completed archetype quiz (but not required)\n\n**What this does:**\n- Generates personalized greeting based on user's archetype profile\n- Creates new session ID for chat conversations\n- Provides current archetype and confidence information\n- Sets up context for MirrorGPT interactions\n\n**When to use:**\n- Every time user enters MirrorGPT chat screen\n- At the start of each new conversation session\n- After completing archetype quiz for the first time\n\n**Testing Steps:**\n1. Ensure you're logged in (access_token is set)\n2. Optionally complete archetype quiz first for personalized greeting\n3. Send this request\n4. Check that session_id is automatically stored\n5. Use the greeting message to welcome user in your UI\n\n**Expected Response (with archetype profile):**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"greeting_message\": \"Welcome back, soul traveler. The Sage consciousness stirs within you as you return to the Field. What ancient wisdom seeks expression through you today?\",\n    \"session_id\": \"session_12345-67890-abcdef\",\n    \"timestamp\": \"2025-09-09T14:20:30Z\",\n    \"user_archetype\": \"sage\",\n    \"archetype_confidence\": 0.85\n  }\n}\n```\n\n**Expected Response (new user, no quiz):**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"greeting_message\": \"Welcome, soul traveler. The Field recognizes your presence. What calls to be explored in this moment of connection?\",\n    \"session_id\": \"session_12345-67890-abcdef\",\n    \"timestamp\": \"2025-09-09T14:20:30Z\",\n    \"user_archetype\": null,\n    \"archetype_confidence\": null\n  }\n}\n```\n\n**Notes:**\n- Session ID is required for subsequent chat requests\n- Greeting adapts based on user's archetype evolution\n- Can be called multiple times (generates new session each time)"
           },
@@ -491,7 +581,7 @@
                   "        }",
                   "        ",
                   "        // Log key insights",
-                  "        console.log('✅ MirrorGPT response received');",
+                  "        console.log('\u2705 MirrorGPT response received');",
                   "        console.log('Response:', responseJson.data.response);",
                   "        ",
                   "        if (responseJson.data.archetype_analysis) {",
@@ -536,8 +626,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/chat",
-              "host": ["{{base_url}}"],
-              "path": ["api", "chat"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "chat"
+              ]
             },
             "description": "## MirrorGPT Chat\n\n**Purpose:** Send message to MirrorGPT and receive archetype-informed response with 5-signal analysis.\n\n**Prerequisites:**\n- User must be authenticated\n- Must have session_id (from Get Session Greeting)\n- Optionally have conversation_id for continuing conversations\n\n**What this does:**\n- Analyzes message through 5-signal archetype detection system\n- Generates personalized response based on user's archetype profile\n- Tracks archetype evolution and change detection\n- Provides suggested practices for growth\n- Maintains conversation continuity\n\n**The 5 Signals:**\n1. **Emotional Resonance**: Sentiment, valence, arousal analysis\n2. **Symbolic Language**: Metaphors, symbols, deeper meanings\n3. **Archetype Blend**: Primary/secondary archetype detection\n4. **Narrative Position**: Role in personal story/journey\n5. **Motif Loops**: Recurring patterns and themes\n\n**Testing Steps:**\n1. First get session greeting to obtain session_id\n2. For first message: set conversation_id to `null`\n3. Modify the message content to test different scenarios\n4. Send request and observe archetype analysis\n5. For follow-up messages: use stored conversation_id\n\n**Message Scenarios to Test:**\n- **Purpose/Direction**: \"I feel lost about my life direction\"\n- **Relationships**: \"I'm struggling to connect with others\"\n- **Growth/Learning**: \"I want to understand myself better\"\n- **Creativity**: \"I feel blocked creatively\"\n- **Career**: \"I'm not fulfilled in my work\"\n- **Spirituality**: \"I'm seeking deeper meaning\"\n\n**Request Body Fields:**\n- `message`: User's message (1-5000 characters)\n- `session_id`: From session greeting (required)\n- `conversation_id`: null for first message, then use returned ID\n- `include_archetype_analysis`: true to get full analysis\n- `use_enhanced_response`: true for MirrorGPT style responses\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"message_id\": \"msg_98765-43210-fedcba\",\n    \"response\": \"I sense the Sage within you questioning...\",\n    \"archetype_analysis\": {\n      \"signal_1_emotional_resonance\": {\n        \"dominant_emotion\": \"contemplative\",\n        \"valence\": -0.2,\n        \"arousal\": 0.3\n      },\n      \"signal_2_symbolic_language\": {\n        \"extracted_symbols\": [\"disconnection\", \"purpose\"]\n      },\n      \"signal_3_archetype_blend\": {\n        \"primary\": \"sage\",\n        \"secondary\": \"seeker\",\n        \"confidence\": 0.87\n      },\n      \"signal_4_narrative_position\": {\n        \"role\": \"questioner\",\n        \"stage\": \"contemplation\"\n      },\n      \"signal_5_motif_loops\": {\n        \"current_motifs\": [\"seeking\", \"wisdom\"],\n        \"dominant_patterns\": [\"introspection\"]\n      }\n    },\n    \"change_detection\": {\n      \"archetype_shift_detected\": false,\n      \"stability_score\": 0.92\n    },\n    \"suggested_practice\": \"Spend 10 minutes in quiet reflection...\",\n    \"confidence_breakdown\": {\n      \"overall\": 0.87,\n      \"emotional\": 0.85,\n      \"symbolic\": 0.89,\n      \"archetype\": 0.87\n    },\n    \"session_metadata\": {\n      \"conversation_id\": \"conv_abcdef-123456\",\n      \"session_id\": \"session_12345-67890\",\n      \"message_count\": 1\n    }\n  }\n}\n```\n\n**Notes:**\n- First message creates conversation_id automatically\n- Subsequent messages should use the same conversation_id\n- Analysis adapts and evolves based on conversation history\n- Suggested practices provide actionable guidance"
           },
@@ -569,8 +664,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/chat",
-              "host": ["{{base_url}}"],
-              "path": ["api", "chat"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "chat"
+              ]
             },
             "description": "## Continue MirrorGPT Conversation\n\n**Purpose:** Continue an existing conversation with context and archetype evolution tracking.\n\n**Prerequisites:**\n- Previous MirrorGPT Chat request completed\n- session_id and conversation_id stored from previous requests\n\n**What this does:**\n- Continues conversation with full context of previous messages\n- Tracks archetype evolution over the conversation\n- Detects patterns and changes in user's responses\n- Provides contextual and evolving guidance\n\n**Testing Steps:**\n1. First complete initial MirrorGPT Chat request\n2. Ensure conversation_id is stored from previous response\n3. Modify message to follow up on previous topics\n4. Send request and observe how analysis builds on previous context\n5. Compare archetype analysis with previous messages\n\n**Follow-up Message Ideas:**\n- Build on previous topic: \"That resonates with me. Can you elaborate?\"\n- Shift direction: \"I want to explore something different now\"\n- Request clarification: \"What did you mean by that metaphor?\"\n- Share progress: \"I tried your suggestion and here's what happened\"\n- Express resistance: \"I'm struggling to accept that perspective\"\n\n**Notes:**\n- Uses same conversation_id to maintain context\n- Archetype analysis becomes more accurate with more messages\n- Change detection tracks evolution over time\n- Session maintains until user leaves or starts new session"
           },
@@ -589,8 +689,13 @@
             ],
             "url": {
               "raw": "{{base_url}}/api/profile",
-              "host": ["{{base_url}}"],
-              "path": ["api", "profile"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "profile"
+              ]
             },
             "description": "## Get Archetype Profile\n\n**Purpose:** Retrieve user's complete archetype profile including evolution history.\n\n**Prerequisites:**\n- User must be authenticated\n- User should have completed quiz and/or had some chat conversations\n\n**What this does:**\n- Returns current archetype profile and confidence scores\n- Shows archetype evolution over time\n- Provides recent signal patterns and analysis\n- Includes growth indicators and insights\n\n**Testing Steps:**\n1. Ensure user has completed quiz and/or chat conversations\n2. Send this request to see current profile state\n3. Compare results after more conversations to see evolution\n\n**Expected Response:**\n```json\n{\n  \"success\": true,\n  \"data\": {\n    \"user_id\": \"user-uuid\",\n    \"current_profile\": {\n      \"current_archetype_stack\": {\n        \"primary\": \"sage\",\n        \"secondary\": \"seeker\",\n        \"confidence_score\": 0.87,\n        \"stability_score\": 0.92\n      },\n      \"quiz_data\": {\n        \"initial_archetype\": \"sage\",\n        \"completed_at\": \"2025-09-09T10:00:00Z\"\n      },\n      \"archetype_evolution\": [\n        {\n          \"archetype\": \"sage\",\n          \"confidence\": 0.87,\n          \"detected_at\": \"2025-09-09T10:00:00Z\"\n        }\n      ]\n    },\n    \"recent_signals\": [...],\n    \"evolution_summary\": {\n      \"total_conversations\": 5,\n      \"archetype_stability\": \"high\",\n      \"growth_trajectory\": \"deepening\"\n    }\n  }\n}\n```"
           },
@@ -609,8 +714,13 @@
             ],
             "url": {
               "raw": "{{base_url}}/api/signals?limit=10",
-              "host": ["{{base_url}}"],
-              "path": ["api", "signals"],
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "signals"
+              ],
               "query": [
                 {
                   "key": "limit",
@@ -625,6 +735,511 @@
         }
       ],
       "description": "MirrorGPT archetype system endpoints including quiz, session management, chat with 5-signal analysis, and profile insights"
+    },
+    {
+      "name": "Reflection Room V1",
+      "description": "Reflection Room V1 endpoints (quiz \u2192 motif \u2192 loop state \u2192 practice recommendation \u2192 completion). Spec lives at docs/reflection-room-v1/01_BACKEND_IMPLEMENTATION_SPEC.md.",
+      "item": [
+        {
+          "name": "Submit Quiz",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/reflection/quiz",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "reflection",
+                "quiz"
+              ]
+            },
+            "description": "Score quiz, assign motif, seed loop state. Spec \u00a76.1.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"answers\": {\n    \"q1\": \"hopeful\",\n    \"q2\": \"inspiration\",\n    \"q3\": \"spiral\",\n    \"q4\": \"insight\"\n  },\n  \"session_id\": null,\n  \"user_override_tag\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Override Room Skin",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/me/reflection/room",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "reflection",
+                "room"
+              ]
+            },
+            "description": "Apply a room-skin override (spec \u00a76.5).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"motif_id\": \"mirror\",\n  \"apply_to\": \"session\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Echo Snapshot",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/echo/snapshot",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "echo",
+                "snapshot"
+              ]
+            },
+            "description": "Return active loop state for the user's current session (spec \u00a76.2)."
+          },
+          "response": []
+        },
+        {
+          "name": "Recommend Practice",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/echo/recommend-practice",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "echo",
+                "recommend-practice"
+              ]
+            },
+            "description": "Return one ranked practice (spec \u00a76.3). 409 carries Retry-After.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{reflection_session_id}}\",\n  \"selected_loop\": null,\n  \"surface\": \"echo_signature\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Complete Practice",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/practice/complete",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "practice",
+                "complete"
+              ]
+            },
+            "description": "Log completion + optional helpful vote (spec \u00a76.4). Returns refreshed snapshot inline.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{reflection_session_id}}\",\n  \"loop_id\": \"pressure\",\n  \"tone_state\": \"rising\",\n  \"practice_id\": \"breath_4_6\",\n  \"rule_id\": \"pressure_loop_v1\",\n  \"helpful\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Helpful (late)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/practice/complete/{{completion_id}}/helpful",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "practice",
+                "complete",
+                "{{completion_id}}",
+                "helpful"
+              ]
+            },
+            "description": "Late helpful vote (spec \u00a76.6). NOTE: completion_id contains '#'. Postman handles encoding via path segments \u2014 set the {{completion_id}} variable to the raw completion_id string.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"helpful\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Preferences",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/me/preferences",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "preferences"
+              ]
+            },
+            "description": "Read user flags + disallow_types."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Flags",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/me/preferences/flags",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "preferences",
+                "flags"
+              ]
+            },
+            "description": "Partial update of user flags (spec \u00a710.1).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"no_breathwork\": true,\n  \"reduced_motion\": false,\n  \"private_mode\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Beacon: Private Mode Reveal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/me/private-mode/reveal",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "me",
+                "private-mode",
+                "reveal"
+              ]
+            },
+            "description": "Telemetry beacon when user reveals private-mode content.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"surface\": \"echo_signature\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Beacon: Practice Expand",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/telemetry/practice-expand",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "telemetry",
+                "practice-expand"
+              ]
+            },
+            "description": "Telemetry beacon when user opens a practice card back.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loop_id\": \"pressure\",\n  \"practice_id\": \"breath_4_6\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Beacon: Nudge Opened",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/telemetry/nudge-opened",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "telemetry",
+                "nudge-opened"
+              ]
+            },
+            "description": "Telemetry beacon when user expands a nudge.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nudge_type\": \"morning_check_in\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Beacon: Echo Map Refresh",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/telemetry/echo-map-refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "telemetry",
+                "echo-map-refresh"
+              ]
+            },
+            "description": "Telemetry beacon when user taps 'Update My Mirror'."
+          },
+          "response": []
+        },
+        {
+          "name": "Dev Seed Loop State",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/dev/echo/loop-state",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "dev",
+                "echo",
+                "loop-state"
+              ]
+            },
+            "description": "Dev-only QA seeder. Returns 404 in production.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loops\": [\n    {\n      \"loop_id\": \"pressure\",\n      \"tone_state\": \"rising\",\n      \"intensity_score\": 0.74\n    },\n    {\n      \"loop_id\": \"grief\",\n      \"tone_state\": \"softening\",\n      \"intensity_score\": 0.58\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ],
   "event": [
@@ -632,14 +1247,18 @@
       "listen": "prerequest",
       "script": {
         "type": "text/javascript",
-        "exec": [""]
+        "exec": [
+          ""
+        ]
       }
     },
     {
       "listen": "test",
       "script": {
         "type": "text/javascript",
-        "exec": [""]
+        "exec": [
+          ""
+        ]
       }
     }
   ],

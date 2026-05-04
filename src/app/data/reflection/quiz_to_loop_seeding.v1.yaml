@@ -1,0 +1,95 @@
+version: 1
+
+# Algorithm (full spec in §8.3):
+#   1. For each (q, answer), accumulate (loop, tone) buckets weighted by question_weight × score
+#   2. Per loop, pick the tone with the highest score (rising > steady > softening on tie)
+#   3. Drop loops below min_seed_score
+#   4. Take top_n loops by score
+#   5. Normalize to intensity_score in [0.50, 0.85] and upsert
+
+config:
+  top_n: 3
+  min_seed_score: 0.45
+  intensity_floor: 0.50
+  intensity_ceiling: 0.85
+  tone_tiebreak_priority: [rising, steady, softening]
+
+contributions:
+  q1:
+    weight: 1.0
+    answers:
+      curious:
+        - { loop: agency, tone: rising, score: 0.70 }
+      grounded: []   # No loop seeded — settled state, empty is correct.
+      hopeful:
+        - { loop: transition, tone: rising, score: 0.70 }
+      heavy:
+        - { loop: grief, tone: rising, score: 0.65 }
+        - { loop: overwhelm, tone: rising, score: 0.40 }
+      scattered:
+        - { loop: overwhelm, tone: rising, score: 0.80 }
+      numb:
+        - { loop: self_silencing, tone: steady, score: 0.65 }
+        - { loop: grief, tone: steady, score: 0.40 }
+
+  q2:
+    weight: 0.7
+    answers:
+      clarity:
+        - { loop: pressure, tone: steady, score: 0.40 }
+      peace:
+        - { loop: overwhelm, tone: rising, score: 0.50 }
+        - { loop: pressure, tone: rising, score: 0.30 }
+      healing:
+        - { loop: grief, tone: softening, score: 0.55 }
+      inspiration:
+        - { loop: agency, tone: rising, score: 0.55 }
+      stillness:
+        - { loop: pressure, tone: softening, score: 0.40 }
+        - { loop: overwhelm, tone: softening, score: 0.30 }
+
+  q3:
+    weight: 1.5   # Highest signal — matches PDF tie-break logic
+    answers:
+      compass:
+        - { loop: agency, tone: rising, score: 0.60 }
+      mirror:
+        - { loop: self_silencing, tone: steady, score: 0.45 }
+      blocks:
+        - { loop: pressure, tone: rising, score: 0.60 }
+      spiral:
+        - { loop: agency, tone: steady, score: 0.45 }
+        - { loop: transition, tone: rising, score: 0.35 }
+      feather:
+        - { loop: transition, tone: rising, score: 0.70 }
+      radiant_burst:
+        - { loop: agency, tone: rising, score: 0.65 }
+      waves:
+        - { loop: overwhelm, tone: softening, score: 0.60 }
+      pyramid:
+        - { loop: pressure, tone: rising, score: 0.50 }
+      water_drop:
+        - { loop: grief, tone: rising, score: 0.65 }
+        - { loop: self_silencing, tone: rising, score: 0.35 }
+      brick_stack:
+        - { loop: pressure, tone: steady, score: 0.60 }
+      sprout:
+        - { loop: transition, tone: rising, score: 0.55 }
+
+  q4:
+    weight: 0.7
+    answers:
+      soothing:
+        - { loop: grief, tone: rising, score: 0.50 }
+        - { loop: self_silencing, tone: rising, score: 0.30 }
+      gentle:
+        - { loop: self_silencing, tone: rising, score: 0.40 }
+        - { loop: grief, tone: softening, score: 0.30 }
+      insight:
+        - { loop: agency, tone: rising, score: 0.45 }
+      direct:
+        - { loop: agency, tone: rising, score: 0.50 }
+        - { loop: pressure, tone: steady, score: 0.30 }
+      presence:
+        - { loop: grief, tone: steady, score: 0.40 }
+        - { loop: transition, tone: steady, score: 0.30 }

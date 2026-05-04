@@ -117,3 +117,88 @@ class ForbiddenError(BaseAPIException):
 
     def __init__(self, message: str = "Access forbidden"):
         super().__init__(message, 403, "FORBIDDEN")
+
+
+# ============================================================
+# Reflection Room V1 — see spec §12
+# ============================================================
+
+
+class InvalidQuizAnswer(BaseAPIException):
+    """Raised when a quiz answer enum is invalid or a question is missing."""
+
+    def __init__(self, message: str = "Invalid quiz answer"):
+        super().__init__(message, 400, "INVALID_QUIZ_ANSWER")
+
+
+class LoopNotSupported(BaseAPIException):
+    """Raised when an unsupported loop_id is provided."""
+
+    def __init__(self, message: str = "Loop not supported in V1"):
+        super().__init__(message, 400, "LOOP_NOT_SUPPORTED")
+
+
+class MotifNotFound(BaseAPIException):
+    """Raised when a motif_id is missing from motif_mapping.v1.json."""
+
+    def __init__(self, message: str = "Motif not found"):
+        super().__init__(message, 400, "MOTIF_NOT_FOUND")
+
+
+class OverrideNotAllowed(BaseAPIException):
+    """Raised when room-skin override is attempted but quiz had a unique winner."""
+
+    def __init__(self, message: str = "Override not allowed for this session"):
+        super().__init__(message, 403, "OVERRIDE_NOT_ALLOWED")
+
+
+class NoActiveLoops(BaseAPIException):
+    """Raised when /echo/recommend-practice has no active loops to choose from."""
+
+    def __init__(self, message: str = "No active loops in snapshot"):
+        super().__init__(message, 404, "NO_ACTIVE_LOOPS")
+
+
+class NoRuleMatched(BaseAPIException):
+    """Only fires when fallback_enabled=False. With V1 default, never reaches FE."""
+
+    def __init__(self, message: str = "No rule matched the active loop"):
+        super().__init__(message, 404, "NO_RULE_MATCHED")
+
+
+class AllCandidatesFiltered(BaseAPIException):
+    """Only fires when fallback_enabled=False. Carries Retry-After hint."""
+
+    def __init__(
+        self,
+        message: str = "All candidate practices filtered by safety/cooldown",
+        retry_after_seconds: int = 3600,
+    ):
+        super().__init__(message, 409, "ALL_CANDIDATES_FILTERED")
+        self.retry_after_seconds = retry_after_seconds
+
+
+class FallbackOnCooldown(BaseAPIException):
+    """Genuine 'no practice for you right now' — fallback itself is on cooldown."""
+
+    def __init__(
+        self,
+        message: str = "Fallback practice is within cooldown",
+        retry_after_seconds: int = 3600,
+    ):
+        super().__init__(message, 409, "FALLBACK_ON_COOLDOWN")
+        self.retry_after_seconds = retry_after_seconds
+
+
+class OverrideTagNotInTie(BaseAPIException):
+    """Raised when user_override_tag is not part of the tied set."""
+
+    def __init__(self, message: str = "Override tag not in tied set"):
+        super().__init__(message, 409, "OVERRIDE_TAG_NOT_IN_TIE")
+
+
+class ConfigLoadError(BaseAPIException):
+    """Raised when a YAML/JSON config file fails to parse at startup or first read."""
+
+    def __init__(self, message: str = "Configuration file load failed"):
+        super().__init__(message, 500, "CONFIG_LOAD_ERROR")

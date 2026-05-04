@@ -1,0 +1,7 @@
+version: 1
+defaults:
+  cooldown_hours_default: 12
+  cooldown_hours_grief: 24
+  fallback_enabled: true   # see §9 recommender + §4.4 fallback block; resolves dead-ends from §11.1 rule coverage gaps
+  max_practices_per_session: 3
+  snapshot_refresh_after_completion: true

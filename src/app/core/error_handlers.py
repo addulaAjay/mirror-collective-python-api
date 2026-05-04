@@ -89,12 +89,16 @@ async def base_api_exception_handler(request: Request, exc: Exception) -> Respon
         },
     )
 
-    response_data = {
+    response_data: Dict[str, Any] = {
         "success": False,
         "error": exc.message,
         "requestId": request_id,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+    # Surface stable error code so clients can switch on it (spec §12).
+    if exc.error_code:
+        response_data["errorCode"] = exc.error_code
 
     # Add details in development mode
     if is_development and exc.details:
@@ -104,7 +108,14 @@ async def base_api_exception_handler(request: Request, exc: Exception) -> Respon
     if hasattr(exc, "details") and isinstance(exc.details, list):
         response_data["validationErrors"] = exc.details
 
-    return JSONResponse(status_code=exc.status_code, content=response_data)
+    headers: Dict[str, str] = {}
+    retry = getattr(exc, "retry_after_seconds", None)
+    if retry is not None:
+        headers["Retry-After"] = str(int(retry))
+
+    return JSONResponse(
+        status_code=exc.status_code, content=response_data, headers=headers
+    )
 
 
 async def http_exception_handler(request: Request, exc: Exception) -> Response:

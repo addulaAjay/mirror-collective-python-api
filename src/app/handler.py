@@ -14,10 +14,15 @@ from mangum import Mangum
 from src.app.services.scheduler import start_scheduler
 
 from .api.echo_routes import router as echo_router
+from .api.echo_v1_routes import router as echo_v1_router
+from .api.me_routes import router as me_router
 from .api.mirrorgpt_routes import router as mirrorgpt_router
 from .api.models import HealthResponse
+from .api.practice_routes import router as practice_router
+from .api.reflection_routes import router as reflection_router
 from .api.routes import router as api_router
 from .api.subscription_routes import router as subscription_router
+from .api.telemetry_routes import router as telemetry_router
 from .core.error_handlers import setup_error_handlers
 from .core.logging_config import setup_logging
 
@@ -220,5 +225,12 @@ app.include_router(echo_router, prefix="/api")
 
 # Mount Subscription routes
 app.include_router(subscription_router)
+
+# Mount Reflection Room V1 routes under /api
+app.include_router(reflection_router, prefix="/api")
+app.include_router(echo_v1_router, prefix="/api")
+app.include_router(practice_router, prefix="/api")
+app.include_router(me_router, prefix="/api")
+app.include_router(telemetry_router, prefix="/api")
 
 handler = Mangum(app)
