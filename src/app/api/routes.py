@@ -41,6 +41,8 @@ echo_service = EchoService()
 
 class UpdateProfileRequest(BaseModel):
     profile_image_url: Optional[str] = None
+    display_name: Optional[str] = None
+    phone_number: Optional[str] = None
 
 
 # Dependency injection for controllers
@@ -115,14 +117,18 @@ async def get_current_user_profile(
     if user_id:
         try:
             db_profile = await user_service.get_user_profile(user_id)
-            if db_profile and db_profile.profile_image_url:
-                signed_url = await echo_service._sign_profile_url(
-                    db_profile.profile_image_url
-                )
-                current_user = {
-                    **current_user,
-                    "profile_image_url": signed_url,
-                }
+            if db_profile:
+                extras: Dict[str, Any] = {}
+                if db_profile.profile_image_url:
+                    extras["profile_image_url"] = await echo_service._sign_profile_url(
+                        db_profile.profile_image_url
+                    )
+                if db_profile.phone_number:
+                    extras["phone_number"] = db_profile.phone_number
+                if db_profile.display_name:
+                    extras["display_name"] = db_profile.display_name
+                if extras:
+                    current_user = {**current_user, **extras}
         except Exception as e:
             logger.warning(f"Could not fetch DynamoDB profile for /auth/me: {e}")
     return await auth_controller.get_current_user_profile(current_user)
