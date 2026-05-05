@@ -38,14 +38,6 @@ disallow_untyped_defs = false
 module = "src.app.services.cognito_service"
 ignore_errors = true
 
-[[tool.mypy.overrides]]
-module = "performance_analysis"
-ignore_errors = true
-
-[[tool.mypy.overrides]]
-module = "scripts.*"
-ignore_errors = true
-
 # Reflection Room V1: Pydantic v1-style confloat/conint runtime validators
 # resolve correctly at runtime but trip mypy's valid-type check. Pydantic v2
 # rewriting (Annotated[float, Field(...)]) is a follow-up — not blocking V1.
@@ -71,12 +63,6 @@ ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = "src.app.api.practice_routes"
-ignore_errors = true
-
-# Test files: heavy use of dynamic **dict patterns mypy can't narrow.
-# Matches the scripts.* precedent above.
-[[tool.mypy.overrides]]
-module = "tests.*"
 ignore_errors = true
 
 [tool.pytest.ini_options]

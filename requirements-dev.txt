@@ -11,3 +11,4 @@ bandit[toml]>=1.7.5
 safety>=3.0.0
 httpx>=0.25.0  # For testing HTTP requests
 pytest-mock>=3.12.0
+types-PyYAML>=6.0.0  # mypy stubs for YAML loaders (Reflection Room V1)
