@@ -40,6 +40,13 @@ provider:
     # Subscription/IAP Tables
     DYNAMODB_SUBSCRIPTIONS_TABLE: ${self:service}-subscriptions-${self:provider.stage}
     DYNAMODB_SUBSCRIPTION_EVENTS_TABLE: ${self:service}-subscription-events-${self:provider.stage}
+    # Reflection Room V1 Tables
+    DYNAMODB_REFLECTION_SESSIONS_TABLE: ${self:service}-reflection-sessions-${self:provider.stage}
+    DYNAMODB_ECHO_LOOP_STATE_TABLE: ${self:service}-echo-loop-state-${self:provider.stage}
+    DYNAMODB_PRACTICE_COMPLETIONS_TABLE: ${self:service}-practice-completions-${self:provider.stage}
+    DYNAMODB_USER_PERSONALIZATION_TABLE: ${self:service}-user-personalization-${self:provider.stage}
+    # Reflection Room V1 — config + tz
+    REFLECTION_DEFAULT_USER_TZ: ${env:REFLECTION_DEFAULT_USER_TZ, 'America/New_York'}
     # Apple/Google IAP credentials
     APPLE_SHARED_SECRET: ${env:APPLE_SHARED_SECRET, ''}
     GOOGLE_SERVICE_ACCOUNT_KEY: ${env:GOOGLE_SERVICE_ACCOUNT_KEY, ''}
@@ -119,6 +126,19 @@ provider:
               - '/'
               - - Fn::GetAtt: [ SubscriptionEventsTable, Arn ]
                 - 'index/*'
+            # Reflection Room V1 Tables
+            - Fn::GetAtt: [ ReflectionSessionsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ ReflectionSessionsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ EchoLoopStateTable, Arn ]
+            - Fn::GetAtt: [ PracticeCompletionsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ PracticeCompletionsTable, Arn ]
+                - 'index/*'
+            - Fn::GetAtt: [ UserPersonalizationTable, Arn ]
         - Effect: Allow
           Action:
             - s3:PutObject
@@ -669,6 +689,120 @@ resources:
             ProvisionedThroughput:
               ReadCapacityUnits: 1
               WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    # ============================================================
+    # Reflection Room V1 Tables
+    # ============================================================
+
+    # mc_reflection_sessions: per-user reflection session rows.
+    # PK=session_id; GSI by user_id + created_at desc to find latest active.
+    ReflectionSessionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_REFLECTION_SESSIONS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: session_id
+            AttributeType: S
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: created_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: session_id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: user_id-created_at-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: created_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+
+    # mc_echo_loop_state: active loop state per user (PK=user_id, SK=loop_id).
+    EchoLoopStateTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_ECHO_LOOP_STATE_TABLE}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: loop_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: loop_id
+            KeyType: RANGE
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    # mc_practice_completions: per-user completion log.
+    # PK=user_id, SK=completion_id (sortable "<ts_iso>#<uuid>").
+    # GSI by practice_id+completed_at for cooldown lookup.
+    PracticeCompletionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_PRACTICE_COMPLETIONS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: completion_id
+            AttributeType: S
+          - AttributeName: practice_id
+            AttributeType: S
+          - AttributeName: completed_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: completion_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: practice_id-completed_at-index
+            KeySchema:
+              - AttributeName: practice_id
+                KeyType: HASH
+              - AttributeName: completed_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1
+        BillingMode: PROVISIONED
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    # mc_user_personalization: per-user prefs/flags/recent_use/helpfulness.
+    UserPersonalizationTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_USER_PERSONALIZATION_TABLE}
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
         BillingMode: PROVISIONED
         ProvisionedThroughput:
           ReadCapacityUnits: 1

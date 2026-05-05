@@ -1,0 +1,154 @@
+version: 1
+practices:
+  - id: breath_4_6
+    title: "Ease Pressure"           # Figma-confirmed (node 4654-3335)
+    type: breath
+    duration_sec: 120                # "TWO MINUTE PRACTICE" framing
+    steps:
+      - "Inhale for 4."
+      - "Exhale for 6."
+      - "Repeat three more times."
+
+  - id: reappraisal_alt_intent
+    title: "Name a different intention"
+    type: cognitive
+    duration_sec: 90
+    steps:
+      - "Notice the demand you're meeting."
+      - "Ask: what would I do if I trusted I had time?"
+      - "Write that as a one-line intention."
+
+  - id: one_percent_first_sentence
+    title: "Write the first sentence"
+    type: action
+    duration_sec: 120
+    steps:
+      - "Pick the smallest task pressing on you."
+      - "Open it. Write only the first sentence."
+      - "Close it. You've started."
+
+  - id: breath_box_4
+    title: "Ease Overwhelm"          # Figma-confirmed (node 4654-3335)
+    type: breath
+    duration_sec: 120                # "TWO MINUTE PRACTICE" framing
+    steps:
+      - "Inhale 4. Hold 4."
+      - "Exhale 4. Hold 4."
+      - "Repeat twice."              # Figma: "Repeat twice" (not four times)
+
+  - id: name_and_need
+    title: "Name it, and the need under it"
+    type: cognitive
+    duration_sec: 120
+    steps:
+      - "Name what you're feeling, in one word."
+      - "Ask: what does this feeling need?"
+      - "Say the need out loud."
+
+  - id: boundary_prompt
+    title: "Draft a boundary line"
+    type: cognitive
+    duration_sec: 120
+    steps:
+      - "Pick the request or pull that's costing too much."
+      - "Write: 'I can't / I won't / I need…'"
+      - "You don't have to send it. Just write it."
+
+  - id: heart_hand_breath
+    title: "Soften Grief"            # Figma-confirmed (node 4654-3335)
+    type: somatic
+    duration_sec: 120                # "TWO MINUTE PRACTICE" framing
+    steps:
+      - "Hand to heart."
+      - "Inhale 4, exhale 6 — three rounds."
+      - "Whisper: 'I allow myself to soften.'"
+
+  - id: name_what_softened
+    title: "Name what softened"
+    type: reflection
+    duration_sec: 90
+    steps:
+      - "Notice one thing that hurts less than it did."
+      - "Say it out loud, in the present tense."
+      - "Let that be enough for today."
+
+  - id: gratitude_molecule
+    title: "One small gratitude"
+    type: reflection
+    duration_sec: 60
+    steps:
+      - "Find one small thing — a sound, a texture, a person."
+      - "Hold attention on it for thirty seconds."
+      - "That's the practice."
+
+  - id: speak_truth_sentence
+    title: "Write the unsaid sentence"
+    type: cognitive
+    duration_sec: 120
+    steps:
+      - "Picture the conversation you're avoiding."
+      - "Write the sentence you keep not saying."
+      - "You don't have to send it. Just stop swallowing it."
+
+  - id: reappraisal_self_compassion
+    title: "Speak to yourself like a friend"
+    type: cognitive
+    duration_sec: 90
+    steps:
+      - "Notice the harsh thing you're saying to yourself."
+      - "Ask: would I say this to someone I love?"
+      - "Rewrite the sentence with that voice instead."
+
+  - id: key_door_list
+    title: "List the door, list the key"
+    type: cognitive
+    duration_sec: 120
+    steps:
+      - "Name one thing you feel stuck behind."
+      - "Name one move — small — that opens it."
+      - "You don't have to do it. Just see the key."
+
+  - id: one_percent_first_call
+    title: "Send one message"
+    type: action
+    duration_sec: 90
+    steps:
+      - "Pick the person you've been avoiding."
+      - "Send three words: 'thinking of you,' 'have a sec?' — anything."
+      - "That's the whole practice."
+
+  - id: posture_reset
+    title: "Stand up, two breaths"
+    type: somatic
+    duration_sec: 60
+    steps:
+      - "Stand. Roll your shoulders back."
+      - "Breathe in. Breathe out."
+      - "Sit back down on purpose."
+
+  - id: step_across_bridge
+    title: "Name the side you're on"
+    type: reflection
+    duration_sec: 90
+    steps:
+      - "Where are you — leaving, mid-bridge, arriving?"
+      - "Say it in one sentence."
+      - "You don't have to know what's next yet."
+
+  - id: clarity_two_options
+    title: "List the two options"
+    type: cognitive
+    duration_sec: 120
+    steps:
+      - "Write down option A. One sentence."
+      - "Write down option B. One sentence."
+      - "Notice which one your body leans toward."
+
+  - id: timebox_10min
+    title: "Ten-minute timebox"
+    type: action
+    duration_sec: 60
+    steps:
+      - "Pick one transition task."
+      - "Set a 10-minute timer."
+      - "When it goes off, you're done — no extending."

@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "motifs": {
+    "evolution": {
+      "motif_id": "spiral",
+      "motif_name": "Spiral",
+      "icon": "🌀",
+      "element": "Fire",
+      "tone_tag": "Evolution / Integration",
+      "why_text": "You're in a season of growth and integration — every loop brings you closer to wholeness.",
+      "room_skin": "Spiral Room"
+    },
+    "clarity": {
+      "motif_id": "pyramid",
+      "motif_name": "Pyramid",
+      "icon": "🔺",
+      "element": "Air",
+      "tone_tag": "Clarity / Insight",
+      "why_text": "You're seeking sharpened clarity — let what's true rise to the surface.",
+      "room_skin": "Pyramid Room"
+    },
+    "structure": {
+      "motif_id": "brick_stack",
+      "motif_name": "Brick Stack",
+      "icon": "🧱",
+      "element": "Earth",
+      "tone_tag": "Structure / Foundation",
+      "why_text": "You're rebuilding what holds you up — steady, deliberate, grounded.",
+      "room_skin": "Brick Stack Room"
+    },
+    "growth": {
+      "motif_id": "sprout",
+      "motif_name": "Sprout",
+      "icon": "🌱",
+      "element": "Earth",
+      "tone_tag": "Growth / Becoming",
+      "why_text": "Something new is taking root — give it light and patience.",
+      "room_skin": "Sprout Room"
+    },
+    "illumination": {
+      "motif_id": "radiant_burst",
+      "motif_name": "Radiant Burst",
+      "icon": "✨",
+      "element": "Fire",
+      "tone_tag": "Illumination / Insight",
+      "why_text": "A flash of clarity is moving through you — let it land.",
+      "room_skin": "Radiant Burst Room"
+    },
+    "boundary": {
+      "motif_id": "blocks",
+      "motif_name": "Blocks",
+      "icon": "🟦",
+      "element": "Earth",
+      "tone_tag": "Boundary / Protection",
+      "why_text": "You're learning to define what is yours and what is not. Both matter.",
+      "room_skin": "Blocks Room"
+    },
+    "reflection": {
+      "motif_id": "mirror",
+      "motif_name": "Mirror",
+      "icon": "🪞",
+      "element": "Water",
+      "tone_tag": "Reflection / Stillness",
+      "why_text": "You're being asked to slow down and look — what does the surface show you?",
+      "room_skin": "Mirror Room"
+    },
+    "transition": {
+      "motif_id": "feather",
+      "motif_name": "Feather",
+      "icon": "🪶",
+      "element": "Air",
+      "tone_tag": "Transition / Crossing",
+      "why_text": "You're crossing a threshold — light touch, steady steps.",
+      "room_skin": "Feather Room"
+    },
+    "flow": {
+      "motif_id": "waves",
+      "motif_name": "Waves",
+      "icon": "🌊",
+      "element": "Water",
+      "tone_tag": "Flow / Surrender",
+      "why_text": "Stop pushing — let movement carry you for a while.",
+      "room_skin": "Waves Room"
+    },
+    "expression": {
+      "motif_id": "water_drop",
+      "motif_name": "Water Drop",
+      "icon": "💧",
+      "element": "Water",
+      "tone_tag": "Expression / Release",
+      "why_text": "Something inside is asking to be spoken or released. Make space.",
+      "room_skin": "Water Drop Room"
+    },
+    "direction": {
+      "motif_id": "compass",
+      "motif_name": "Compass",
+      "icon": "🧭",
+      "element": "Air",
+      "tone_tag": "Direction / Choice",
+      "why_text": "You know more than you think you know. Trust the next small step.",
+      "room_skin": "Compass Room"
+    }
+  }
+}

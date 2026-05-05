@@ -1,0 +1,168 @@
+{
+  "quiz_type": "learning_style",
+  "quiz_name": "Learning Style Discovery Quiz",
+  "quiz_description": "Discover how you learn best - Visual, Auditory, Kinesthetic, or Reading/Writing",
+  "version": "1.0",
+  "config": {
+    "archetypes": ["Visual", "Auditory", "Kinesthetic", "Reading/Writing"],
+    "weights": {
+      "core": 2,
+      "regular": 1
+    },
+    "tieBreaker": {
+      "order": ["Visual", "Auditory", "Kinesthetic", "Reading/Writing"]
+    }
+  },
+  "archetypes": {
+    "visual": {
+      "id": "Visual",
+      "name": "Visual",
+      "title": "VISUAL LEARNER",
+      "description": "You learn best through seeing and visualizing. Charts, diagrams, videos, and spatial arrangements help you understand and remember.\n\nGrowth comes from creating visual aids, mind maps, and using color to organize information.",
+      "imagePath": "visual-learner.png"
+    },
+    "auditory": {
+      "id": "Auditory",
+      "name": "Auditory",
+      "title": "AUDITORY LEARNER",
+      "description": "You learn best through listening and speaking. Discussions, lectures, podcasts, and verbal explanations resonate with you.\n\nGrowth comes from reading aloud, joining study groups, and recording voice notes.",
+      "imagePath": "auditory-learner.png"
+    },
+    "kinesthetic": {
+      "id": "Kinesthetic",
+      "name": "Kinesthetic",
+      "title": "KINESTHETIC LEARNER",
+      "description": "You learn best through doing and experiencing. Hands-on activities, movement, and physical engagement help you understand.\n\nGrowth comes from practice exercises, building models, and learning by doing.",
+      "imagePath": "kinesthetic-learner.png"
+    },
+    "reading_writing": {
+      "id": "Reading/Writing",
+      "name": "Reading/Writing",
+      "title": "READING/WRITING LEARNER",
+      "description": "You learn best through written words. Reading, note-taking, and writing essays or summaries help you process information.\n\nGrowth comes from detailed notes, reading widely, and writing to clarify your thinking.",
+      "imagePath": "reading-writing-learner.png"
+    }
+  },
+  "questions": [
+    {
+      "id": 1,
+      "question": "When learning something new, what helps you most?",
+      "options": [
+        {
+          "text": "Watching a video or looking at diagrams",
+          "archetype": "Visual"
+        },
+        {
+          "text": "Listening to an explanation or podcast",
+          "archetype": "Auditory"
+        },
+        {
+          "text": "Trying it out myself hands-on",
+          "archetype": "Kinesthetic"
+        },
+        {
+          "text": "Reading detailed instructions or articles",
+          "archetype": "Reading/Writing"
+        }
+      ],
+      "type": "text",
+      "core": true
+    },
+    {
+      "id": 2,
+      "question": "How do you prefer to study for a test?",
+      "options": [
+        {
+          "text": "Creating colorful flashcards and charts",
+          "archetype": "Visual"
+        },
+        {
+          "text": "Recording myself and listening back",
+          "archetype": "Auditory"
+        },
+        {
+          "text": "Practicing with real examples",
+          "archetype": "Kinesthetic"
+        },
+        {
+          "text": "Writing and rewriting detailed notes",
+          "archetype": "Reading/Writing"
+        }
+      ],
+      "type": "text",
+      "core": false
+    },
+    {
+      "id": 3,
+      "question": "What helps you remember information best?",
+      "options": [
+        {
+          "text": "Picturing it in my mind",
+          "archetype": "Visual"
+        },
+        {
+          "text": "Hearing it repeated or explained",
+          "archetype": "Auditory"
+        },
+        {
+          "text": "Physically engaging with it",
+          "archetype": "Kinesthetic"
+        },
+        {
+          "text": "Writing it down multiple times",
+          "archetype": "Reading/Writing"
+        }
+      ],
+      "type": "text",
+      "core": true
+    },
+    {
+      "id": 4,
+      "question": "In a workshop, which activity would you prefer?",
+      "options": [
+        {
+          "text": "Watching demonstrations and slides",
+          "archetype": "Visual"
+        },
+        {
+          "text": "Group discussions and Q&A",
+          "archetype": "Auditory"
+        },
+        {
+          "text": "Hands-on exercises and activities",
+          "archetype": "Kinesthetic"
+        },
+        {
+          "text": "Reading workbooks and taking notes",
+          "archetype": "Reading/Writing"
+        }
+      ],
+      "type": "text",
+      "core": false
+    },
+    {
+      "id": 5,
+      "question": "What describes your learning process best?",
+      "options": [
+        {
+          "text": "I need to see it to understand it",
+          "archetype": "Visual"
+        },
+        {
+          "text": "I need to hear it to understand it",
+          "archetype": "Auditory"
+        },
+        {
+          "text": "I need to do it to understand it",
+          "archetype": "Kinesthetic"
+        },
+        {
+          "text": "I need to read about it to understand it",
+          "archetype": "Reading/Writing"
+        }
+      ],
+      "type": "text",
+      "core": true
+    }
+  ]
+}

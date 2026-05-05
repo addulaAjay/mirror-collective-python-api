@@ -106,6 +106,12 @@ python scripts/create_conversation_tables.py
 echo "  → Creating MirrorGPT tables..."
 python scripts/create_mirrorgpt_tables_clean.py
 
+echo "  → Creating Reflection Room V1 tables..."
+python scripts/create_reflection_room_tables.py
+
+echo "  → Validating Reflection Room V1 config files..."
+python scripts/seed_reflection_config.py
+
 print_success "Database tables created"
 
 # Populate quiz questions

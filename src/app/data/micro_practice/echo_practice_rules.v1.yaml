@@ -1,0 +1,61 @@
+version: 1
+rules:
+  - id: pressure_loop_v1
+    when:
+      loop_id: pressure
+      min_strength: 0.60
+      trend_in: [rising, steady]
+    candidates: [breath_4_6, reappraisal_alt_intent, one_percent_first_sentence]
+    cooldown_hours: 12
+    priority: 50
+
+  - id: overwhelm_v1
+    when:
+      loop_id: overwhelm
+      min_strength: 0.50
+      trend_in: [rising, steady]
+    candidates: [breath_box_4, name_and_need, boundary_prompt]
+    cooldown_hours: 12
+    priority: 50
+
+  - id: grief_softening_v1
+    when:
+      loop_id: grief
+      trend_in: [softening]
+    candidates: [heart_hand_breath, name_what_softened, gratitude_molecule]
+    cooldown_hours: 24
+    priority: 60
+
+  - id: self_silencing_v1
+    when:
+      loop_id: self_silencing
+      min_strength: 0.50
+      trend_in: [rising, steady]
+    candidates: [speak_truth_sentence, reappraisal_self_compassion]
+    cooldown_hours: 12
+    priority: 45
+
+  - id: agency_key_low_v1
+    when:
+      loop_id: agency
+      min_strength: 0.45
+      trend_in: [rising, steady]
+    candidates: [key_door_list, one_percent_first_call, posture_reset]
+    cooldown_hours: 12
+    priority: 40
+
+  - id: transition_bridge_v1
+    when:
+      loop_id: transition
+      min_strength: 0.45
+      trend_in: [rising, steady, softening]
+      recent_days_max: 3
+    candidates: [step_across_bridge, clarity_two_options, timebox_10min]
+    cooldown_hours: 18
+    priority: 40
+
+fallback:
+  enabled: true
+  default_practice_id: breath_4_6
+  alternate_for_no_breathwork_id: name_and_need
+  rule_id: fallback   # used by telemetry/audit to distinguish fallback completions from rule-driven ones

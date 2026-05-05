@@ -1,0 +1,58 @@
+version: 1
+weights:
+  q1: 1
+  q2: 2
+  q3: 2
+  q4: 1
+questions:
+  q1:
+    prompt: "How are you arriving today?"
+    answers:
+      curious:    [direction, clarity]
+      grounded:   [structure]
+      hopeful:    [growth, illumination]
+      heavy:      [boundary, structure]
+      scattered:  [clarity]
+      numb:       [reflection, transition]
+  q2:
+    prompt: "What intention would you like to bring into your Reflection Room today?"  # Figma-confirmed canonical copy (node 4654-3272)
+    answers:
+      clarity:     [clarity]
+      peace:       [reflection]
+      healing:     [growth, expression]
+      inspiration: [illumination, evolution]
+      stillness:   [reflection, flow]
+  q3:
+    prompt: "Which of these speaks to you the most today?"  # Figma-confirmed canonical copy (node 4654-3272)
+    answers:
+      compass:       [direction]
+      mirror:        [reflection]
+      blocks:        [boundary]
+      spiral:        [evolution]
+      feather:       [transition]
+      radiant_burst: [illumination]
+      waves:         [flow]
+      pyramid:       [clarity]
+      water_drop:    [expression]
+      brick_stack:   [structure]
+      sprout:        [growth]
+  q4:
+    prompt: "What kind of message would help right now?"
+    answers:
+      soothing: [expression, reflection]
+      gentle:   [growth]
+      insight:  [clarity, evolution]
+      direct:   [structure, direction]
+      presence: [flow, reflection]
+tie_break:
+  use_q3: true
+  allow_user_override: true
+session:
+  # Session lifetime: until next midnight in user's IANA timezone.
+  # If no user_tz available, fall back to default_tz.
+  default_tz: "America/New_York"
+  # On quiz submission within an active session (now < expires_at):
+  #   - Same answers → reuse session (motif + loops untouched)
+  #   - Different answers → overwrite (new motif, reseed loops)
+  # On quiz submission after session expiry (now >= expires_at):
+  #   - Always create new session
