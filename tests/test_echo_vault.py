@@ -1590,8 +1590,8 @@ class TestRecipientUserIdLinking:
         assert "recipient_user_id" not in captured_items[0]
 
     @pytest.mark.asyncio
-    async def test_get_received_echoes_prefers_user_id_query(self):
-        """get_received_echoes should prefer recipient_user_id query over email."""
+    async def test_get_received_echoes_uses_email_index(self):
+        """get_received_echoes should look up recipients by email-index (single strategy)."""
         from src.app.models.echo import EchoStatus
         from src.app.services.echo_service import EchoService
 
@@ -1600,12 +1600,10 @@ class TestRecipientUserIdLinking:
         mock_recipients_table = AsyncMock()
         mock_echoes_table = AsyncMock()
 
-        # Mock recipient query by recipient_user_id
         mock_recipients_table.query.return_value = {
             "Items": [
                 {
                     "recipient_id": "rec-123",
-                    "recipient_user_id": "user-123",
                     "email": "alice@example.com",
                     "name": "Alice",
                     "user_id": "creator-456",
@@ -1613,7 +1611,6 @@ class TestRecipientUserIdLinking:
             ]
         }
 
-        # Mock echo query
         mock_echoes_table.query.return_value = {
             "Items": [
                 {
@@ -1649,69 +1646,35 @@ class TestRecipientUserIdLinking:
                 recipient_email="alice@example.com",
             )
 
-        # Verify we got results
         assert len(echoes) == 1
         assert echoes[0].echo_id == "echo-abc"
 
-        # Verify recipient_user_id query was used
-        calls = mock_recipients_table.query.call_args_list
-        assert len(calls) >= 1
-        first_call_kwargs = calls[0][1]
-        assert first_call_kwargs.get("IndexName") == "recipient-user-id-index"
+        # Exactly one query on recipients table, using email-index
+        assert mock_recipients_table.query.call_count == 1
+        call_kwargs = mock_recipients_table.query.call_args_list[0][1]
+        assert call_kwargs.get("IndexName") == "email-index"
+
+        # Echoes query uses KeyConditionExpression (not FilterExpression) for status
+        echoes_call_kwargs = mock_echoes_table.query.call_args_list[0][1]
+        assert (
+            "RELEASED"
+            in echoes_call_kwargs.get("ExpressionAttributeValues", {}).values()
+        )
 
     @pytest.mark.asyncio
-    async def test_get_received_echoes_fallback_to_email(self):
-        """get_received_echoes should fallback to email query when user_id returns no results."""
-        from src.app.models.echo import EchoStatus
+    async def test_get_received_echoes_returns_empty_when_not_a_recipient(self):
+        """get_received_echoes returns [] when no recipient record matches the email."""
         from src.app.services.echo_service import EchoService
 
         service = EchoService()
 
         mock_recipients_table = AsyncMock()
-        mock_echoes_table = AsyncMock()
-
-        # First query (by recipient_user_id) returns empty
-        # Second query (by email) returns result
-        mock_recipients_table.query.side_effect = [
-            {"Items": []},  # No results from user_id query
-            {
-                "Items": [
-                    {
-                        "recipient_id": "rec-456",
-                        "recipient_user_id": None,
-                        "email": "alice@example.com",
-                        "name": "Alice",
-                        "user_id": "creator-789",
-                    }
-                ]
-            },  # Results from email query
-        ]
-
-        # Mock echo query
-        mock_echoes_table.query.return_value = {
-            "Items": [
-                {
-                    "echo_id": "echo-xyz",
-                    "recipient_id": "rec-456",
-                    "user_id": "creator-789",
-                    "status": EchoStatus.RELEASED.value,
-                    "title": "Fallback Echo",
-                    "category": "work",
-                    "echo_type": "VIDEO",
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z",
-                }
-            ]
-        }
+        mock_recipients_table.query.return_value = {
+            "Items": []
+        }  # No matching recipient
 
         mock_dynamodb = AsyncMock()
-
-        def get_table(table_name):
-            if "recipients" in table_name.lower():
-                return mock_recipients_table
-            return mock_echoes_table
-
-        mock_dynamodb.Table = AsyncMock(side_effect=get_table)
+        mock_dynamodb.Table = AsyncMock(return_value=mock_recipients_table)
 
         mock_resource_ctx = MagicMock()
         mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
@@ -1719,21 +1682,10 @@ class TestRecipientUserIdLinking:
 
         with patch.object(service.session, "resource", return_value=mock_resource_ctx):
             echoes = await service.get_received_echoes(
-                user_id="user-999",  # User ID that won't match
-                recipient_email="alice@example.com",
+                user_id="user-999",
+                recipient_email="nobody@example.com",
             )
 
-        # Verify we got results from email fallback
-        assert len(echoes) == 1
-        assert echoes[0].echo_id == "echo-xyz"
-
-        # Verify both queries were called (user_id first, then email fallback)
-        assert mock_recipients_table.query.call_count == 2
-
-        # First call should be recipient-user-id-index
-        first_call_kwargs = mock_recipients_table.query.call_args_list[0][1]
-        assert first_call_kwargs.get("IndexName") == "recipient-user-id-index"
-
-        # Second call should be email-index
-        second_call_kwargs = mock_recipients_table.query.call_args_list[1][1]
-        assert second_call_kwargs.get("IndexName") == "email-index"
+        assert echoes == []
+        # Only the recipients lookup ran — no echo queries
+        assert mock_recipients_table.query.call_count == 1
