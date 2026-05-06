@@ -396,27 +396,9 @@ class EchoService:
             ) as dynamodb:
                 recipients_table = await dynamodb.Table(self.recipients_table)
 
-                # Strategy 1: Query by recipient_user_id (preferred, more reliable)
-                if user_id:
-                    try:
-                        recipient_response = await recipients_table.query(
-                            IndexName="recipient-user-id-index",
-                            KeyConditionExpression="recipient_user_id = :user_id",
-                            ExpressionAttributeValues={":user_id": user_id},
-                        )
-                        recipient_ids = [
-                            item["recipient_id"]
-                            for item in recipient_response.get("Items", [])
-                        ]
-                        if recipient_ids:
-                            logger.info(
-                                f"Found {len(recipient_ids)} recipients by user_id: {user_id}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Could not query by recipient_user_id: {e}")
-
-                # Strategy 2: Fallback to email query if no results from user_id
-                if not recipient_ids and recipient_email:
+                # Look up recipient records whose email matches the logged-in user.
+                # The recipients table has an email-index GSI (hash key: email).
+                if recipient_email:
                     recipient_response = await recipients_table.query(
                         IndexName="email-index",
                         KeyConditionExpression="email = :email",
@@ -428,21 +410,25 @@ class EchoService:
                     ]
                     if recipient_ids:
                         logger.info(
-                            f"Found {len(recipient_ids)} recipients by email: {recipient_email}"
+                            f"Found {len(recipient_ids)} recipient records for email: {recipient_email}"
                         )
 
                 if not recipient_ids:
+                    logger.info(
+                        f"No recipient records found for user {user_id} / {recipient_email}"
+                    )
                     return []
 
-                # Query echoes for these recipients with RELEASED status
+                # Query released echoes for each matched recipient.
+                # recipient-echoes-index: hash=recipient_id, sort=status — use both
+                # in the KeyConditionExpression to avoid a full scan + filter.
                 echoes_table = await dynamodb.Table(self.echoes_table)
                 echoes = []
 
                 for rid in recipient_ids:
                     response = await echoes_table.query(
                         IndexName="recipient-echoes-index",
-                        KeyConditionExpression="recipient_id = :rid",
-                        FilterExpression="#status = :released",
+                        KeyConditionExpression="recipient_id = :rid AND #status = :released",
                         ExpressionAttributeNames={"#status": "status"},
                         ExpressionAttributeValues={
                             ":rid": rid,
@@ -453,7 +439,6 @@ class EchoService:
                     for item in response.get("Items", []):
                         echo = Echo.from_dynamodb_item(item)
 
-                        # Apply additional filters
                         if category and echo.category != category:
                             continue
                         if sender_id and echo.user_id != sender_id:
@@ -461,6 +446,7 @@ class EchoService:
 
                         echoes.append(echo)
 
+                logger.info(f"Inbox: returning {len(echoes)} released echoes")
                 return echoes
 
         except ClientError as e:
