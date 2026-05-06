@@ -258,7 +258,16 @@ async def list_received_echoes(
                 "title": e.title,
                 "category": e.category,
                 "echo_type": e.echo_type.value,
-                "sender_id": e.user_id,
+                # sender object — matches EchoResponse.sender shape expected by the app.
+                # name is not stored on the echo; the app falls back to user_id for now.
+                "sender": {
+                    "user_id": e.user_id,
+                    "name": e.user_id,  # TODO: enrich with Cognito display name
+                    "email": "",
+                },
+                "media_url": e.media_url,
+                "content": e.content,
+                "scheduled_at": e.release_date,
                 "created_at": e.created_at,
             }
             for e in echoes
