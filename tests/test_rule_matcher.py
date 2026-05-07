@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,7 +16,11 @@ class _Loop:
     loop_id: str
     intensity_score: float
     tone_state: str
-    last_seen: str = "2026-05-03T20:10:00Z"
+    last_seen: str = field(
+        default_factory=lambda: (
+            datetime.now(timezone.utc) - timedelta(days=1)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
 
 
 def _rules():
