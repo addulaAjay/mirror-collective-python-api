@@ -243,11 +243,20 @@ async def list_received_echoes(
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID not found in token")
 
-    echoes = await echo_service.get_received_echoes(
-        user_id=user_id,
-        category=category,
-        sender_id=sender_id,
-    )
+    try:
+        echoes = await echo_service.get_received_echoes(
+            user_id=user_id,
+            category=category,
+            sender_id=sender_id,
+        )
+    except Exception:
+        # Full traceback already logged inside the service. Surface a friendly
+        # message to the client — never leak DynamoDB / boto error text.
+        logger.exception(f"Inbox load failed for user {user_id}")
+        raise HTTPException(
+            status_code=503,
+            detail="We couldn't load your inbox right now. Please try again.",
+        )
 
     return {
         "success": True,

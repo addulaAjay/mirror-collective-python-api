@@ -422,15 +422,18 @@ class EchoService:
                 )
 
                 # Query released echoes for each matched recipient.
-                # recipient-echoes-index: hash=recipient_id, sort=status — use both
-                # in the KeyConditionExpression to avoid a full scan + filter.
+                # recipient-echoes-index has hash=recipient_id only (no sort key),
+                # so status must be applied as a FilterExpression rather than a
+                # second KeyConditionExpression — DynamoDB rejects a 2-condition
+                # KCE against a 1-attribute key schema with ValidationException.
                 echoes_table = await dynamodb.Table(self.echoes_table)
                 echoes = []
 
                 for rid in recipient_ids:
                     response = await echoes_table.query(
                         IndexName="recipient-echoes-index",
-                        KeyConditionExpression="recipient_id = :rid AND #status = :released",
+                        KeyConditionExpression="recipient_id = :rid",
+                        FilterExpression="#status = :released",
                         ExpressionAttributeNames={"#status": "status"},
                         ExpressionAttributeValues={
                             ":rid": rid,

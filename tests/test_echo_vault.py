@@ -1655,11 +1655,15 @@ class TestRecipientUserIdLinking:
             call_kwargs.get("ExpressionAttributeValues", {}).get(":uid") == "user-123"
         )
 
-        # Echoes query uses KeyConditionExpression (not FilterExpression) for status
+        # recipient-echoes-index has hash=recipient_id only, so status must be
+        # applied via FilterExpression — not a second key condition. Anything
+        # else triggers ValidationException at runtime.
         echoes_call_kwargs = mock_echoes_table.query.call_args_list[0][1]
+        assert echoes_call_kwargs.get("KeyConditionExpression") == "recipient_id = :rid"
+        assert echoes_call_kwargs.get("FilterExpression") == "#status = :released"
         assert (
-            "RELEASED"
-            in echoes_call_kwargs.get("ExpressionAttributeValues", {}).values()
+            echoes_call_kwargs.get("ExpressionAttributeValues", {}).get(":released")
+            == "RELEASED"
         )
 
     @pytest.mark.asyncio
