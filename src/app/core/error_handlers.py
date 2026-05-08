@@ -89,9 +89,16 @@ async def base_api_exception_handler(request: Request, exc: Exception) -> Respon
         },
     )
 
+    # 5xx messages must never be sent to clients verbatim — they often contain
+    # stack frames, AWS SDK error strings, or internal identifiers. Replace
+    # with a generic message; the real text is in the logs above.
+    user_facing_message = exc.message
+    if exc.status_code >= 500 and not is_development:
+        user_facing_message = "Something went wrong. Please try again."
+
     response_data: Dict[str, Any] = {
         "success": False,
-        "error": exc.message,
+        "error": user_facing_message,
         "requestId": request_id,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
