@@ -233,19 +233,18 @@ async def list_received_echoes(
     sender_id: Optional[str] = Query(None, description="Filter by sender"),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """List echoes received by the current user (inbox view)."""
-    user_id = current_user.get("id", "")
-    user_email = current_user.get("email", "")
+    """List echoes received by the current user (inbox view).
 
-    if not user_id and not user_email:
-        raise HTTPException(
-            status_code=400, detail="User ID or email not found in token"
-        )
+    Recipient match is by Cognito sub via recipients.recipient-user-id-index,
+    which is populated at recipient creation and back-filled when the recipient
+    later signs up. No email lookup is needed.
+    """
+    user_id = current_user.get("id") or ""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID not found in token")
 
-    # Prefer user_id matching, fallback to email
     echoes = await echo_service.get_received_echoes(
-        user_id=user_id if user_id else None,
-        recipient_email=user_email if user_email else None,
+        user_id=user_id,
         category=category,
         sender_id=sender_id,
     )

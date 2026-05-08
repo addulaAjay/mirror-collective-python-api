@@ -21,6 +21,7 @@ from ..api.models import (
 )
 from ..services.cognito_service import CognitoService
 from ..services.dynamodb_service import DynamoDBService
+from ..services.echo_service import EchoService
 from ..services.user_linking_service import UserLinkingService
 from ..services.user_service import UserService
 
@@ -35,6 +36,7 @@ class AuthController:
         self.user_service = UserService()
         self.dynamodb_service = DynamoDBService()
         self.linking_service = UserLinkingService(self.dynamodb_service)
+        self.echo_service = EchoService()
 
     async def register(self, payload: UserRegistrationRequest) -> AuthResponse:
         """Register a new user account"""
@@ -250,6 +252,22 @@ class AuthController:
                     except Exception as link_error:
                         logger.error(f"Failed to link anonymous data: {link_error}")
                         # Don't fail email confirmation if linking fails
+
+                # Back-link recipient rows that other users created with this
+                # email before this user signed up. Without this, their inbox
+                # is silent because the recipient row's recipient_user_id is None.
+                try:
+                    await self.echo_service.link_user_to_recipients(
+                        user_id=user_profile.user_id,
+                        email=user_profile.email,
+                    )
+                except Exception as backlink_error:
+                    logger.error(
+                        f"Failed to back-link recipients for "
+                        f"{user_profile.user_id}: {backlink_error}"
+                    )
+                    # Don't fail confirmation; the offline backfill script
+                    # (scripts/backfill_recipient_user_id.py) will recover.
 
             except Exception as e:
                 # Log the error but don't fail the email confirmation
