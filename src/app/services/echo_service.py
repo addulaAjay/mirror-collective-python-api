@@ -369,55 +369,57 @@ class EchoService:
 
     async def get_received_echoes(
         self,
-        user_id: Optional[str] = None,
-        recipient_email: Optional[str] = None,
+        user_id: str,
         category: Optional[str] = None,
         sender_id: Optional[str] = None,
     ) -> List[Echo]:
         """
         Get echoes received by a user (inbox view).
         Only returns RELEASED echoes.
-        Prefers user_id matching (more reliable), falls back to email matching.
+
+        Matches recipient rows by recipient_user_id (Cognito sub) via the
+        recipient-user-id-index GSI. This is authoritative and works regardless
+        of whether the JWT carries an email claim. Recipient rows added before
+        the recipient signed up are back-linked at confirmation time (see
+        echo_service.link_user_recipient_records) and via the offline backfill
+        script in scripts/backfill_recipient_user_id.py.
 
         Args:
-            user_id: Logged-in user's Cognito sub (preferred)
-            recipient_email: Logged-in user's email (fallback)
+            user_id: Logged-in user's Cognito sub
             category: Filter by category
             sender_id: Filter by sender
 
         Returns:
             List of received echoes
         """
-        try:
-            recipient_ids = []
+        if not user_id:
+            raise ValidationError("user_id is required for inbox lookup")
 
+        try:
             async with self.session.resource(
                 "dynamodb", **self._get_dynamodb_kwargs()
             ) as dynamodb:
                 recipients_table = await dynamodb.Table(self.recipients_table)
 
-                # Look up recipient records whose email matches the logged-in user.
-                # The recipients table has an email-index GSI (hash key: email).
-                if recipient_email:
-                    recipient_response = await recipients_table.query(
-                        IndexName="email-index",
-                        KeyConditionExpression="email = :email",
-                        ExpressionAttributeValues={":email": recipient_email.lower()},
-                    )
-                    recipient_ids = [
-                        item["recipient_id"]
-                        for item in recipient_response.get("Items", [])
-                    ]
-                    if recipient_ids:
-                        logger.info(
-                            f"Found {len(recipient_ids)} recipient records for email: {recipient_email}"
-                        )
+                recipient_response = await recipients_table.query(
+                    IndexName="recipient-user-id-index",
+                    KeyConditionExpression="recipient_user_id = :uid",
+                    ExpressionAttributeValues={":uid": user_id},
+                )
+                recipient_items = [
+                    item
+                    for item in recipient_response.get("Items", [])
+                    if item.get("deleted_at") is None
+                ]
+                recipient_ids = [item["recipient_id"] for item in recipient_items]
 
                 if not recipient_ids:
-                    logger.info(
-                        f"No recipient records found for user {user_id} / {recipient_email}"
-                    )
+                    logger.info(f"Inbox: no recipient records linked to user {user_id}")
                     return []
+
+                logger.info(
+                    f"Inbox: found {len(recipient_ids)} recipient records for user {user_id}"
+                )
 
                 # Query released echoes for each matched recipient.
                 # recipient-echoes-index: hash=recipient_id, sort=status — use both
@@ -928,6 +930,92 @@ class EchoService:
         except Exception as e:
             logger.error(f"Error creating recipient: {e}")
             raise InternalServerError(f"Failed to create recipient: {str(e)}")
+
+    async def link_user_to_recipients(self, user_id: str, email: str) -> int:
+        """
+        Back-link a newly-confirmed user to existing recipient rows whose
+        email matches.
+
+        Called from the signup-confirmation flow so that recipients added
+        BEFORE the recipient signed up become discoverable via the
+        recipient-user-id-index GSI used by the inbox query.
+
+        Idempotent: rows already linked to this user_id are skipped; rows
+        linked to a different user_id are left alone and logged.
+
+        Args:
+            user_id: New user's Cognito sub.
+            email: New user's email (case-insensitive).
+
+        Returns:
+            Number of recipient rows newly linked.
+        """
+        if not user_id or not email:
+            return 0
+
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return 0
+
+        linked = 0
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.recipients_table)
+
+                response = await table.query(
+                    IndexName="email-index",
+                    KeyConditionExpression="email = :email",
+                    ExpressionAttributeValues={":email": normalized_email},
+                )
+
+                for item in response.get("Items", []):
+                    if item.get("deleted_at") is not None:
+                        continue
+
+                    existing = item.get("recipient_user_id")
+                    if existing == user_id:
+                        continue
+                    if existing and existing != user_id:
+                        logger.warning(
+                            f"Recipient {item.get('recipient_id')} already linked to "
+                            f"a different user_id ({existing}); skipping back-link "
+                            f"for {user_id}"
+                        )
+                        continue
+
+                    await table.update_item(
+                        Key={"recipient_id": item["recipient_id"]},
+                        UpdateExpression="SET recipient_user_id = :uid, updated_at = :ts",
+                        ExpressionAttributeValues={
+                            ":uid": user_id,
+                            ":ts": _current_timestamp(),
+                        },
+                    )
+                    linked += 1
+                    logger.info(
+                        f"Back-linked recipient {item.get('recipient_id')} "
+                        f"(email={normalized_email}) to user {user_id}"
+                    )
+
+            if linked:
+                logger.info(
+                    f"link_user_to_recipients: linked {linked} recipient row(s) "
+                    f"for user {user_id} ({normalized_email})"
+                )
+            else:
+                logger.info(
+                    f"link_user_to_recipients: no recipient rows to link for "
+                    f"user {user_id} ({normalized_email})"
+                )
+            return linked
+
+        except ClientError as e:
+            # Don't fail the signup confirmation if back-link fails — log and
+            # rely on the offline backfill script to recover.
+            logger.error(f"link_user_to_recipients failed for user {user_id}: {e}")
+            return linked
 
     async def get_user_recipients(self, user_id: str) -> List[Recipient]:
         """Get all active recipients for a user (excluding soft-deleted)."""

@@ -1590,8 +1590,8 @@ class TestRecipientUserIdLinking:
         assert "recipient_user_id" not in captured_items[0]
 
     @pytest.mark.asyncio
-    async def test_get_received_echoes_uses_email_index(self):
-        """get_received_echoes should look up recipients by email-index (single strategy)."""
+    async def test_get_received_echoes_uses_recipient_user_id_index(self):
+        """get_received_echoes should look up recipients by recipient-user-id-index."""
         from src.app.models.echo import EchoStatus
         from src.app.services.echo_service import EchoService
 
@@ -1607,6 +1607,7 @@ class TestRecipientUserIdLinking:
                     "email": "alice@example.com",
                     "name": "Alice",
                     "user_id": "creator-456",
+                    "recipient_user_id": "user-123",
                 }
             ]
         }
@@ -1641,18 +1642,18 @@ class TestRecipientUserIdLinking:
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
         with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            echoes = await service.get_received_echoes(
-                user_id="user-123",
-                recipient_email="alice@example.com",
-            )
+            echoes = await service.get_received_echoes(user_id="user-123")
 
         assert len(echoes) == 1
         assert echoes[0].echo_id == "echo-abc"
 
-        # Exactly one query on recipients table, using email-index
+        # Recipients query uses recipient-user-id-index keyed on user_id
         assert mock_recipients_table.query.call_count == 1
         call_kwargs = mock_recipients_table.query.call_args_list[0][1]
-        assert call_kwargs.get("IndexName") == "email-index"
+        assert call_kwargs.get("IndexName") == "recipient-user-id-index"
+        assert (
+            call_kwargs.get("ExpressionAttributeValues", {}).get(":uid") == "user-123"
+        )
 
         # Echoes query uses KeyConditionExpression (not FilterExpression) for status
         echoes_call_kwargs = mock_echoes_table.query.call_args_list[0][1]
@@ -1662,16 +1663,14 @@ class TestRecipientUserIdLinking:
         )
 
     @pytest.mark.asyncio
-    async def test_get_received_echoes_returns_empty_when_not_a_recipient(self):
-        """get_received_echoes returns [] when no recipient record matches the email."""
+    async def test_get_received_echoes_returns_empty_when_not_linked(self):
+        """get_received_echoes returns [] when no recipient row links to user_id."""
         from src.app.services.echo_service import EchoService
 
         service = EchoService()
 
         mock_recipients_table = AsyncMock()
-        mock_recipients_table.query.return_value = {
-            "Items": []
-        }  # No matching recipient
+        mock_recipients_table.query.return_value = {"Items": []}
 
         mock_dynamodb = AsyncMock()
         mock_dynamodb.Table = AsyncMock(return_value=mock_recipients_table)
@@ -1681,11 +1680,124 @@ class TestRecipientUserIdLinking:
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
         with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            echoes = await service.get_received_echoes(
-                user_id="user-999",
-                recipient_email="nobody@example.com",
-            )
+            echoes = await service.get_received_echoes(user_id="user-999")
 
         assert echoes == []
-        # Only the recipients lookup ran — no echo queries
         assert mock_recipients_table.query.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_received_echoes_skips_soft_deleted_recipient_rows(self):
+        """Soft-deleted recipient rows must not contribute to the inbox."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        mock_recipients_table = AsyncMock()
+        mock_recipients_table.query.return_value = {
+            "Items": [
+                {
+                    "recipient_id": "rec-soft-deleted",
+                    "email": "alice@example.com",
+                    "name": "Alice",
+                    "user_id": "creator-456",
+                    "recipient_user_id": "user-123",
+                    "deleted_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_recipients_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            echoes = await service.get_received_echoes(user_id="user-123")
+
+        assert echoes == []
+
+    @pytest.mark.asyncio
+    async def test_get_received_echoes_requires_user_id(self):
+        """Empty user_id must raise ValidationError, not silently return []."""
+        from src.app.core.exceptions import ValidationError
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        with pytest.raises(ValidationError):
+            await service.get_received_echoes(user_id="")
+
+    @pytest.mark.asyncio
+    async def test_link_user_to_recipients_patches_unlinked_rows(self):
+        """link_user_to_recipients sets recipient_user_id on unlinked rows."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        mock_table = AsyncMock()
+        mock_table.query.return_value = {
+            "Items": [
+                {
+                    "recipient_id": "rec-unlinked",
+                    "email": "new@example.com",
+                    "user_id": "creator-1",
+                },  # no recipient_user_id
+                {
+                    "recipient_id": "rec-already-linked",
+                    "email": "new@example.com",
+                    "user_id": "creator-2",
+                    "recipient_user_id": "user-123",
+                },
+                {
+                    "recipient_id": "rec-deleted",
+                    "email": "new@example.com",
+                    "user_id": "creator-3",
+                    "deleted_at": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "recipient_id": "rec-foreign-link",
+                    "email": "new@example.com",
+                    "user_id": "creator-4",
+                    "recipient_user_id": "someone-else",
+                },
+            ]
+        }
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(service.session, "resource", return_value=mock_resource_ctx):
+            linked = await service.link_user_to_recipients(
+                user_id="user-123", email="NEW@example.com"
+            )
+
+        # Only rec-unlinked should have been patched
+        assert linked == 1
+        assert mock_table.update_item.call_count == 1
+        update_kwargs = mock_table.update_item.call_args_list[0][1]
+        assert update_kwargs["Key"] == {"recipient_id": "rec-unlinked"}
+        assert update_kwargs["ExpressionAttributeValues"][":uid"] == "user-123"
+        # Email lookup is lower-cased
+        assert (
+            mock_table.query.call_args_list[0][1]["ExpressionAttributeValues"][":email"]
+            == "new@example.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_link_user_to_recipients_handles_empty_inputs(self):
+        """Empty user_id or email returns 0 without touching DynamoDB."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        with patch.object(service.session, "resource") as mock_resource:
+            assert await service.link_user_to_recipients("", "x@y.com") == 0
+            assert await service.link_user_to_recipients("u-1", "") == 0
+            assert await service.link_user_to_recipients("u-1", "   ") == 0
+            mock_resource.assert_not_called()

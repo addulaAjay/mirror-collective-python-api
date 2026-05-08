@@ -80,25 +80,21 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     groups: List[str] = payload.get("cognito:groups", []) or []
 
-    # Try multiple ways to get email
+    # Email comes only from the 'email' claim. Cognito ACCESS tokens do not
+    # carry it; ID tokens do. Do NOT fall back to sub/username here — that
+    # produced a UUID-shaped string in profile["email"] and silently broke
+    # downstream lookups (e.g. inbox match by email). Callers that need the
+    # email when only an access token was sent must resolve it from the users
+    # table by sub.
     email = payload.get("email")
-    if not email:
-        email = payload.get("cognito:username")
-    if not email:
-        email = payload.get("username")
-    if not email:
-        email = None
 
-    # If we still don't have email and this is an access token, warn about it
     token_use = payload.get("token_use")
-    if (
-        not email and token_use == "access"  # nosec B105
-    ):  # 'access' is a token type, not a password
+    if not email and token_use == "access":  # nosec B105 — 'access' is a token type
         logger.warning(
-            "⚠️  No email found in access token. "
-            "Consider using ID token for user profile endpoints."
+            "⚠️  No email claim in access token. "
+            "Endpoints that need the user's email must resolve it via the "
+            "users table by sub. Available claims: " + ", ".join(payload.keys())
         )
-        logger.info("💡 Available claims in access token: " + ", ".join(payload.keys()))
 
     logger.info(f"🔍 Extracted email from payload: {email}")
 
