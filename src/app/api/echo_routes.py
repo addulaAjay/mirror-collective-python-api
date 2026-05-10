@@ -35,6 +35,10 @@ class CreateEchoRequest(BaseModel):
     release_date: Optional[str] = None  # ISO 8601 for scheduled release
     unlock_on_death: Optional[bool] = False  # If true, echo released when creator dies
     content: Optional[str] = None  # For text echoes
+    # Optional cover note shown alongside the echo. Captured on the recipient
+    # picker screen as "Letter to Recipient". Distinct from `content` so it
+    # works for AUDIO / VIDEO echoes (where content is unused) as well.
+    letter_to_recipient: Optional[str] = None
 
     @validator("release_date")
     def validate_release_date(cls, v):
@@ -86,6 +90,7 @@ class UpdateEchoRequest(BaseModel):
     media_url: Optional[str] = None
     recipient_id: Optional[str] = None
     release_date: Optional[str] = None  # ISO 8601; null clears the schedule
+    letter_to_recipient: Optional[str] = None  # null clears the cover note
 
     @validator("release_date")
     def validate_release_date(cls, v):
@@ -262,6 +267,7 @@ async def list_user_echoes(
                 "recipient": e.recipient,
                 "release_date": e.release_date,
                 "lock_date": e.lock_date,
+                "letter_to_recipient": e.letter_to_recipient,
                 "created_at": e.created_at,
             }
             for e in echoes
@@ -352,6 +358,12 @@ async def get_echo(
             "media_url": echo.media_url,
             "recipient_id": echo.recipient_id,
             "recipient": echo.recipient,
+            # release_date / lock_date / letter_to_recipient are needed by
+            # the playback screens so they can prefill the edit flow with
+            # the echo's current schedule + cover note.
+            "release_date": echo.release_date,
+            "lock_date": echo.lock_date,
+            "letter_to_recipient": echo.letter_to_recipient,
             "created_at": echo.created_at,
             "updated_at": echo.updated_at,
         },
