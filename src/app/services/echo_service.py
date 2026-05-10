@@ -116,6 +116,7 @@ class EchoService:
                 release_date=data.get("release_date"),
                 unlock_on_death=data.get("unlock_on_death", False),
                 content=data.get("content"),  # For text type
+                letter_to_recipient=data.get("letter_to_recipient"),
             )
 
             async with self.session.resource(
@@ -510,6 +511,13 @@ class EchoService:
                     pass  # Keep existing type if invalid
             if "recipient_id" in data:
                 echo.recipient_id = data["recipient_id"]
+            if "release_date" in data:
+                # Explicit None clears the schedule (used by "Cancel
+                # scheduled send" in the app); a string sets/replaces it.
+                echo.release_date = data["release_date"]
+            if "letter_to_recipient" in data:
+                # Same set-or-clear semantics as release_date.
+                echo.letter_to_recipient = data["letter_to_recipient"]
 
             echo.updated_at = _current_timestamp()
 

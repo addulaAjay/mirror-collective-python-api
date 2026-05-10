@@ -74,6 +74,12 @@ class Echo:
     status: EchoStatus = EchoStatus.DRAFT
     recipient_id: Optional[str] = None  # References Recipient
 
+    # Optional cover note shown alongside the echo in the recipient's inbox.
+    # Captured on the "Letter to Recipient" field in ChooseRecipientScreen
+    # during create/edit. Distinct from `content` (which is the echo body for
+    # TEXT echoes / unused for AUDIO/VIDEO).
+    letter_to_recipient: Optional[str] = None
+
     # Lock/Release scheduling
     lock_date: Optional[str] = None  # When echo was locked
     release_date: Optional[str] = None  # When to auto-release (optional)
