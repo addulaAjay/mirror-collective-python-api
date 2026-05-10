@@ -656,6 +656,114 @@ class EchoService:
 
         return echo
 
+    async def release_due_echoes(self) -> Dict[str, Any]:
+        """
+        Find every DRAFT echo whose `release_date` has passed and release it.
+
+        Used by the hourly scheduler Lambda (`echo_release_job.lambda_handler`)
+        to close the gap left by `create_echo` — that path only auto-releases
+        when the echo is created with a past/now release_date; future dates
+        are left in DRAFT until something else picks them up. That "something
+        else" is this method.
+
+        Implementation notes:
+
+        - Uses a DynamoDB Scan with a FilterExpression on status + release_date.
+          Acceptable at current data volumes; if the table grows large, add a
+          GSI on `status` and switch this to a query.
+        - Per-echo release calls are guarded so one failure does not abort
+          the whole batch. Failures are counted and logged but not raised.
+        - Skips items where `release_date` is missing (no schedule = nothing
+          for the scheduler to act on; manual release path is unaffected).
+        - The release_echo call enforces the standard preconditions
+          (recipient required, no guardian, still DRAFT) — anything not
+          eligible falls into the failed count and is logged.
+
+        Returns:
+            Dict with keys: `scanned` (raw item count), `released`,
+            `skipped` (no recipient / no schedule / guardian-locked),
+            `failed`, `errors` (truncated list of error strings).
+        """
+        from boto3.dynamodb.conditions import Attr
+
+        now_iso = _current_timestamp()
+        scanned = released = skipped = failed = 0
+        errors: List[str] = []
+
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.echoes_table)
+
+                # Page through scan results — DynamoDB caps single-page size
+                # to 1MB, so we loop on ExclusiveStartKey for large tables.
+                scan_kwargs: Dict[str, Any] = {
+                    "FilterExpression": (
+                        Attr("status").eq(EchoStatus.DRAFT.value)
+                        & Attr("release_date").lte(now_iso)
+                        & Attr("deleted_at").not_exists()
+                    ),
+                }
+
+                while True:
+                    response = await table.scan(**scan_kwargs)
+                    for item in response.get("Items", []):
+                        scanned += 1
+                        echo_id = item.get("echo_id")
+                        owner_user_id = item.get("user_id")
+
+                        if not echo_id or not owner_user_id:
+                            failed += 1
+                            errors.append(
+                                f"Malformed echo row missing echo_id/user_id: "
+                                f"{item.get('echo_id', '<no id>')}"
+                            )
+                            continue
+
+                        # Items with a guardian go through the guardian flow;
+                        # release_echo rejects them with ValidationError, but
+                        # filtering early keeps the log clean.
+                        if item.get("guardian_id"):
+                            skipped += 1
+                            continue
+                        if not item.get("recipient_id"):
+                            skipped += 1
+                            continue
+
+                        try:
+                            await self.release_echo(echo_id, owner_user_id)
+                            released += 1
+                            logger.info(
+                                f"Auto-released echo {echo_id} (owner={owner_user_id}, "
+                                f"release_date={item.get('release_date')})"
+                            )
+                        except Exception as e:
+                            failed += 1
+                            msg = f"Failed to release echo {echo_id}: {e}"
+                            logger.warning(msg)
+                            # Bound the errors list so a bad batch doesn't
+                            # produce an unreadable response payload.
+                            if len(errors) < 20:
+                                errors.append(msg)
+
+                    last_key = response.get("LastEvaluatedKey")
+                    if not last_key:
+                        break
+                    scan_kwargs["ExclusiveStartKey"] = last_key
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error scanning for due echoes: {e}", exc_info=True)
+            raise InternalServerError(f"Scheduler scan failed: {str(e)}")
+
+        return {
+            "scanned": scanned,
+            "released": released,
+            "skipped": skipped,
+            "failed": failed,
+            "errors": errors,
+        }
+
     async def lock_echo(self, echo_id: str, user_id: str) -> Echo:
         """
         Lock an echo with a guardian, preventing further edits and notifying the guardian.

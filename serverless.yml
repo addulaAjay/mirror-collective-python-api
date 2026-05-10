@@ -199,6 +199,17 @@ functions:
           rate: cron(0 12 * * ? *)  # Run daily at 12:00 UTC
           description: Check trial expirations and send notifications
 
+  # Scheduled job: auto-release DRAFT echoes whose release_date has passed
+  echoReleaseScheduler:
+    handler: src/app/jobs/echo_release_job.lambda_handler
+    description: Hourly scan for DRAFT echoes due for auto-release
+    timeout: 300
+    memorySize: 256
+    events:
+      - schedule:
+          rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
+          description: Auto-release scheduled echoes
+
 resources:
   Resources:
     UsersTable:

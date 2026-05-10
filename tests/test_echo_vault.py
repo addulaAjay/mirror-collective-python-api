@@ -1013,6 +1013,224 @@ def echo_client():
         yield c
 
 
+# ============================================================
+# SECTION 3.5 — Unit tests: EchoService.release_due_echoes (scheduler)
+# ============================================================
+
+
+class TestEchoServiceReleaseDueEchoes:
+    """
+    Coverage for the scheduler entry point that the hourly Lambda calls.
+
+    The method scans the echoes table for DRAFTs with a past release_date
+    and releases each. These tests exercise the orchestration — the per-
+    echo release is delegated to release_echo (already covered above), so
+    we just verify it's invoked with the right (echo_id, owner_user_id)
+    pair and that failures are isolated to individual rows.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_aws_creds(self, monkeypatch):
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+    def _wire_scan_mock(self, service, scan_pages):
+        """
+        Patch the DynamoDB resource so successive table.scan() calls return
+        `scan_pages` in order (a list of {"Items": [...], "LastEvaluatedKey": ?}
+        dicts). The final page must omit LastEvaluatedKey to terminate the loop.
+        """
+        mock_table = AsyncMock()
+        mock_table.scan = AsyncMock(side_effect=scan_pages)
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        return mock_table, patch.object(
+            service.session, "resource", return_value=mock_resource_ctx
+        )
+
+    @pytest.mark.asyncio
+    async def test_release_due_echoes_releases_each_match(self):
+        """Every scanned row gets a release_echo call with its own owner id."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scan_pages = [
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-1",
+                        "user_id": "u-1",
+                        "recipient_id": "r-1",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    },
+                    {
+                        "echo_id": "e-2",
+                        "user_id": "u-2",
+                        "recipient_id": "r-2",
+                        "release_date": "2026-02-01T00:00:00Z",
+                    },
+                ],
+            }
+        ]
+        _, scan_ctx = self._wire_scan_mock(service, scan_pages)
+        release_mock = AsyncMock()
+
+        with scan_ctx, patch.object(service, "release_echo", new=release_mock):
+            result = await service.release_due_echoes()
+
+        assert release_mock.call_count == 2
+        # Each release call must use the owning user_id from the scanned row,
+        # not a system identity — release_echo's get_echo() depends on it.
+        release_mock.assert_any_await("e-1", "u-1")
+        release_mock.assert_any_await("e-2", "u-2")
+        assert result["released"] == 2
+        assert result["failed"] == 0
+        assert result["skipped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_release_due_echoes_skips_guardian_locked_rows(self):
+        """Rows with a guardian_id go through the guardian flow, not this one."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scan_pages = [
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-guard",
+                        "user_id": "u-1",
+                        "recipient_id": "r-1",
+                        "guardian_id": "g-1",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    },
+                ],
+            }
+        ]
+        _, scan_ctx = self._wire_scan_mock(service, scan_pages)
+        release_mock = AsyncMock()
+
+        with scan_ctx, patch.object(service, "release_echo", new=release_mock):
+            result = await service.release_due_echoes()
+
+        release_mock.assert_not_awaited()
+        assert result["skipped"] == 1
+        assert result["released"] == 0
+
+    @pytest.mark.asyncio
+    async def test_release_due_echoes_skips_rows_without_recipient(self):
+        """Echoes without a recipient_id cannot be released — skip cleanly."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scan_pages = [
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-orphan",
+                        "user_id": "u-1",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    },
+                ],
+            }
+        ]
+        _, scan_ctx = self._wire_scan_mock(service, scan_pages)
+        release_mock = AsyncMock()
+
+        with scan_ctx, patch.object(service, "release_echo", new=release_mock):
+            result = await service.release_due_echoes()
+
+        release_mock.assert_not_awaited()
+        assert result["skipped"] == 1
+        assert result["released"] == 0
+
+    @pytest.mark.asyncio
+    async def test_release_due_echoes_continues_past_per_echo_failure(self):
+        """One bad echo must not stop the batch; failure is counted + logged."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scan_pages = [
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-good",
+                        "user_id": "u-1",
+                        "recipient_id": "r-1",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    },
+                    {
+                        "echo_id": "e-bad",
+                        "user_id": "u-2",
+                        "recipient_id": "r-2",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    },
+                ],
+            }
+        ]
+        _, scan_ctx = self._wire_scan_mock(service, scan_pages)
+
+        async def fake_release(echo_id, user_id):
+            if echo_id == "e-bad":
+                raise RuntimeError("simulated failure")
+
+        release_mock = AsyncMock(side_effect=fake_release)
+
+        with scan_ctx, patch.object(service, "release_echo", new=release_mock):
+            result = await service.release_due_echoes()
+
+        assert release_mock.call_count == 2
+        assert result["released"] == 1
+        assert result["failed"] == 1
+        assert len(result["errors"]) == 1
+        assert "e-bad" in result["errors"][0]
+
+    @pytest.mark.asyncio
+    async def test_release_due_echoes_paginates_through_scan_results(self):
+        """Multi-page scans (DynamoDB LastEvaluatedKey) loop until exhausted."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scan_pages = [
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-1",
+                        "user_id": "u-1",
+                        "recipient_id": "r-1",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    }
+                ],
+                "LastEvaluatedKey": {"echo_id": "e-1"},
+            },
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-2",
+                        "user_id": "u-2",
+                        "recipient_id": "r-2",
+                        "release_date": "2026-01-01T00:00:00Z",
+                    }
+                ],
+            },
+        ]
+        mock_table, scan_ctx = self._wire_scan_mock(service, scan_pages)
+        release_mock = AsyncMock()
+
+        with scan_ctx, patch.object(service, "release_echo", new=release_mock):
+            result = await service.release_due_echoes()
+
+        assert mock_table.scan.call_count == 2
+        assert release_mock.call_count == 2
+        assert result["released"] == 2
+
+
 class TestReleaseEchoEndpoint:
     """
     Integration tests for the PATCH /api/echoes/{echo_id}/release route.
