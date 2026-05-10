@@ -219,6 +219,8 @@ async def list_user_echoes(
                 "status": e.status.value,
                 "recipient_id": e.recipient_id,
                 "recipient": e.recipient,
+                "release_date": e.release_date,
+                "lock_date": e.lock_date,
                 "created_at": e.created_at,
             }
             for e in echoes
