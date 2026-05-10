@@ -105,6 +105,59 @@ class OpenAIService(IMirrorChatRepository):
 
         logger.info(f"OpenAI service initialized with model: {self.model}")
 
+    def send_with_overrides(
+        self,
+        messages: List[ChatMessage],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Send messages with per-call model/temperature/max_tokens overrides.
+
+        Used by ancillary callers (e.g. ConversationSummarizer) that need a
+        cheaper or differently-tuned model than the main chat default. Does
+        not mutate instance state. Streaming is intentionally not supported
+        here — these calls are short-form completions.
+        """
+        try:
+            openai_messages: List[ChatCompletionMessageParam] = [
+                cast(ChatCompletionMessageParam, msg.to_dict()) for msg in messages
+            ]
+
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=openai_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+            )
+
+            return response.choices[0].message.content or ""
+
+        except Exception as e:
+            logger.error(f"OpenAI API error (overrides): {str(e)}")
+            raise InternalServerError(f"Chat service unavailable: {str(e)}")
+
+    async def send_with_overrides_async(
+        self,
+        messages: List[ChatMessage],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Async wrapper around send_with_overrides."""
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            self.send_with_overrides,
+            messages,
+            model,
+            temperature,
+            max_tokens,
+        )
+
     def send(self, messages: List[ChatMessage]) -> str:
         """
         Generate AI response from conversation messages using OpenAI's chat completion

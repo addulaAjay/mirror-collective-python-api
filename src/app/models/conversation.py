@@ -179,6 +179,15 @@ class Conversation:
     last_message_at: Optional[str] = None
     tags: Optional[List[str]] = None
 
+    # Continuity memory — see docs/MIRRORGPT_CONTINUITY_MEMORY.md.
+    # Compact, behavior-focused summary that travels across conversations
+    # so MirrorGPT can pick up a thread without re-reading raw turns.
+    summary: Optional[str] = None
+    key_themes: Optional[List[str]] = None
+    open_threads: Optional[List[str]] = None
+    summarized_through_message_id: Optional[str] = None
+    summarized_at: Optional[str] = None
+
     def __post_init__(self):
         if not self.conversation_id:
             self.conversation_id = str(uuid4())
@@ -211,6 +220,11 @@ class Conversation:
             is_archived=item.get("is_archived", False),
             last_message_at=item.get("last_message_at"),
             tags=item.get("tags", []),
+            summary=item.get("summary"),
+            key_themes=item.get("key_themes"),
+            open_threads=item.get("open_threads"),
+            summarized_through_message_id=item.get("summarized_through_message_id"),
+            summarized_at=item.get("summarized_at"),
         )
 
     def generate_title_from_content(self, first_message: str) -> str:

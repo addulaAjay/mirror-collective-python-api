@@ -260,6 +260,20 @@ class MirrorOrchestrator:
                         f"user_id={user_id}: {results[idx]}"
                     )
 
+            # Continuity carrier: when this conversation has no turns of its
+            # own (a fresh conversation), inject the prior conversation's
+            # summary as a synthetic system message so the model can pick up
+            # the thread across the boundary. Falls back silently if no
+            # prior context is available. See
+            # docs/MIRRORGPT_CONTINUITY_MEMORY.md.
+            if not history:
+                carrier = await self._load_prior_continuity_carrier(
+                    user_id=user_id,
+                    current_conversation_id=conversation_id,
+                )
+                if carrier is not None:
+                    history = [carrier]
+
             # 2. Analyze current message (all 5 signals)
             analysis_result = self.archetype_engine.analyze_message(
                 message=message,
@@ -453,6 +467,91 @@ class MirrorOrchestrator:
                 f"conversation_id={conversation_id} user_id={user_id}: {e}"
             )
             return []
+
+    async def _load_prior_continuity_carrier(
+        self,
+        user_id: str,
+        current_conversation_id: Optional[str],
+    ) -> Optional[ChatMessage]:
+        """Build a synthetic system message carrying prior session's summary.
+
+        Called only when the current conversation has no history of its own
+        (a fresh conversation). Looks up the user's most recent OTHER
+        conversation, lazy-summarizes it if needed, and renders the summary
+        as a single system-role ChatMessage. Returns None when there is no
+        usable prior context — never raises. See
+        docs/MIRRORGPT_CONTINUITY_MEMORY.md.
+        """
+        try:
+            from .conversation_service import ConversationService
+            from .conversation_summarizer import (
+                DEFAULT_FIRST_SUMMARY_AT,
+                ConversationSummarizer,
+            )
+
+            conversation_service = ConversationService()
+            recent = await conversation_service.get_recent_conversations(
+                user_id=user_id, limit=4
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"continuity-carrier: load failed for user_id={user_id}: {e}"
+            )
+            return None
+
+        # Filter out the current conversation, take the most-recent prior.
+        prior = next(
+            (c for c in recent if c.conversation_id != current_conversation_id),
+            None,
+        )
+        if not prior:
+            return None
+
+        # Lazy summarize if eligible but no summary yet (bounded to one call).
+        if not prior.summary and prior.message_count >= DEFAULT_FIRST_SUMMARY_AT:
+            try:
+                summarizer = ConversationSummarizer(
+                    openai_service=self.openai_service,
+                    conversation_service=conversation_service,
+                )
+                await summarizer.summarize(
+                    conversation_id=prior.conversation_id, user_id=user_id
+                )
+                # Re-read to pick up the new summary.
+                refreshed = await conversation_service.get_recent_conversations(
+                    user_id=user_id, limit=4
+                )
+                prior = next(
+                    (
+                        c
+                        for c in refreshed
+                        if c.conversation_id != current_conversation_id
+                    ),
+                    prior,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"continuity-carrier: lazy summarize failed for "
+                    f"prior_id={prior.conversation_id}: {e}"
+                )
+
+        if not prior.summary:
+            return None
+
+        # Render the carrier. Labeled clearly as background so the model
+        # treats it as setup, not as a turn to respond to.
+        open_threads = prior.open_threads or []
+        thread = open_threads[0] if open_threads else None
+        thread_clause = f" Open thread: {thread}." if thread else ""
+        carrier_text = (
+            "Prior session context (background only — do NOT quote, do NOT "
+            "treat as the user's current message). Use it to acknowledge "
+            "where they were if relevant, reference stance before topic, "
+            "and obey the anti-oracle / safety / banned-language rules in "
+            "the system prompt.\n"
+            f"Summary: {prior.summary}{thread_clause}"
+        )
+        return ChatMessage(role="system", content=carrier_text)
 
     async def _get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user's current archetype profile"""

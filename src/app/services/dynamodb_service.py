@@ -520,6 +520,53 @@ class DynamoDBService:
             logger.error(f"Unexpected error updating conversation: {e}")
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
+    async def update_conversation_summary(
+        self, conversation: Conversation
+    ) -> Conversation:
+        """Update only the continuity-memory fields on a conversation.
+
+        Kept separate from update_conversation() so summary writes never
+        race with message_count / last_message_at updates from the chat
+        path. See docs/MIRRORGPT_CONTINUITY_MEMORY.md.
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(self.conversations_table)
+
+                await table.update_item(
+                    Key={
+                        "conversation_id": conversation.conversation_id,
+                        "user_id": conversation.user_id,
+                    },
+                    UpdateExpression=(
+                        "SET summary = :summary, "
+                        "key_themes = :key_themes, "
+                        "open_threads = :open_threads, "
+                        "summarized_through_message_id = :stmid, "
+                        "summarized_at = :sat"
+                    ),
+                    ExpressionAttributeValues={
+                        ":summary": conversation.summary,
+                        ":key_themes": conversation.key_themes or [],
+                        ":open_threads": conversation.open_threads or [],
+                        ":stmid": conversation.summarized_through_message_id,
+                        ":sat": conversation.summarized_at,
+                    },
+                )
+
+                return conversation
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error updating conversation summary: {e}")
+            raise InternalServerError(
+                f"Failed to update conversation summary: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error updating conversation summary: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
     async def get_user_conversations(
         self, user_id: str, limit: int = 50, include_archived: bool = False
     ) -> List[Conversation]:

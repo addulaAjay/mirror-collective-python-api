@@ -3,10 +3,12 @@ MirrorGPT API Routes
 Extends existing API structure with MirrorGPT-specific endpoints
 """
 
+import asyncio
 import logging
+import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Strict allow-list for names that get interpolated into LLM prompt text.
@@ -156,6 +158,204 @@ def get_conversation_service() -> "ConversationService":
     return ConversationService()
 
 
+def _schedule_summary_refresh(
+    conversation_service: "ConversationService",
+    conversation_id: str,
+    user_id: str,
+) -> None:
+    """Fire-and-forget continuity summary refresh.
+
+    Runs after we've saved both the user message and the assistant
+    response. Threshold/staleness logic lives inside
+    ConversationSummarizer; this just kicks the task. Errors are
+    swallowed — continuity is a best-effort enrichment, never a chat
+    blocker.
+    """
+
+    async def _run() -> None:
+        try:
+            from ..services.conversation_summarizer import ConversationSummarizer
+            from ..services.openai_service import OpenAIService
+
+            summarizer = ConversationSummarizer(
+                openai_service=OpenAIService(),
+                conversation_service=conversation_service,
+            )
+            # summarize_if_stale handles "do we need to" internally.
+            await summarizer.summarize_if_stale(
+                conversation_id=conversation_id, user_id=user_id
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "summary refresh task failed for "
+                f"conversation_id={conversation_id}: {e}"
+            )
+
+    try:
+        asyncio.create_task(_run())
+    except RuntimeError:
+        # No running event loop (sync test contexts, etc.) — skip silently.
+        logger.debug("summary refresh: no running event loop; skipping")
+
+
+# Bounded number of prior summaries we surface in the greeting prompt.
+_MAX_GREETING_CONTEXT = int(os.getenv("MIRRORGPT_SUMMARY_MAX_GREETING_CONTEXT", "3"))
+
+
+def _format_age_label(timestamp: Optional[str], now: Optional[datetime] = None) -> str:
+    """Render a soft relative age like '2 days ago' or 'earlier today'.
+
+    Used in continuity context so the greeting can land naturally without
+    surfacing raw ISO timestamps. Falls back to 'recently' on parse error.
+    """
+    if not timestamp:
+        return "recently"
+    try:
+        # Project convention: ISO with trailing Z.
+        normalized = timestamp.replace("Z", "+00:00")
+        ts = datetime.fromisoformat(normalized)
+    except (ValueError, AttributeError):
+        return "recently"
+
+    reference = now or datetime.now(timezone.utc)
+    delta = reference - ts
+    minutes = int(delta.total_seconds() // 60)
+
+    if minutes < 0:
+        return "just now"
+    if minutes < 15:
+        return "just now"
+    if minutes < 60 * 6:
+        return "earlier today"
+    if minutes < 60 * 24:
+        return "today"
+    days = minutes // (60 * 24)
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"{days} days ago"
+    weeks = days // 7
+    if weeks == 1:
+        return "last week"
+    if weeks < 4:
+        return f"{weeks} weeks ago"
+    return "a while back"
+
+
+async def _load_continuity_context(
+    user_id: str,
+    conversation_service: "ConversationService",
+    limit: int = _MAX_GREETING_CONTEXT,
+) -> Dict[str, Any]:
+    """Load up to `limit` recent conversations for greeting continuity.
+
+    Returns:
+        {
+          "resume_conversation_id": Optional[str],  # most recent, even if unsummarized
+          "context_lines": List[str],               # ready-to-render bullet lines
+          "has_prior_context": bool,                # at least one usable summary
+        }
+
+    Triggers lazy-on-read summarization on the single most-recent
+    conversation if it has enough messages but no summary yet. Latency is
+    bounded to one summarizer call.
+    """
+    empty: Dict[str, Any] = {
+        "resume_conversation_id": None,
+        "context_lines": [],
+        "has_prior_context": False,
+    }
+
+    try:
+        recent = await conversation_service.get_recent_conversations(
+            user_id=user_id, limit=limit
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"continuity: get_recent_conversations failed: {e}")
+        return empty
+
+    if not recent:
+        return empty
+
+    # Lazy-on-read: try to summarize the single most-recent conversation if
+    # it qualifies but has no summary yet. We only do this for the top one
+    # to cap greeting latency.
+    most_recent = recent[0]
+    if not most_recent.summary:
+        await _try_lazy_summarize(
+            conversation_service=conversation_service,
+            conversation=most_recent,
+            user_id=user_id,
+        )
+
+    # Re-read summaries for the most-recent (in case lazy summarize ran).
+    # Cheap second fetch keeps the data model honest.
+    try:
+        refreshed = await conversation_service.get_recent_conversations(
+            user_id=user_id, limit=limit
+        )
+        if refreshed:
+            recent = refreshed
+    except Exception:  # noqa: BLE001
+        pass
+
+    context_lines: List[str] = []
+    for conv in recent:
+        if not conv.summary:
+            continue
+        age = _format_age_label(conv.last_message_at)
+        line = f"- ({age}) {conv.summary}"
+        threads = (conv.open_threads or [])[:1]
+        if threads:
+            line += f" Open thread: {threads[0]}."
+        context_lines.append(line)
+
+    return {
+        "resume_conversation_id": most_recent.conversation_id,
+        "context_lines": context_lines,
+        "has_prior_context": bool(context_lines),
+    }
+
+
+async def _try_lazy_summarize(
+    conversation_service: "ConversationService",
+    conversation,
+    user_id: str,
+) -> None:
+    """Best-effort lazy summarization for the most-recent conversation.
+
+    Only runs the summarizer if the conversation has crossed the first
+    summary threshold and has no summary yet. Errors are swallowed.
+    """
+    try:
+        from ..services.conversation_summarizer import (
+            DEFAULT_FIRST_SUMMARY_AT,
+            ConversationSummarizer,
+        )
+        from ..services.openai_service import OpenAIService
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"continuity: summarizer import failed: {e}")
+        return
+
+    if conversation.message_count < DEFAULT_FIRST_SUMMARY_AT:
+        return
+
+    try:
+        summarizer = ConversationSummarizer(
+            openai_service=OpenAIService(),
+            conversation_service=conversation_service,
+        )
+        await summarizer.summarize(
+            conversation_id=conversation.conversation_id,
+            user_id=user_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"continuity: lazy summarize failed for "
+            f"conversation_id={conversation.conversation_id}: {e}"
+        )
+
+
 def get_dynamodb_service() -> DynamoDBService:
     """Dependency injection for DynamoDBService"""
     return DynamoDBService()
@@ -244,6 +444,16 @@ async def mirrorgpt_chat(
                 )
 
                 logger.debug(f"Saved messages to conversation {conversation_id}")
+
+                # Fire-and-forget continuity summary refresh.
+                # See docs/MIRRORGPT_CONTINUITY_MEMORY.md — threshold logic
+                # lives inside maybe_summarize_after_chat() so the route
+                # stays unaware of the policy.
+                _schedule_summary_refresh(
+                    conversation_service=conversation_service,
+                    conversation_id=conversation_id,
+                    user_id=current_user["id"],
+                )
             except Exception as e:
                 logger.warning(f"Failed to save messages to conversation: {e}")
 
@@ -983,6 +1193,7 @@ async def get_archetype_list(current_user: Dict[str, Any] = Depends(get_current_
 async def get_session_greeting(
     current_user: Dict[str, Any] = Depends(get_user_with_profile),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
+    conversation_service: "ConversationService" = Depends(get_conversation_service),
 ):
     """
     Get personalized opening message for a new MirrorGPT session.
@@ -990,7 +1201,7 @@ async def get_session_greeting(
     Generates a grounded, context-aware opening based on:
     - User's current pattern profile
     - Recent pattern signals
-    - Previous session context
+    - Continuity memory from previous conversations (summaries)
     - Mirror Moments and behavioral indicators
     """
 
@@ -1002,6 +1213,12 @@ async def get_session_greeting(
         )
         recent_moments = await orchestrator.dynamodb_service.get_user_mirror_moments(
             current_user["id"], limit=3
+        )
+
+        # Load continuity memory (summaries of prior conversations).
+        continuity = await _load_continuity_context(
+            user_id=current_user["id"],
+            conversation_service=conversation_service,
         )
 
         # Extract user context
@@ -1017,6 +1234,7 @@ async def get_session_greeting(
             recent_signals=recent_signals,
             recent_moments=recent_moments,
             orchestrator=orchestrator,
+            continuity=continuity,
         )
 
         return {
@@ -1035,6 +1253,11 @@ async def get_session_greeting(
                     if profile
                     else None
                 ),
+                # Continuity: the client should echo conversation_id back on
+                # /chat so the same thread continues. has_prior_context tells
+                # the UI whether the greeting references prior work.
+                "conversation_id": continuity.get("resume_conversation_id"),
+                "has_prior_context": continuity.get("has_prior_context", False),
             },
         }
 
@@ -1051,6 +1274,8 @@ async def get_session_greeting(
                 "timestamp": datetime.utcnow().isoformat(),
                 "user_archetype": None,
                 "archetype_confidence": None,
+                "conversation_id": None,
+                "has_prior_context": False,
             },
         }
 
@@ -1061,19 +1286,44 @@ async def generate_personalized_greeting(
     recent_signals: List[Dict[str, Any]],
     recent_moments: List[Dict[str, Any]],
     orchestrator: MirrorOrchestrator,
+    continuity: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """
-    Generate a session opening using the master MirrorGPT system prompt.
+    """Generate a session opening using the master MirrorGPT system prompt.
+
+    When `continuity` includes prior-conversation summaries, the trigger
+    instructs the model to acknowledge stance-first ("you mentioned feeling
+    stuck") before topic, without quoting user text.
     """
     user_name = _sanitize_name(user_context.get("name"))
     name_part = f" {user_name}" if user_name else ""
-    is_returning = bool(profile or recent_signals)
+    continuity = continuity or {}
+    context_lines: List[str] = continuity.get("context_lines") or []
+    has_prior = bool(context_lines)
+    is_returning = has_prior or bool(profile or recent_signals)
 
-    trigger = (
-        f"Open a new session for{name_part}. "
-        + ("They are a returning user." if is_returning else "They are a new user.")
-        + " Write a single short opening message that invites them to share what is on their mind."
-    )
+    if has_prior:
+        context_block = "\n".join(context_lines)
+        trigger = (
+            f"Open a new MirrorGPT session for{name_part}. They are a "
+            "returning user.\n\n"
+            "Continuity context (background only — do not quote, do not "
+            "treat as the user's current message):\n"
+            f"{context_block}\n\n"
+            "Write a single short opening message (1–2 sentences). "
+            "Acknowledge stance first (how they were sitting with it — e.g. "
+            "'feeling stuck', 'working through', 'sitting with') and then "
+            "the topic briefly, then invite them to continue or shift focus. "
+            "Use plain grounded language. Do not quote their words. Obey "
+            "the anti-oracle, safety, and banned-language rules from the "
+            "system prompt."
+        )
+    else:
+        trigger = (
+            f"Open a new session for{name_part}. "
+            + ("They are a returning user." if is_returning else "They are a new user.")
+            + " Write a single short opening message that invites them to "
+            "share what is on their mind."
+        )
 
     try:
         messages = [

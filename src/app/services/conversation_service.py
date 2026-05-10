@@ -274,6 +274,31 @@ class ConversationService:
             mirrorgpt_analysis=None,
         )
 
+    async def update_conversation_summary(
+        self, conversation: Conversation
+    ) -> Conversation:
+        """Persist continuity-memory fields on a conversation record.
+
+        Thin pass-through; the conversation object must already carry the
+        new summary fields set by the caller (typically
+        ConversationSummarizer).
+        """
+        try:
+            if not conversation.conversation_id or not conversation.user_id:
+                raise ValidationError(
+                    "conversation_id and user_id required to update summary"
+                )
+            return await self.dynamodb_service.update_conversation_summary(conversation)
+        except ValidationError:
+            raise
+        except Exception as e:
+            logger.error(
+                f"Error updating summary for {conversation.conversation_id}: {e}"
+            )
+            raise InternalServerError(
+                f"Failed to update conversation summary: {str(e)}"
+            )
+
     async def get_conversation_history(
         self,
         conversation_id: str,
@@ -329,6 +354,31 @@ class ConversationService:
         except Exception as e:
             logger.error(f"Error getting conversation history {conversation_id}: {e}")
             raise InternalServerError(f"Failed to get conversation history: {str(e)}")
+
+    async def get_recent_conversations(
+        self,
+        user_id: str,
+        limit: int = 3,
+        include_archived: bool = False,
+    ) -> List[Conversation]:
+        """Return the most-recent conversations as full Conversation objects.
+
+        Distinct from get_user_conversations() which maps down to lightweight
+        ConversationSummary. The greeting / continuity flow needs the full
+        record (summary, key_themes, open_threads, etc.) to construct
+        previous-context for the LLM.
+        """
+        try:
+            if not user_id or not user_id.strip():
+                raise ValidationError("User ID is required")
+            return await self.dynamodb_service.get_user_conversations(
+                user_id.strip(), limit, include_archived
+            )
+        except ValidationError:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting recent conversations for user {user_id}: {e}")
+            raise InternalServerError(f"Failed to get recent conversations: {str(e)}")
 
     async def get_user_conversations(
         self, user_id: str, limit: int = 50, include_archived: bool = False
