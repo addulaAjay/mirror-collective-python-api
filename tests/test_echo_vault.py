@@ -494,6 +494,144 @@ class TestEchoServiceAutoRelease:
 
 
 # ============================================================
+# SECTION 2.5 — Unit tests: EchoService.update_echo (release_date)
+# ============================================================
+
+
+class TestEchoServiceUpdateEchoReleaseDate:
+    """
+    Coverage for setting and clearing `release_date` via `update_echo`.
+
+    These tests exist to lock in the "Edit release date" and
+    "Cancel scheduled send" flows added for the send-later UI: the
+    routes layer dumps `UpdateEchoRequest` with `exclude_unset=True`
+    so an explicit `null` reaches the service and must clear the field.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_aws_creds(self, monkeypatch):
+        # Ensure no real AWS calls are made even by misconfigured boto sessions.
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+    def _make_draft_echo(self, release_date=None):
+        from src.app.models.echo import Echo, EchoStatus, EchoType
+
+        return Echo(
+            echo_id="e-update-1",
+            user_id="u-001",
+            title="Original title",
+            category="Memory",
+            echo_type=EchoType.TEXT,
+            status=EchoStatus.DRAFT,
+            recipient_id="r-001",
+            release_date=release_date,
+        )
+
+    def _wire_db_mock(self, service):
+        """Return (mock_table, patch_ctx) so callers can assert + tear down."""
+        mock_table = AsyncMock()
+        mock_table.put_item = AsyncMock(return_value=None)
+
+        mock_dynamodb = AsyncMock()
+        mock_dynamodb.Table = AsyncMock(return_value=mock_table)
+
+        mock_resource_ctx = MagicMock()
+        mock_resource_ctx.__aenter__ = AsyncMock(return_value=mock_dynamodb)
+        mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        return mock_table, patch.object(
+            service.session, "resource", return_value=mock_resource_ctx
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_echo_sets_release_date_on_draft(self):
+        """A future release_date in the payload is persisted onto the echo."""
+        from datetime import datetime, timedelta, timezone
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        existing = self._make_draft_echo()
+        future_date = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+        mock_table, db_ctx = self._wire_db_mock(service)
+
+        with (
+            db_ctx,
+            patch.object(service, "get_echo", new=AsyncMock(return_value=existing)),
+        ):
+            result = await service.update_echo(
+                echo_id="e-update-1",
+                user_id="u-001",
+                data={"release_date": future_date},
+            )
+
+        assert result.release_date == future_date
+        # Persisted exactly once with the new field included
+        assert mock_table.put_item.call_count == 1
+        persisted = mock_table.put_item.call_args.kwargs["Item"]
+        assert persisted["release_date"] == future_date
+
+    @pytest.mark.asyncio
+    async def test_update_echo_clears_release_date_when_explicit_none(self):
+        """Passing release_date=None on an already-scheduled echo clears it."""
+        from datetime import datetime, timedelta, timezone
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scheduled_date = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        existing = self._make_draft_echo(release_date=scheduled_date)
+
+        mock_table, db_ctx = self._wire_db_mock(service)
+
+        with (
+            db_ctx,
+            patch.object(service, "get_echo", new=AsyncMock(return_value=existing)),
+        ):
+            result = await service.update_echo(
+                echo_id="e-update-1",
+                user_id="u-001",
+                data={"release_date": None},
+            )
+
+        assert result.release_date is None
+        # `to_dynamodb_item` strips None keys, so the persisted row must NOT
+        # carry the old release_date value anymore.
+        persisted = mock_table.put_item.call_args.kwargs["Item"]
+        assert "release_date" not in persisted
+
+    @pytest.mark.asyncio
+    async def test_update_echo_leaves_release_date_unchanged_when_omitted(self):
+        """If `release_date` is not in the payload, the stored value stays put."""
+        from datetime import datetime, timedelta, timezone
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scheduled_date = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        existing = self._make_draft_echo(release_date=scheduled_date)
+
+        mock_table, db_ctx = self._wire_db_mock(service)
+
+        with (
+            db_ctx,
+            patch.object(service, "get_echo", new=AsyncMock(return_value=existing)),
+        ):
+            # Only update title — release_date must be preserved.
+            result = await service.update_echo(
+                echo_id="e-update-1",
+                user_id="u-001",
+                data={"title": "New title"},
+            )
+
+        assert result.title == "New title"
+        assert result.release_date == scheduled_date
+
+
+# ============================================================
 # SECTION 3 — Unit tests: EchoService.release_echo (B-01)
 # ============================================================
 

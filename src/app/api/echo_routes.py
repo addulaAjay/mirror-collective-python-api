@@ -65,11 +65,52 @@ class CreateEchoRequest(BaseModel):
 
 
 class UpdateEchoRequest(BaseModel):
+    """
+    Patch payload for an existing echo. All fields are optional.
+
+    Distinguishes "don't change" from "clear" by inspecting whether each field
+    was explicitly set on the request (handled by `model_dump(exclude_unset=
+    True)` in the route handler):
+
+      - field omitted     → no change to the stored value
+      - field set to null → clear (set stored value to None)
+      - field set to val  → write `val`
+
+    The service iterates with `if "<field>" in data` so a null value reaches
+    the entity and clears it. See `EchoService.update_echo`.
+    """
+
     title: Optional[str] = None
     category: Optional[str] = None
     content: Optional[str] = None
     media_url: Optional[str] = None
     recipient_id: Optional[str] = None
+    release_date: Optional[str] = None  # ISO 8601; null clears the schedule
+
+    @validator("release_date")
+    def validate_release_date(cls, v):
+        """Validate release_date is valid ISO 8601 format if provided."""
+        if v is not None:
+            try:
+                from datetime import datetime, timedelta, timezone
+
+                dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+
+                # Mirror CreateEchoRequest bounds — protect against typos.
+                if dt < now - timedelta(days=365):
+                    raise ValueError(
+                        "release_date cannot be more than 1 year in the past"
+                    )
+                if dt > now + timedelta(days=365 * 50):
+                    raise ValueError(
+                        "release_date cannot be more than 50 years in the future"
+                    )
+            except (ValueError, AttributeError) as e:
+                raise ValueError(
+                    f"release_date must be valid ISO 8601 format: {str(e)}"
+                )
+        return v
 
 
 class UploadUrlRequest(BaseModel):
@@ -328,10 +369,12 @@ async def update_echo(
     user_id = current_user["id"]
 
     try:
+        # exclude_unset keeps explicit nulls (so callers can clear release_date
+        # / recipient_id) while still ignoring fields the client didn't send.
         echo = await echo_service.update_echo(
             echo_id=echo_id,
             user_id=user_id,
-            data=request.model_dump(exclude_none=True),
+            data=request.model_dump(exclude_unset=True),
         )
 
         return {

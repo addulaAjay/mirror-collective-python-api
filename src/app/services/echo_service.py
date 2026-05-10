@@ -510,6 +510,10 @@ class EchoService:
                     pass  # Keep existing type if invalid
             if "recipient_id" in data:
                 echo.recipient_id = data["recipient_id"]
+            if "release_date" in data:
+                # Explicit None clears the schedule (used by "Cancel
+                # scheduled send" in the app); a string sets/replaces it.
+                echo.release_date = data["release_date"]
 
             echo.updated_at = _current_timestamp()
 
