@@ -389,11 +389,26 @@ async def update_echo(
             data=request.model_dump(exclude_unset=True),
         )
 
+        # Return the full echo (same shape as GET /api/echoes/{id}) so the
+        # caller can refresh its cached state directly from this response
+        # without a follow-up fetch. In particular, the app needs `status`
+        # to decide whether to fire the release endpoint after the PATCH.
         return {
             "success": True,
             "data": {
                 "echo_id": echo.echo_id,
                 "title": echo.title,
+                "category": echo.category,
+                "echo_type": echo.echo_type.value,
+                "status": echo.status.value,
+                "content": echo.content,
+                "media_url": echo.media_url,
+                "recipient_id": echo.recipient_id,
+                "recipient": echo.recipient,
+                "release_date": echo.release_date,
+                "lock_date": echo.lock_date,
+                "letter_to_recipient": echo.letter_to_recipient,
+                "created_at": echo.created_at,
                 "updated_at": echo.updated_at,
             },
             "message": "Echo updated successfully",
