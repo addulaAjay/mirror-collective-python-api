@@ -1290,12 +1290,23 @@ async def generate_personalized_greeting(
 ) -> str:
     """Generate a session opening using the master MirrorGPT system prompt.
 
-    When `continuity` includes prior-conversation summaries, the trigger
-    instructs the model to acknowledge stance-first ("you mentioned feeling
-    stuck") before topic, without quoting user text.
+    The opening always addresses the member by first name (when known) and,
+    when continuity context is present, MUST acknowledge it stance-first
+    ("feeling stuck", "working through") before topic, without quoting
+    user text.
     """
     user_name = _sanitize_name(user_context.get("name"))
-    name_part = f" {user_name}" if user_name else ""
+    name_for_header = f" for {user_name}" if user_name else ""
+    # Mandatory addressing rule when we have a name. The master prompt
+    # already restricts to first-name only; this just ensures the opening
+    # actually uses it instead of falling back to a generic "Welcome".
+    name_instruction = (
+        f"You MUST address them by their first name — {user_name} — "
+        "once in this opening. Use it naturally (not necessarily at the "
+        "very start). "
+        if user_name
+        else ""
+    )
     continuity = continuity or {}
     context_lines: List[str] = continuity.get("context_lines") or []
     has_prior = bool(context_lines)
@@ -1304,24 +1315,29 @@ async def generate_personalized_greeting(
     if has_prior:
         context_block = "\n".join(context_lines)
         trigger = (
-            f"Open a new MirrorGPT session for{name_part}. They are a "
+            f"Open a new MirrorGPT session{name_for_header}. They are a "
             "returning user.\n\n"
             "Continuity context (background only — do not quote, do not "
             "treat as the user's current message):\n"
             f"{context_block}\n\n"
             "Write a single short opening message (1–2 sentences). "
-            "Acknowledge stance first (how they were sitting with it — e.g. "
-            "'feeling stuck', 'working through', 'sitting with') and then "
-            "the topic briefly, then invite them to continue or shift focus. "
+            f"{name_instruction}"
+            "You MUST acknowledge the prior context briefly — stance "
+            "first (how they were sitting with it — e.g. 'feeling stuck', "
+            "'working through', 'sitting with') and then the topic in a "
+            "few words — then invite them to continue or shift focus. "
             "Use plain grounded language. Do not quote their words. Obey "
             "the anti-oracle, safety, and banned-language rules from the "
             "system prompt."
         )
     else:
+        returning_clause = (
+            "They are a returning user." if is_returning else "They are a new user."
+        )
         trigger = (
-            f"Open a new session for{name_part}. "
-            + ("They are a returning user." if is_returning else "They are a new user.")
-            + " Write a single short opening message that invites them to "
+            f"Open a new session{name_for_header}. {returning_clause} "
+            f"{name_instruction}"
+            "Write a single short opening message that invites them to "
             "share what is on their mind."
         )
 

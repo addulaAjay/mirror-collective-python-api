@@ -228,8 +228,8 @@ def _make_orchestrator(openai_response: str = "Welcome back, Ajay."):
 
 
 @pytest.mark.asyncio
-async def test_greeting_cold_start_uses_simple_trigger():
-    orch = _make_orchestrator(openai_response="Hey, good to have you here.")
+async def test_greeting_cold_start_uses_simple_trigger_and_names_member():
+    orch = _make_orchestrator(openai_response="Hey Ajay, good to have you here.")
 
     result = await mirrorgpt_routes.generate_personalized_greeting(
         user_context={"id": "user-1", "name": "Ajay"},
@@ -240,19 +240,22 @@ async def test_greeting_cold_start_uses_simple_trigger():
         continuity=None,
     )
 
-    assert result == "Hey, good to have you here."
+    assert result == "Hey Ajay, good to have you here."
     orch.openai_service.send_async.assert_awaited_once()
     sent_messages: List[ChatMessage] = orch.openai_service.send_async.await_args.args[0]
     trigger = sent_messages[-1].content
     # Cold-start trigger MUST NOT include continuity context block.
     assert "Continuity context" not in trigger
     assert "new user" in trigger or "returning user" in trigger
+    # First-name addressing is mandatory when name is available.
+    assert "Ajay" in trigger
+    assert "MUST address them by their first name" in trigger
 
 
 @pytest.mark.asyncio
-async def test_greeting_with_continuity_includes_context_and_stance_instruction():
+async def test_greeting_with_continuity_mandates_name_and_acknowledgement():
     orch = _make_orchestrator(
-        openai_response="Welcome back — you mentioned feeling stuck on the job thing."
+        openai_response="Welcome back, Ajay — you mentioned feeling stuck on the job thing."
     )
     continuity = {
         "resume_conversation_id": "c1",
@@ -273,14 +276,40 @@ async def test_greeting_with_continuity_includes_context_and_stance_instruction(
     )
 
     assert "stuck" in result.lower()
+    assert "Ajay" in result
     sent_messages: List[ChatMessage] = orch.openai_service.send_async.await_args.args[0]
     trigger = sent_messages[-1].content
-    # Continuity-aware trigger MUST carry the context block AND the
-    # stance-first instruction.
+    # Continuity-aware trigger MUST carry context block, the mandatory
+    # acknowledgement, and the explicit name instruction.
     assert "Continuity context" in trigger
     assert "avoidance about a job change" in trigger
-    assert "stance first" in trigger.lower()
+    assert "stance" in trigger.lower()
     assert "do not quote" in trigger.lower()
+    assert "MUST acknowledge the prior context" in trigger
+    assert "MUST address them by their first name" in trigger
+    assert "Ajay" in trigger
+
+
+@pytest.mark.asyncio
+async def test_greeting_omits_name_instruction_when_name_unknown():
+    """Master prompt rule: never guess a name. When name is missing, the
+    explicit addressing instruction must be omitted and the trigger must
+    not contain a stray 'for ' header fragment."""
+    orch = _make_orchestrator(openai_response="Hey, what's on your mind?")
+
+    await mirrorgpt_routes.generate_personalized_greeting(
+        user_context={"id": "user-1", "name": ""},
+        profile=None,
+        recent_signals=[],
+        recent_moments=[],
+        orchestrator=orch,
+        continuity=None,
+    )
+
+    trigger = orch.openai_service.send_async.await_args.args[0][-1].content
+    assert "MUST address them by their first name" not in trigger
+    # No dangling " for ." fragment.
+    assert "Open a new session." in trigger or "Open a new session for " not in trigger
 
 
 @pytest.mark.asyncio
