@@ -15,6 +15,7 @@ import pytest
 
 from src.app.models.conversation import Conversation, ConversationMessage
 from src.app.services.conversation_summarizer import (
+    SUMMARIZER_SYSTEM_PROMPT,
     ConversationSummarizer,
     SummaryResult,
 )
@@ -376,3 +377,61 @@ async def test_summarize_if_stale_regenerates_when_marker_not_in_window():
     assert result is not None
     assert result.summary == "refreshed"
     openai_service.send_with_overrides_async.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------
+# Prompt anchor tests
+#
+# These guard against silent regressions where a future edit drops a safety
+# rule from the summarizer prompt. They assert the *string* anchors are
+# present in the constant; they do not call the LLM.
+# --------------------------------------------------------------------------
+
+
+def test_summarizer_prompt_enforces_json_only_output():
+    """Output contract: model must return ONLY the JSON object."""
+    assert "Return ONLY the JSON object" in SUMMARIZER_SYSTEM_PROMPT
+    assert "JSON must be valid" in SUMMARIZER_SYSTEM_PROMPT
+
+
+def test_summarizer_prompt_forbids_mental_health_diagnosis():
+    """Critical safety rule: no diagnosing/labeling mental-health conditions."""
+    assert "Do NOT diagnose, label, or speculate" in SUMMARIZER_SYSTEM_PROMPT
+    assert "mental health conditions" in SUMMARIZER_SYSTEM_PROMPT
+    assert "personality disorders" in SUMMARIZER_SYSTEM_PROMPT
+    assert "attachment styles" in SUMMARIZER_SYSTEM_PROMPT
+
+
+def test_summarizer_prompt_forbids_third_party_identifiers():
+    """Privacy: no identifying details about people in the user's life."""
+    assert "third-party names" in SUMMARIZER_SYSTEM_PROMPT
+    assert "phone numbers" in SUMMARIZER_SYSTEM_PROMPT
+    assert "school names" in SUMMARIZER_SYSTEM_PROMPT
+    assert "usernames" in SUMMARIZER_SYSTEM_PROMPT
+
+
+def test_summarizer_prompt_carries_anti_oracle_vocab():
+    """Anti-oracle: banned vocabulary list must be present verbatim."""
+    for token in [
+        "sacred",
+        "seeker",
+        "soul",
+        "spirit",
+        "cosmic",
+        "resonance",
+        "the mirror remembers",
+    ]:
+        assert token in SUMMARIZER_SYSTEM_PROMPT, f"missing banned token: {token!r}"
+
+
+def test_summarizer_prompt_forbids_advice_and_coaching():
+    """Summaries are continuity memory, not coaching output."""
+    assert "Do NOT include advice" in SUMMARIZER_SYSTEM_PROMPT
+    assert "coaching" in SUMMARIZER_SYSTEM_PROMPT
+    assert "suggested actions" in SUMMARIZER_SYSTEM_PROMPT
+
+
+def test_summarizer_prompt_forbids_identity_trait_claims():
+    """Patterns must be situational, not fixed identity traits."""
+    assert "situational and probabilistic" in SUMMARIZER_SYSTEM_PROMPT
+    assert "not fixed identity traits" in SUMMARIZER_SYSTEM_PROMPT
