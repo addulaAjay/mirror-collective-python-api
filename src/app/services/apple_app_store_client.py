@@ -281,6 +281,46 @@ def get_subscription_statuses(transaction_id: str) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Webhook-side helpers — swallow-and-log wrappers around the verifiers.
+#
+# Webhook handlers want a "verify, log on failure, return None" shape so
+# they can treat None as a hard reject without try/except sprawl. The
+# raising verifiers above are still the right primitive for callers that
+# need to surface the specific failure code (e.g. `verify_and_activate`).
+# --------------------------------------------------------------------------- #
+
+
+def try_verify_signed_notification(signed_payload: str) -> Optional[Dict[str, Any]]:
+    """Webhook variant: returns decoded dict on success, None on any
+    verification or configuration failure. Failures are logged at
+    `warning` (signature) or `error` (config) — callers must NOT
+    process a None result as if it were a valid empty payload.
+    """
+    try:
+        return verify_signed_notification(signed_payload)
+    except AppleSignatureVerificationError as exc:
+        logger.warning("Rejecting Apple webhook: invalid signature: %s", exc)
+        return None
+    except AppleClientConfigError as exc:
+        logger.error("Apple verifier misconfigured: %s", exc)
+        return None
+
+
+def try_verify_signed_transaction(signed_transaction: str) -> Optional[Dict[str, Any]]:
+    """Same swallow-and-log shape as `try_verify_signed_notification`
+    but for individual signedTransactionInfo payloads inside an ASSN v2
+    body."""
+    try:
+        return verify_signed_transaction(signed_transaction)
+    except AppleSignatureVerificationError as exc:
+        logger.warning("Rejecting Apple transaction: invalid signature: %s", exc)
+        return None
+    except AppleClientConfigError as exc:
+        logger.error("Apple verifier misconfigured: %s", exc)
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Internals
 # --------------------------------------------------------------------------- #
 

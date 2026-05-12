@@ -2,8 +2,6 @@
 Subscription service for managing IAP lifecycle
 """
 
-import base64
-import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -49,167 +47,14 @@ class SubscriptionService:
             "DYNAMODB_SUBSCRIPTION_EVENTS_TABLE", "subscription_events"
         )
 
-    async def _verify_apple_notification(self, signed_payload: str) -> Optional[Dict]:
-        """
-        Verify an Apple App Store Server Notifications v2 payload.
+    # Apple JWS verification was inlined here as three methods. The
+    # swallow-and-log wrappers now live in apple_app_store_client.py
+    # (try_verify_signed_notification / try_verify_signed_transaction).
+    # handle_apple_webhook below calls them directly.
 
-        Replaces the previous insecure `jwt.decode(..., verify_signature=False)`
-        path with x5c chain verification against Apple's bundled root CA
-        (see src/app/services/apple_app_store_client.py).
-
-        Returns the decoded notification dict on success, None if the
-        signature is invalid or the verifier is misconfigured. Callers
-        must treat None as a HARD failure — do not process unverified
-        webhook payloads.
-        """
-        from .apple_app_store_client import (
-            AppleClientConfigError,
-            AppleSignatureVerificationError,
-            verify_signed_notification,
-        )
-
-        try:
-            return verify_signed_notification(signed_payload)
-        except AppleSignatureVerificationError as exc:
-            logger.warning("Rejecting Apple webhook: invalid signature: %s", exc)
-            return None
-        except AppleClientConfigError as exc:
-            logger.error("Apple verifier misconfigured: %s", exc)
-            return None
-
-    async def _verify_apple_transaction(
-        self, signed_transaction: str
-    ) -> Optional[Dict]:
-        """Verify an embedded signedTransactionInfo from an ASSN v2 body."""
-        from .apple_app_store_client import (
-            AppleClientConfigError,
-            AppleSignatureVerificationError,
-            verify_signed_transaction,
-        )
-
-        try:
-            return verify_signed_transaction(signed_transaction)
-        except AppleSignatureVerificationError as exc:
-            logger.warning("Rejecting Apple transaction: invalid signature: %s", exc)
-            return None
-        except AppleClientConfigError as exc:
-            logger.error("Apple verifier misconfigured: %s", exc)
-            return None
-
-    # Back-compat alias for callers still referring to the old name.
-    # All new code should call _verify_apple_notification or
-    # _verify_apple_transaction directly so the intent is explicit.
-    async def _verify_apple_jwt(self, signed_payload: str) -> Optional[Dict]:
-        return await self._verify_apple_notification(signed_payload)
-
-    async def _verify_google_pubsub_message(self, message_data: str) -> Optional[Dict]:
-        """
-        Decode a base64 Pub/Sub message payload.
-
-        NOTE: this does NOT verify the OIDC JWT — that's
-        `_verify_google_pubsub_jwt` and must be called separately by
-        the route handler with the inbound Authorization header.
-        Splitting decode/verify lets us return clearer error responses
-        (`401 invalid signature` vs `400 malformed body`).
-        """
-        try:
-            decoded_data = base64.b64decode(message_data)
-            notification = json.loads(decoded_data)
-            logger.info("Decoded Google Pub/Sub notification")
-            return notification
-        except Exception as e:
-            logger.error(f"Error decoding Google Pub/Sub message: {e}")
-            return None
-
-    async def _verify_google_pubsub_jwt(self, auth_header: Optional[str]) -> bool:
-        """
-        Verify the OIDC JWT Google attaches to each Pub/Sub push delivery.
-
-        Google Cloud Pub/Sub push subscriptions sign every delivery with
-        an OIDC token (Authorization: Bearer <jwt>). The token's claims:
-
-            iss   = https://accounts.google.com
-            aud   = the audience configured on the push subscription
-                    (defaults to the endpoint URL)
-            email = the service-account email configured on the push
-                    subscription
-
-        We verify the JWT signature against Google's published certs
-        and require the audience + service-account email to match the
-        configured env vars. Without this check, anyone who knows the
-        webhook URL could forge an "Apple cancelled their subscription"
-        payload and revoke a user's entitlement.
-
-        Required env vars (see docs/IAP_STORE_SETUP.md §B3):
-          GOOGLE_PUBSUB_AUDIENCE              — push subscription audience
-          GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL — push subscription service account
-
-        Returns True iff the JWT is present, signature-valid, and the
-        audience + sa-email claims match. False on any failure (logged).
-
-        Setting `GOOGLE_PUBSUB_VERIFY=false` (intentional, env-gated)
-        bypasses this check — useful for local dev against a mocked
-        webhook, but MUST be unset in production.
-        """
-        if (os.getenv("GOOGLE_PUBSUB_VERIFY", "true") or "").lower() in (
-            "0",
-            "false",
-            "no",
-        ):
-            logger.warning(
-                "GOOGLE_PUBSUB_VERIFY is disabled — Pub/Sub JWT not verified. "
-                "Do NOT use this setting in production."
-            )
-            return True
-
-        if not auth_header:
-            logger.warning("Google webhook missing Authorization header")
-            return False
-
-        if not auth_header.lower().startswith("bearer "):
-            logger.warning("Google webhook Authorization header missing 'Bearer '")
-            return False
-
-        token = auth_header.split(" ", 1)[1].strip()
-        if not token:
-            return False
-
-        expected_audience = os.getenv("GOOGLE_PUBSUB_AUDIENCE")
-        expected_email = os.getenv("GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL")
-        if not expected_audience or not expected_email:
-            logger.error(
-                "Google Pub/Sub JWT verification misconfigured: "
-                "GOOGLE_PUBSUB_AUDIENCE and "
-                "GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL are required."
-            )
-            return False
-
-        try:
-            from google.auth.transport import requests as google_requests
-            from google.oauth2 import id_token
-
-            claims = id_token.verify_oauth2_token(
-                token,
-                google_requests.Request(),
-                audience=expected_audience,
-            )
-        except Exception as exc:
-            logger.warning("Google Pub/Sub JWT verification failed: %s", exc)
-            return False
-
-        if claims.get("email") != expected_email:
-            logger.warning(
-                "Google Pub/Sub JWT email mismatch: got %s, expected %s",
-                claims.get("email"),
-                expected_email,
-            )
-            return False
-
-        if not claims.get("email_verified", False):
-            logger.warning("Google Pub/Sub JWT email_verified=false")
-            return False
-
-        return True
+    # Google Pub/Sub OIDC verification + base64 decoding live in
+    # google_pubsub_client.py. handle_google_webhook below calls them
+    # directly.
 
     async def verify_and_activate_purchase(
         self,
@@ -641,6 +486,11 @@ class SubscriptionService:
             raises — so the route handler can return a predictable
             response shape regardless of whether the payload was valid.
         """
+        from .apple_app_store_client import (
+            try_verify_signed_notification,
+            try_verify_signed_transaction,
+        )
+
         try:
             signed_payload = notification_payload.get("signedPayload")
             if not signed_payload:
@@ -652,7 +502,7 @@ class SubscriptionService:
                 }
 
             # 1. Verify the outer notification envelope.
-            decoded_payload = await self._verify_apple_notification(signed_payload)
+            decoded_payload = try_verify_signed_notification(signed_payload)
             if not decoded_payload:
                 # Signature verification already logged the reason.
                 return {
@@ -670,7 +520,7 @@ class SubscriptionService:
             signed_transaction_info = data.get("signedTransactionInfo")
             transaction_info = None
             if signed_transaction_info:
-                transaction_info = await self._verify_apple_transaction(
+                transaction_info = try_verify_signed_transaction(
                     signed_transaction_info
                 )
                 if transaction_info is None:
@@ -730,9 +580,11 @@ class SubscriptionService:
             when the JWT fails verification so the route layer can
             propagate the right HTTP code.
         """
+        from .google_pubsub_client import decode_pubsub_message, verify_pubsub_jwt
+
         try:
             # 1. Verify the Pub/Sub OIDC JWT.
-            if not await self._verify_google_pubsub_jwt(auth_header):
+            if not verify_pubsub_jwt(auth_header):
                 return {
                     "success": False,
                     "error": "Pub/Sub push token could not be verified",
@@ -751,7 +603,7 @@ class SubscriptionService:
                     "status_code": 400,
                 }
 
-            notification = await self._verify_google_pubsub_message(message_data)
+            notification = decode_pubsub_message(message_data)
             if not notification:
                 logger.warning("Failed to decode Google Pub/Sub message")
                 return {
@@ -888,6 +740,47 @@ class SubscriptionService:
     # ========================================
     # PRIVATE HELPER METHODS
     # ========================================
+
+    async def _find_subscription_by_transaction_info(
+        self, transaction_info: Dict
+    ) -> Optional[Subscription]:
+        """
+        Look up a Subscription row from a webhook payload.
+
+        Encapsulates the "extract transaction id + GSI query +
+        from_dynamodb_item" dance that each lifecycle handler used to
+        repeat inline. The five `_handle_*` methods now share this
+        single path, so a future change to the lookup logic (e.g. add
+        a fallback by purchase_token, or paginate the GSI result) lands
+        in one place.
+
+        Args:
+            transaction_info: Decoded Apple / Google webhook payload.
+                Apple uses `transactionId` / `originalTransactionId`;
+                Google uses the same keys after we normalise in the
+                Pub/Sub decoder.
+
+        Returns:
+            Subscription if found, None if no matching row.
+        """
+        transaction_id = transaction_info.get("transactionId") or transaction_info.get(
+            "originalTransactionId"
+        )
+        if not transaction_id:
+            return None
+
+        # Query the GSI keyed on subscription_id (= original_transaction_id
+        # for iOS; orderId base for Android). Returns up to one row per
+        # (user_id, subscription_id) pair.
+        rows = await self.dynamodb_service.query_items(
+            table_name=self.subscriptions_table,
+            key_condition="subscription_id = :sid",
+            expression_values={":sid": transaction_id},
+            index_name="subscription-id-index",
+        )
+        if not rows:
+            return None
+        return Subscription.from_dynamodb_item(rows[0])
 
     def _parse_product_id(
         self, product_id: str
@@ -1053,32 +946,16 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling subscription renewal: {transaction_info}")
+            logger.info("Handling subscription renewal: %s", transaction_info)
 
-            # Extract transaction details
-            # For Apple: transaction_info contains decoded JWT
-            # For Google: transaction_info contains subscriptionNotification
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-            subscription_id_from_webhook = transaction_info.get("subscriptionId")
-            purchase_token = transaction_info.get("purchaseToken")
-
-            # Try to find subscription by transaction ID or purchase token
-            subscription = None
-            if transaction_id:
-                # Query by subscription_id (which is original_transaction_id for iOS)
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
-                logger.warning(f"Subscription not found for renewal: {transaction_id}")
+                logger.warning(
+                    "Subscription not found for renewal: %s",
+                    transaction_info.get("transactionId"),
+                )
                 return
 
             # Update subscription with new expiry date
@@ -1141,28 +1018,15 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling renewal failure: {transaction_info}")
+            logger.info("Handling renewal failure: %s", transaction_info)
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
                 logger.warning(
-                    f"Subscription not found for renewal failure: {transaction_id}"
+                    "Subscription not found for renewal failure: %s",
+                    transaction_info.get("transactionId"),
                 )
                 return
 
@@ -1214,28 +1078,15 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling subscription expiration: {transaction_info}")
+            logger.info("Handling subscription expiration: %s", transaction_info)
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
                 logger.warning(
-                    f"Subscription not found for expiration: {transaction_id}"
+                    "Subscription not found for expiration: %s",
+                    transaction_info.get("transactionId"),
                 )
                 return
 
@@ -1311,27 +1162,16 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling refund: {transaction_info}")
+            logger.info("Handling refund: %s", transaction_info)
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
-                logger.warning(f"Subscription not found for refund: {transaction_id}")
+                logger.warning(
+                    "Subscription not found for refund: %s",
+                    transaction_info.get("transactionId"),
+                )
                 return
 
             # Update subscription status to refunded
@@ -1405,31 +1245,19 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling renewal status change: {transaction_info}")
+            logger.info("Handling renewal status change: %s", transaction_info)
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
             auto_renew_status = transaction_info.get(
                 "autoRenewStatus"
             ) or transaction_info.get("autoRenewing")
 
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
                 logger.warning(
-                    f"Subscription not found for renewal status change: {transaction_id}"
+                    "Subscription not found for renewal status change: %s",
+                    transaction_info.get("transactionId"),
                 )
                 return
 
