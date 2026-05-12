@@ -18,6 +18,7 @@ from ..models.subscription import (
 )
 from .dynamodb_service import DynamoDBService
 from .receipt_validator import ReceiptValidator
+from .sns_service import SNSService
 from .storage_quota_service import StorageQuotaService
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class SubscriptionService:
         self.dynamodb_service = dynamodb_service
         self.receipt_validator = ReceiptValidator()
         self.quota_service = StorageQuotaService(dynamodb_service)
+        self.sns_service = SNSService()
         self.subscriptions_table = os.getenv(
             "DYNAMODB_SUBSCRIPTIONS_TABLE", "subscriptions"
         )
@@ -903,6 +905,98 @@ class SubscriptionService:
             logger.error("Error updating user subscription status: %s", e)
             raise
 
+    async def _send_payment_failure_notification(
+        self,
+        user_id: str,
+        subscription_id: str,
+    ) -> None:
+        """Push a payment-failure alert to every device the user has
+        registered for notifications.
+
+        Fan-out behavior:
+          - Skip cleanly if the user hasn't registered any devices (e.g.,
+            declined the notification permission prompt). The CloudWatch
+            renewal-failure audit log still captures the event.
+          - Best-effort per device: SNS failures on one endpoint don't
+            block the rest. Disabled endpoints (token invalidated by
+            APNs/FCM) are flagged by SNSService.publish_to_endpoint at
+            WARNING level so a separate cleanup job can recycle them.
+          - Cross-platform: SNSService renders both APNS + GCM payloads
+            from the same call, so the iOS / Android split lives entirely
+            in the client (the in-app banner UI is iOS-first; the OS-level
+            notification works on both).
+
+        The notification carries enough `data` for the client to:
+          - branch foreground handling on `type='payment_failed'`
+          - deep-link to the subscription management screen on tap
+          - correlate to the subscription record on the backend
+
+        Best-effort overall: a failure here MUST NOT bubble — the renewal
+        failure is already persisted by the caller, and the user can
+        still surface the issue via the in-app YourSubscriptionScreen
+        if the push is lost.
+        """
+        try:
+            tokens = await self.dynamodb_service.get_user_device_tokens(user_id)
+        except Exception as fetch_err:
+            logger.warning(
+                "Could not fetch device tokens for user %s during payment-failure dispatch: %s",
+                user_id,
+                fetch_err,
+            )
+            return
+
+        if not tokens:
+            logger.info(
+                "No registered devices for user %s; skipping payment-failure push.",
+                user_id,
+            )
+            return
+
+        title = "Payment couldn't be processed"
+        body = (
+            "We couldn't renew your Mirror Collective subscription. "
+            "Tap to update your payment method."
+        )
+        data = {
+            "type": "payment_failed",
+            "subscription_id": subscription_id,
+            "deep_link": "your_subscription",
+        }
+
+        sent = 0
+        for record in tokens:
+            endpoint_arn = record.get("endpoint_arn")
+            if not endpoint_arn:
+                continue
+            try:
+                message_id = self.sns_service.publish_to_endpoint(
+                    endpoint_arn=endpoint_arn,
+                    title=title,
+                    body=body,
+                    data=data,
+                )
+                if message_id:
+                    sent += 1
+            except Exception as send_err:
+                # publish_to_endpoint already swallows known SNS errors;
+                # this catches anything unexpected so one bad device
+                # can't block the rest.
+                logger.warning(
+                    "Unexpected error sending payment-failure push to endpoint %s for user %s: %s",
+                    endpoint_arn,
+                    user_id,
+                    send_err,
+                )
+
+        logger.info(
+            "Dispatched payment-failure push for user %s subscription %s to %d/%d device(s).",
+            user_id,
+            subscription_id,
+            sent,
+            len(tokens),
+        )
+
     async def _log_subscription_event(
         self,
         user_id: str,
@@ -1048,17 +1142,9 @@ class SubscriptionService:
                 subscription.user_id
             )
             if user_profile:
-                # Payment-failure push notifications are a separate
-                # cross-cutting concern handled by PushNotificationService
-                # (not yet wired into this lifecycle path — see the
-                # roadmap in docs/IAP_SUBSCRIPTION_REVIEW.md). For now we
-                # surface the event at WARNING level so operators can
-                # alert on the volume of payment failures in CloudWatch
-                # until the push integration lands.
-                logger.warning(
-                    "Payment failure for user %s subscription %s — push notification not yet wired",
-                    subscription.user_id,
-                    subscription.subscription_id,
+                await self._send_payment_failure_notification(
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.subscription_id,
                 )
 
             # Log renewal failure event
