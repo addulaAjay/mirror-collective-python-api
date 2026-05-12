@@ -757,6 +757,180 @@ class TestParseGooglePurchase:
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# H1 — _update_user_subscription_status derives status from subscription
+# --------------------------------------------------------------------------- #
+
+
+class TestUserProfileStatusDerivation:
+    """The profile's subscription_status must mirror the Subscription
+    row's status, not be hardcoded "active". Trial users in particular
+    must have profile.subscription_status="trial" so the entitlement
+    matrix + frontend useEntitlement see consistent state."""
+
+    @pytest.mark.asyncio
+    async def test_trial_activation_writes_trial_status_to_profile(self, monkeypatch):
+        from src.app.models.subscription import (
+            BillingPeriod,
+            Platform,
+            Subscription,
+            SubscriptionStatus,
+            SubscriptionType,
+        )
+        from src.app.models.user_profile import UserProfile, UserStatus
+
+        svc, dynamodb = _build_subscription_service(monkeypatch)
+
+        # Existing profile in "none" status — pre-trial signup.
+        profile = UserProfile(
+            user_id="u1",
+            email="u1@example.com",
+            subscription_status="none",
+            subscription_tier="free",
+            status=UserStatus.CONFIRMED,
+        )
+        dynamodb.get_user_profile = AsyncMock(return_value=profile)
+        dynamodb.update_user_profile = AsyncMock(return_value=profile)
+
+        trial_subscription = Subscription(
+            user_id="u1",
+            subscription_id="ot1",
+            product_id="com.themirrorcollective.mirror.core.monthly",
+            subscription_type=SubscriptionType.MIRROR_CORE,
+            platform=Platform.IOS,
+            status=SubscriptionStatus.TRIAL,
+            billing_period=BillingPeriod.MONTHLY,
+            price_usd=0.0,
+            is_in_trial=True,
+        )
+
+        await svc._update_user_subscription_status("u1", trial_subscription)
+
+        dynamodb.update_user_profile.assert_awaited_once()
+        await_args = dynamodb.update_user_profile.await_args
+        assert await_args is not None
+        updated = await_args.args[0]
+        assert updated.subscription_status == "trial"
+        assert updated.subscription_tier == "core"
+
+    @pytest.mark.asyncio
+    async def test_grace_period_writes_grace_period_status(self, monkeypatch):
+        from src.app.models.subscription import (
+            BillingPeriod,
+            Platform,
+            Subscription,
+            SubscriptionStatus,
+            SubscriptionType,
+        )
+        from src.app.models.user_profile import UserProfile, UserStatus
+
+        svc, dynamodb = _build_subscription_service(monkeypatch)
+        profile = UserProfile(
+            user_id="u1",
+            email="u1@example.com",
+            subscription_status="active",
+            subscription_tier="core",
+            status=UserStatus.CONFIRMED,
+        )
+        dynamodb.get_user_profile = AsyncMock(return_value=profile)
+        dynamodb.update_user_profile = AsyncMock(return_value=profile)
+
+        sub = Subscription(
+            user_id="u1",
+            subscription_id="ot1",
+            product_id="com.themirrorcollective.mirror.core.monthly",
+            subscription_type=SubscriptionType.MIRROR_CORE,
+            platform=Platform.IOS,
+            status=SubscriptionStatus.GRACE_PERIOD,
+            billing_period=BillingPeriod.MONTHLY,
+            price_usd=15.99,
+        )
+
+        await svc._update_user_subscription_status("u1", sub)
+        await_args = dynamodb.update_user_profile.await_args
+        assert await_args is not None
+        updated = await_args.args[0]
+        assert updated.subscription_status == "grace_period"
+
+
+# --------------------------------------------------------------------------- #
+# H2 — webhook lifecycle handlers re-raise on failure
+# --------------------------------------------------------------------------- #
+
+
+class TestWebhookHandlersReRaise:
+    """A DynamoDB / downstream failure inside a lifecycle handler must
+    propagate so handle_apple_webhook returns 500 and Apple/Google
+    retries. Swallowing meant the platform saw 200 OK and gave up,
+    losing real-money state silently."""
+
+    @pytest.mark.asyncio
+    async def test_renewal_handler_failure_propagates_500(self, monkeypatch):
+        svc, _ = _build_subscription_service(monkeypatch)
+
+        from src.app.services import apple_app_store_client
+
+        signed_tx = {
+            "transactionId": "t2",
+            "originalTransactionId": "ot1",
+            "productId": "com.themirrorcollective.mirror.core.monthly",
+        }
+        monkeypatch.setattr(
+            apple_app_store_client,
+            "verify_signed_notification",
+            lambda _: {
+                "notificationType": "DID_RENEW",
+                "data": {"signedTransactionInfo": "<inner JWS>"},
+            },
+        )
+        monkeypatch.setattr(
+            apple_app_store_client,
+            "verify_signed_transaction",
+            lambda _: signed_tx,
+        )
+
+        # Renewal handler explodes (e.g. DynamoDB throttled).
+        svc._handle_subscription_renewal = AsyncMock(
+            side_effect=RuntimeError("dynamodb throttled")
+        )
+
+        from src.app.core.exceptions import InternalServerError
+
+        with pytest.raises(InternalServerError):
+            await svc.handle_apple_webhook({"signedPayload": "<JWS>"})
+
+
+# --------------------------------------------------------------------------- #
+# H3 — _parse_product_id uses the products.py catalog
+# --------------------------------------------------------------------------- #
+
+
+class TestParseProductId:
+    def test_resolves_known_skus(self, monkeypatch):
+        from src.app.models.subscription import BillingPeriod, SubscriptionType
+
+        svc, _ = _build_subscription_service(monkeypatch)
+
+        sub_type, billing = svc._parse_product_id(
+            "com.themirrorcollective.mirror.core.monthly"
+        )
+        assert sub_type == SubscriptionType.MIRROR_CORE
+        assert billing == BillingPeriod.MONTHLY
+
+        sub_type, billing = svc._parse_product_id(
+            "com.themirrorcollective.mirror.storage.yearly"
+        )
+        assert sub_type == SubscriptionType.STORAGE_ADD_ON
+        assert billing == BillingPeriod.YEARLY
+
+    def test_rejects_unknown_skus(self, monkeypatch):
+        """Forged or typo'd SKUs must raise — no silent fallback to
+        MIRROR_CORE / MONTHLY as the previous substring matcher did."""
+        svc, _ = _build_subscription_service(monkeypatch)
+        with pytest.raises(ValueError, match="Unknown product_id"):
+            svc._parse_product_id("com.attacker.core.monthly.evil")
+
+
 class TestProductionStartupGuards:
     def test_pubsub_verify_disabled_in_production_raises(self, monkeypatch):
         from src.app.handler import _enforce_production_safety_invariants

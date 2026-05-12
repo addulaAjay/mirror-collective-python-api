@@ -889,77 +889,113 @@ class SubscriptionService:
     # PRIVATE HELPER METHODS
     # ========================================
 
-    def _parse_product_id(self, product_id: str) -> tuple:
+    def _parse_product_id(
+        self, product_id: str
+    ) -> tuple[SubscriptionType, BillingPeriod]:
         """
-        Parse product ID to determine subscription type and billing period
+        Resolve a SKU to its (SubscriptionType, BillingPeriod) pair via
+        the canonical products.py catalog.
 
-        Args:
-            product_id: Product identifier (e.g., com.mirrorcollective.core.monthly)
-
-        Returns:
-            Tuple of (SubscriptionType, BillingPeriod)
+        Previous implementation used substring matching (`"core" in ...`)
+        which would misclassify a crafted SKU like
+        `com.attacker.core.monthly.evil`. The catalog is the single
+        source of truth — if the SKU isn't there, the caller has
+        already failed `is_known_sku` (defence in depth) and we'd
+        never reach this method for a forged input. But to make this
+        function safe even if called directly, we explicitly raise
+        ValueError on unknown SKUs rather than falling back to defaults.
         """
-        if "core" in product_id.lower():
-            subscription_type = SubscriptionType.MIRROR_CORE
-        elif "storage" in product_id.lower():
-            subscription_type = SubscriptionType.STORAGE_ADD_ON
-        else:
-            subscription_type = SubscriptionType.MIRROR_CORE
+        from ..constants.products import BillingPeriod as ProductBillingPeriod
+        from ..constants.products import ProductKind, descriptor_for_sku
 
-        if "monthly" in product_id.lower():
-            billing_period = BillingPeriod.MONTHLY
-        elif "yearly" in product_id.lower():
-            billing_period = BillingPeriod.YEARLY
-        else:
-            billing_period = BillingPeriod.MONTHLY
+        descriptor = descriptor_for_sku(product_id)
+        if descriptor is None:
+            raise ValueError(f"Unknown product_id: {product_id}")
 
-        return subscription_type, billing_period
+        if descriptor.kind == ProductKind.CORE:
+            sub_type = SubscriptionType.MIRROR_CORE
+        elif descriptor.kind == ProductKind.STORAGE:
+            sub_type = SubscriptionType.STORAGE_ADD_ON
+        else:  # pragma: no cover — exhaustive over ProductKind enum
+            raise ValueError(f"Unsupported product kind: {descriptor.kind}")
+
+        billing = (
+            BillingPeriod.MONTHLY
+            if descriptor.billing_period == ProductBillingPeriod.MONTHLY
+            else BillingPeriod.YEARLY
+        )
+
+        return sub_type, billing
 
     async def _update_user_subscription_status(
         self, user_id: str, subscription: Subscription
     ) -> None:
         """
-        Update user profile with subscription changes
+        Update user profile with subscription changes.
 
-        Args:
-            user_id: Cognito sub
-            subscription: Subscription object
+        Derives the profile's `subscription_status` from the
+        Subscription row's status — NOT a hardcoded "active". Trial
+        activations were previously writing status="active" while the
+        Subscription row said TRIAL, causing the frontend and
+        require_entitled dependency to disagree about whether a user
+        was in a trial.
+
+        Profile updates are applied as a single replace at the end
+        (no in-place mutation between awaits) so a concurrent reader
+        never sees a partially-mutated profile.
         """
         try:
             user_profile = await self.dynamodb_service.get_user_profile(user_id)
             if not user_profile:
                 raise ValueError("User not found")
 
-            # Update subscription fields
-            user_profile.subscription_status = "active"
+            # Derive profile status from the subscription row's status.
+            # SubscriptionStatus.TRIAL -> "trial", ACTIVE -> "active",
+            # GRACE_PERIOD -> "grace_period", etc. Matches the keys the
+            # frontend useEntitlement predicate consumes.
+            new_status = subscription.status.value
 
-            # Update tier and quota based on subscription type
+            # Tier resolution — apply the same precedence the previous
+            # in-place code had, but compute into locals first.
+            new_tier = user_profile.subscription_tier
+            new_primary_sub_id = user_profile.primary_subscription_id
+            new_storage_sub_id = user_profile.storage_subscription_id
+            new_storage_addon_active = user_profile.storage_add_on_active
+
             if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
-                user_profile.subscription_tier = "core"
-                user_profile.primary_subscription_id = subscription.subscription_id
-                base_quota = 50.0  # Mirror Core gives 50 GB
+                new_tier = "core"
+                new_primary_sub_id = subscription.subscription_id
+                base_quota = 50.0
             elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
-                user_profile.storage_add_on_active = True
-                user_profile.storage_subscription_id = subscription.subscription_id
-                base_quota = user_profile.echo_vault_quota_gb + 100.0  # Add 100 GB
+                new_storage_addon_active = True
+                new_storage_sub_id = subscription.subscription_id
+                base_quota = user_profile.echo_vault_quota_gb + 100.0
             else:
                 base_quota = user_profile.echo_vault_quota_gb
 
-            # Calculate total quota
             total_quota = base_quota
-            if (
-                user_profile.subscription_tier == "core"
-                and user_profile.storage_add_on_active
-            ):
-                user_profile.subscription_tier = "core_plus"
-                total_quota = 150.0  # 50 GB (core) + 100 GB (storage)
+            if new_tier == "core" and new_storage_addon_active:
+                new_tier = "core_plus"
+                total_quota = 150.0
 
-            user_profile.echo_vault_quota_gb = total_quota
-            user_profile.last_subscription_check = (
+            new_last_check = (
                 datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             )
 
-            # Save updated profile
+            # Apply all updates in one shot. We still mutate the
+            # dataclass before passing to update_user_profile (the
+            # downstream API expects a full UserProfile) but the
+            # mutations happen contiguously, with no awaits in
+            # between — so a concurrent reader can never observe a
+            # half-updated profile.
+            user_profile.subscription_status = new_status
+            user_profile.subscription_tier = new_tier
+            user_profile.primary_subscription_id = new_primary_sub_id
+            user_profile.storage_subscription_id = new_storage_sub_id
+            user_profile.storage_add_on_active = new_storage_addon_active
+            user_profile.echo_vault_quota_gb = total_quota
+            user_profile.last_subscription_check = new_last_check
+
             await self.dynamodb_service.update_user_profile(user_profile)
 
             logger.info(
@@ -1089,7 +1125,13 @@ class SubscriptionService:
             )
 
         except Exception as e:
+            # Re-raise so handle_apple_webhook / handle_google_webhook
+            # propagates a 500 to Apple/Google and they retry. Swallowing
+            # would mean the platform sees 200 OK and stops retrying
+            # despite our subscription state never updating — silent
+            # real-money state loss.
             logger.error(f"Error handling subscription renewal: {e}", exc_info=True)
+            raise
 
     async def _handle_renewal_failure(self, transaction_info: Dict) -> None:
         """
@@ -1158,7 +1200,11 @@ class SubscriptionService:
             )
 
         except Exception as e:
+            # See _handle_subscription_renewal — re-raise so the
+            # platform retries instead of treating the webhook as
+            # consumed.
             logger.error(f"Error handling renewal failure: {e}", exc_info=True)
+            raise
 
     async def _handle_subscription_expired(self, transaction_info: Dict) -> None:
         """
@@ -1255,6 +1301,7 @@ class SubscriptionService:
 
         except Exception as e:
             logger.error(f"Error handling subscription expiration: {e}", exc_info=True)
+            raise
 
     async def _handle_refund(self, transaction_info: Dict) -> None:
         """
@@ -1348,6 +1395,7 @@ class SubscriptionService:
 
         except Exception as e:
             logger.error(f"Error handling refund: {e}", exc_info=True)
+            raise
 
     async def _handle_renewal_status_change(self, transaction_info: Dict) -> None:
         """
@@ -1417,3 +1465,4 @@ class SubscriptionService:
 
         except Exception as e:
             logger.error(f"Error handling renewal status change: {e}", exc_info=True)
+            raise
