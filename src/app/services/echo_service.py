@@ -117,6 +117,7 @@ class EchoService:
                 unlock_on_death=data.get("unlock_on_death", False),
                 content=data.get("content"),  # For text type
                 letter_to_recipient=data.get("letter_to_recipient"),
+                size_bytes=data.get("size_bytes"),
             )
 
             async with self.session.resource(
@@ -478,10 +479,12 @@ class EchoService:
             if not echo:
                 raise NotFoundError(f"Echo {echo_id} not found")
 
-            # Special case: Allow media attachment on RELEASED echoes (first-time only)
+            # Special case: Allow media attachment on RELEASED echoes (first-time only).
+            # `size_bytes` is allowed alongside `media_url` because the client
+            # records the uploaded size in the same patch.
             is_media_only_update = (
                 "media_url" in data
-                and set(data.keys()) <= {"media_url", "echo_type"}
+                and set(data.keys()) <= {"media_url", "echo_type", "size_bytes"}
                 and not echo.media_url  # Only if media_url is currently empty
             )
 
@@ -504,6 +507,10 @@ class EchoService:
                 logger.info(
                     f"Attached media to echo {echo_id} (status={echo.status.value})"
                 )
+            if "size_bytes" in data:
+                # Quota aggregator sums this column; set whenever media_url
+                # is set or replaced so the cached usage stays accurate.
+                echo.size_bytes = data["size_bytes"]
             if "echo_type" in data:
                 try:
                     echo.echo_type = EchoType(data["echo_type"])

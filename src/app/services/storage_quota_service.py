@@ -5,7 +5,7 @@ Storage quota service for Echo Vault storage management
 import logging
 import os
 from decimal import Decimal
-from typing import Dict
+from typing import Dict, Optional
 
 import boto3
 
@@ -27,10 +27,18 @@ class StorageQuotaService:
         self.dynamodb = dynamodb_service
         self.s3_client = boto3.client("s3")
         self.bucket_name = os.getenv("ECHO_MEDIA_BUCKET", "echo-vault-storage-dev")
+        self.echoes_table = os.getenv("DYNAMODB_ECHOES_TABLE", "echoes")
 
     async def calculate_user_storage_usage(self, user_id: str) -> float:
         """
-        Calculate total storage used by user in GB
+        Calculate total storage used by user in GB.
+
+        Sums `Echo.size_bytes` from DynamoDB (queried via the
+        `user-echoes-index` GSI). Rows missing `size_bytes` but with a
+        `media_url` are back-filled from a single S3 HeadObject per row and
+        persisted, so subsequent calls hit DynamoDB only. Soft-deleted
+        echoes are intentionally included to match S3 reality (delete is
+        soft-only by product decision — see project memory).
 
         Args:
             user_id: User's Cognito sub
@@ -39,25 +47,108 @@ class StorageQuotaService:
             float: Storage used in GB
         """
         try:
+            items = await self.dynamodb.query_items(
+                table_name=self.echoes_table,
+                key_condition="user_id = :uid",
+                expression_values={":uid": user_id},
+                index_name="user-echoes-index",
+            )
+
             total_bytes = 0
-            prefix = f"users/{user_id}/"
+            for item in items:
+                size = self._extract_size_bytes(item)
+                if size is not None:
+                    total_bytes += size
+                    continue
 
-            # Use paginator to handle large numbers of objects
-            paginator = self.s3_client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+                # Legacy row: backfill from S3 HeadObject if media exists.
+                media_url = item.get("media_url")
+                if not media_url:
+                    continue
+                backfilled = await self._backfill_size_from_s3(item, media_url)
+                if backfilled is not None:
+                    total_bytes += backfilled
 
-            for page in pages:
-                if "Contents" in page:
-                    total_bytes += sum(obj["Size"] for obj in page["Contents"])
-
-            # Convert bytes to GB
-            total_gb = total_bytes / (1024**3)
-            return round(total_gb, 2)
+            return round(total_bytes / (1024**3), 2)
 
         except Exception as e:
             logger.error(f"Error calculating storage for user {user_id}: {e}")
             # Return 0 on error to avoid blocking user
             return 0.0
+
+    @staticmethod
+    def _extract_size_bytes(item: Dict) -> Optional[int]:
+        """Read `size_bytes` from a DynamoDB item, coercing Decimal→int.
+
+        Returns None when the field is missing (legacy row) or when the
+        stored value isn't a non-negative integer.
+        """
+        raw = item.get("size_bytes")
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Non-integer size_bytes on echo %s: %r",
+                item.get("echo_id"),
+                raw,
+            )
+            return None
+        if value < 0:
+            return None
+        return value
+
+    async def _backfill_size_from_s3(self, item: Dict, media_url: str) -> Optional[int]:
+        """Fetch object size from S3 and persist it on the echo row.
+
+        Best-effort. If either the HeadObject or the persist fails, returns
+        whatever could be read (or None) so the next call retries — never
+        500s on an aggregation. Called once per legacy row across the
+        lifetime of the vault.
+        """
+        key = self._extract_s3_key(media_url)
+        if not key:
+            return None
+
+        try:
+            head = self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            content_length = int(head.get("ContentLength", 0))
+        except Exception as head_err:
+            logger.warning(
+                "S3 HeadObject failed for echo %s key=%s: %s",
+                item.get("echo_id"),
+                key,
+                head_err,
+            )
+            return None
+
+        echo_id = item.get("echo_id")
+        if echo_id:
+            try:
+                await self.dynamodb.update_item(
+                    table_name=self.echoes_table,
+                    key={"echo_id": echo_id},
+                    update_expression="SET size_bytes = :s",
+                    expression_values={":s": content_length},
+                )
+            except Exception as persist_err:
+                # Not fatal — we'll just re-backfill next time.
+                logger.warning(
+                    "Failed to persist backfilled size for echo %s: %s",
+                    echo_id,
+                    persist_err,
+                )
+
+        return content_length
+
+    @staticmethod
+    def _extract_s3_key(media_url: str) -> Optional[str]:
+        """Parse the S3 key out of a media URL like https://b.s3.r.amazonaws.com/k."""
+        if "amazonaws.com/" not in media_url:
+            return None
+        key = media_url.split("amazonaws.com/", 1)[-1]
+        return key or None
 
     async def update_user_quota(self, user_id: str) -> bool:
         """

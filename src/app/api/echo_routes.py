@@ -43,6 +43,10 @@ class CreateEchoRequest(BaseModel):
     # picker screen as "Letter to Recipient". Distinct from `content` so it
     # works for AUDIO / VIDEO echoes (where content is unused) as well.
     letter_to_recipient: Optional[str] = None
+    # Size of the uploaded media in bytes. Forwarded from the upload-url
+    # request so the quota service can sum sizes from DynamoDB without a
+    # full S3 scan. Omitted for TEXT echoes.
+    size_bytes: Optional[int] = None
 
     @validator("release_date")
     def validate_release_date(cls, v):
@@ -95,6 +99,9 @@ class UpdateEchoRequest(BaseModel):
     recipient_id: Optional[str] = None
     release_date: Optional[str] = None  # ISO 8601; null clears the schedule
     letter_to_recipient: Optional[str] = None  # null clears the cover note
+    # Set alongside media_url after the client finishes uploading. Persists
+    # the true byte size so storage quota can be summed from DynamoDB.
+    size_bytes: Optional[int] = None
 
     @validator("release_date")
     def validate_release_date(cls, v):
