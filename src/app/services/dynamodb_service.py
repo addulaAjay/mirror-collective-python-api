@@ -1458,6 +1458,50 @@ class DynamoDBService:
             logger.error(f"Unexpected error putting item to {table_name}: {e}")
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
+    async def put_item_if_not_exists(
+        self,
+        table_name: str,
+        item: Dict[str, Any],
+        key_attr: str,
+    ) -> bool:
+        """
+        Atomic conditional put — only succeeds if no item with the same
+        `key_attr` value exists.
+
+        Used for idempotency on /verify-purchase: if two concurrent
+        requests both believe they're activating a new subscription, only
+        one wins the write. The loser gets `False` and can re-read the
+        winner's row.
+
+        Returns:
+            True  — the item was written (no prior row).
+            False — a row with this key already exists; nothing was written.
+
+        Raises InternalServerError on any non-conditional failure.
+        """
+        try:
+            async with self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            ) as dynamodb:
+                table = await dynamodb.Table(table_name)
+                await table.put_item(
+                    Item=item,
+                    ConditionExpression=f"attribute_not_exists({key_attr})",
+                )
+                return True
+        except ClientError as e:
+            # Boto3 reports the conditional failure as ConditionalCheckFailedException.
+            err_code = e.response.get("Error", {}).get("Code")
+            if err_code == "ConditionalCheckFailedException":
+                return False
+            logger.error(f"DynamoDB error in put_item_if_not_exists({table_name}): {e}")
+            raise InternalServerError(f"Failed conditional put: {str(e)}")
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in put_item_if_not_exists({table_name}): {e}"
+            )
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
     async def query_items(
         self,
         table_name: str,

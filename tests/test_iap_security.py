@@ -241,6 +241,9 @@ def _build_subscription_service(monkeypatch):
     dynamodb = MagicMock()
     dynamodb.get_item = AsyncMock(return_value=None)
     dynamodb.put_item = AsyncMock(return_value=None)
+    # Default: conditional put succeeds (no existing row, no race).
+    # Tests that exercise the race path override this on the mock.
+    dynamodb.put_item_if_not_exists = AsyncMock(return_value=True)
     dynamodb.update_user_profile = AsyncMock(return_value=None)
     dynamodb.get_user_profile = AsyncMock(return_value=None)
 
@@ -466,8 +469,8 @@ class TestVerifyPurchaseIdempotency:
 
         assert result["success"] is True
         assert result["idempotent"] is False
-        # The subscription row was written...
-        assert dynamodb.put_item.await_count == 1
+        # The subscription row was written via the atomic conditional put.
+        assert dynamodb.put_item_if_not_exists.await_count == 1
         # ...and the SUBSCRIPTION_PURCHASED event was fired exactly once.
         svc._log_subscription_event.assert_awaited_once()
 
@@ -504,6 +507,7 @@ class TestVerifyPurchaseIdempotency:
         # Critically: we DID NOT put_item / DID NOT fire a duplicate
         # SUBSCRIPTION_PURCHASED event.
         dynamodb.put_item.assert_not_awaited()
+        dynamodb.put_item_if_not_exists.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unknown_sku_rejected(self, monkeypatch):
@@ -539,6 +543,49 @@ class TestVerifyPurchaseIdempotency:
                 transaction_id="ot1",
             )
         assert "Product mismatch" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_race_resolves_idempotently(
+        self, monkeypatch, parsed_transaction
+    ):
+        """When two concurrent /verify-purchase calls reach the conditional
+        put with the same original_transaction_id, only one wins. The
+        loser must read back the winner's row and return it
+        idempotently — no second SUBSCRIPTION_PURCHASED event."""
+        svc, dynamodb = _build_subscription_service(monkeypatch)
+
+        svc.receipt_validator.validate_apple_receipt = AsyncMock(
+            return_value={"valid": True, "data": parsed_transaction, "error": None}
+        )
+        svc._update_user_subscription_status = AsyncMock(return_value=None)
+        svc._log_subscription_event = AsyncMock(return_value=None)
+
+        # Initial get_item returns None (we thought we were the first
+        # request), but the conditional put loses to a concurrent
+        # winner. Then get_item is called again to fetch the winner.
+        winner = {
+            "user_id": "u1",
+            "subscription_id": "ot1",
+            "product_id": "com.themirrorcollective.mirror.core.monthly",
+            "status": "ACTIVE",
+        }
+        dynamodb.get_item = AsyncMock(side_effect=[None, winner])
+        dynamodb.put_item_if_not_exists = AsyncMock(return_value=False)
+
+        result = await svc.verify_and_activate_purchase(
+            user_id="u1",
+            platform="ios",
+            receipt_data="legacy",
+            product_id="com.themirrorcollective.mirror.core.monthly",
+            transaction_id="ot1",
+        )
+
+        assert result["success"] is True
+        assert result["idempotent"] is True
+        assert result["subscription"] == winner
+        # We MUST NOT fire a duplicate SUBSCRIPTION_PURCHASED event when
+        # we lost the conditional-put race.
+        svc._log_subscription_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_idempotency_uses_verified_original_transaction_id(
@@ -612,3 +659,128 @@ class TestVerifyPurchaseIdempotency:
         # subscription dict status must be "trial" — to_dict doesn't
         # surface is_in_trial directly, so status is the proxy.
         assert result["subscription"]["status"] == "trial"
+
+
+# --------------------------------------------------------------------------- #
+# restore_user_purchases — SKU whitelist defence
+# --------------------------------------------------------------------------- #
+
+
+class TestRestorePurchasesSkuWhitelist:
+    @pytest.mark.asyncio
+    async def test_restore_rejects_unknown_sku(self, monkeypatch):
+        svc, dynamodb = _build_subscription_service(monkeypatch)
+
+        # Forged receipt: signature verifies (mocked) but claims a SKU
+        # that's not in our products catalog.
+        svc.receipt_validator.validate_apple_receipt = AsyncMock(
+            return_value={
+                "valid": True,
+                "data": {
+                    "transaction_id": "t1",
+                    "original_transaction_id": "ot1",
+                    "product_id": "com.attacker.fakeproduct",
+                    "purchase_date": "2026-01-01T00:00:00Z",
+                    "expiry_date": "2026-02-01T00:00:00Z",
+                    "auto_renew_enabled": True,
+                    "price": 0.99,
+                },
+                "error": None,
+            }
+        )
+
+        result = await svc.restore_user_purchases(
+            user_id="u1",
+            platform="ios",
+            receipts=["legacy-receipt"],
+        )
+
+        # Restore returns a dict with errors[] and no restored subscriptions.
+        assert result["restored_count"] == 0
+        assert any("Unknown product_id" in err for err in result.get("errors", []))
+        # No write happened.
+        dynamodb.put_item.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# Google parse_google_purchase — Phase A contract
+# --------------------------------------------------------------------------- #
+
+
+class TestParseGooglePurchase:
+    def test_maps_order_id_to_transaction_fields(self):
+        """parse_google_purchase must populate the contract fields that
+        verify_and_activate_purchase expects, not just the legacy
+        order_id key. Bug regression — pre-fix, Android purchases
+        couldn't activate because the parser returned no
+        transaction_id / original_transaction_id."""
+        from src.app.services.receipt_validator import ReceiptValidator
+
+        v = ReceiptValidator()
+        parsed = v.parse_google_purchase(
+            {
+                "orderId": "GPA.1234-5678-9012-12345",
+                "productId": "com.themirrorcollective.mirror.core.monthly",
+                "startTimeMillis": "1700000000000",
+                "expiryTimeMillis": "1730000000000",
+                "autoRenewing": True,
+                "paymentState": 1,
+            }
+        )
+
+        assert parsed["transaction_id"] == "GPA.1234-5678-9012-12345"
+        assert parsed["original_transaction_id"] == "GPA.1234-5678-9012-12345"
+        assert parsed["product_id"] == "com.themirrorcollective.mirror.core.monthly"
+        assert parsed["auto_renew_enabled"] is True
+        assert parsed["is_trial_period"] is False
+        assert parsed["purchase_date"].endswith("Z")
+        assert parsed["expiry_date"].endswith("Z")
+
+    def test_payment_state_2_signals_trial(self):
+        from src.app.services.receipt_validator import ReceiptValidator
+
+        v = ReceiptValidator()
+        parsed = v.parse_google_purchase(
+            {
+                "orderId": "GPA.x",
+                "productId": "com.themirrorcollective.mirror.core.monthly",
+                "startTimeMillis": "1700000000000",
+                "expiryTimeMillis": "1730000000000",
+                "paymentState": 2,
+            }
+        )
+        assert parsed["is_trial_period"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Production startup safety guards
+# --------------------------------------------------------------------------- #
+
+
+class TestProductionStartupGuards:
+    def test_pubsub_verify_disabled_in_production_raises(self, monkeypatch):
+        from src.app.handler import _enforce_production_safety_invariants
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("GOOGLE_PUBSUB_VERIFY", "false")
+
+        with pytest.raises(RuntimeError) as exc:
+            _enforce_production_safety_invariants()
+        assert "GOOGLE_PUBSUB_VERIFY" in str(exc.value)
+
+    def test_pubsub_verify_disabled_outside_production_allowed(self, monkeypatch):
+        from src.app.handler import _enforce_production_safety_invariants
+
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        monkeypatch.setenv("GOOGLE_PUBSUB_VERIFY", "false")
+
+        # Must NOT raise — local/dev environments can intentionally bypass.
+        _enforce_production_safety_invariants()
+
+    def test_pubsub_verify_enabled_in_production_allowed(self, monkeypatch):
+        from src.app.handler import _enforce_production_safety_invariants
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("GOOGLE_PUBSUB_VERIFY", "true")
+
+        _enforce_production_safety_invariants()

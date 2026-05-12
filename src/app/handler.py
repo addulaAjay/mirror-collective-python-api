@@ -209,8 +209,34 @@ async def api_health():
     )
 
 
+def _enforce_production_safety_invariants() -> None:
+    """Fail fast at startup when an obviously dangerous config is deployed.
+
+    Each invariant here protects a real-money safety control. If a
+    developer sets one of these to bypass-mode in a shared env file
+    and it ships to production, we'd rather crash on boot than serve
+    forged webhooks for hours undetected.
+
+    Add new invariants here whenever a feature gains an env-gated
+    "disable verification" escape hatch.
+    """
+    environment = (os.getenv("ENVIRONMENT") or "").lower()
+    if environment != "production":
+        return
+
+    google_verify = (os.getenv("GOOGLE_PUBSUB_VERIFY", "true") or "").lower()
+    if google_verify in ("0", "false", "no"):
+        raise RuntimeError(
+            "GOOGLE_PUBSUB_VERIFY=false is forbidden in production. "
+            "This env var bypasses Pub/Sub OIDC signature verification "
+            "for Google RTDN webhooks — see "
+            "subscription_service._verify_google_pubsub_jwt."
+        )
+
+
 @app.on_event("startup")
 def startup_event():
+    _enforce_production_safety_invariants()
     start_scheduler()
 
 

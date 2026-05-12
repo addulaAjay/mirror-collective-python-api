@@ -349,9 +349,32 @@ class SubscriptionService:
                 ),
             )
 
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, subscription.to_dynamodb_item()
+            # Atomic conditional put — closes the race where two
+            # concurrent /verify-purchase calls both saw existing=None
+            # above and would otherwise both proceed to activate. The
+            # loser gets `created=False`, re-reads the winner's row, and
+            # returns it idempotently.
+            created = await self.dynamodb_service.put_item_if_not_exists(
+                self.subscriptions_table,
+                subscription.to_dynamodb_item(),
+                key_attr="subscription_id",
             )
+            if not created:
+                race_winner = await self.dynamodb_service.get_item(
+                    self.subscriptions_table,
+                    {"user_id": user_id, "subscription_id": original_txn_id},
+                )
+                logger.info(
+                    "Concurrent /verify-purchase for user %s txn %s — returning race-winner",
+                    user_id,
+                    original_txn_id,
+                )
+                return {
+                    "success": True,
+                    "subscription": race_winner or subscription.to_dict(),
+                    "message": "Subscription already activated",
+                    "idempotent": True,
+                }
 
             await self._update_user_subscription_status(user_id, subscription)
 
@@ -506,25 +529,50 @@ class SubscriptionService:
                     if validation_result["valid"]:
                         transaction_data = validation_result["data"]
 
-                        # Check if subscription already exists
+                        # SKU whitelist + cross-check (defence in depth).
+                        # Mirrors verify_and_activate_purchase — a forged
+                        # receipt claiming an unknown product or a
+                        # different product than the caller's claim must
+                        # be rejected on the restore path too.
+                        from ..constants.products import is_known_sku
+
+                        verified_product = transaction_data.get("product_id")
+                        if not verified_product or not is_known_sku(verified_product):
+                            logger.warning(
+                                "Rejecting restore for user %s — unknown SKU %s",
+                                user_id,
+                                verified_product,
+                            )
+                            errors.append(
+                                f"Unknown product_id in receipt: {verified_product}"
+                            )
+                            continue
+
+                        # Idempotency: skip if we already activated this
+                        # transaction (use the verified original_transaction_id
+                        # — never the client-claimed value).
+                        idempotency_id = (
+                            transaction_data.get("original_transaction_id")
+                            or transaction_data["transaction_id"]
+                        )
                         existing = await self.dynamodb_service.get_item(
                             self.subscriptions_table,
                             {
                                 "user_id": user_id,
-                                "subscription_id": transaction_data["transaction_id"],
+                                "subscription_id": idempotency_id,
                             },
                         )
 
                         if not existing:
                             # Create subscription record
-                            product_id = transaction_data["product_id"]
+                            product_id = verified_product
                             subscription_type, billing_period = self._parse_product_id(
                                 product_id
                             )
 
                             subscription = Subscription(
                                 user_id=user_id,
-                                subscription_id=transaction_data["transaction_id"],
+                                subscription_id=idempotency_id,
                                 product_id=product_id,
                                 subscription_type=subscription_type,
                                 platform=(

@@ -246,8 +246,14 @@ class ReceiptValidator:
                         "data": None,
                     }
 
-                # Parse and return subscription data
+                # Parse and return subscription data. The legacy
+                # `purchases.subscriptions` endpoint doesn't echo the
+                # productId in its response, so inject the value the
+                # caller passed in so the downstream cross-check has
+                # something authoritative to compare against.
                 parsed_data = self.parse_google_purchase(result)
+                if product_id and not parsed_data.get("product_id"):
+                    parsed_data["product_id"] = product_id
                 return {"valid": True, "data": parsed_data, "error": None}
 
             except Exception as e:
@@ -386,15 +392,55 @@ class ReceiptValidator:
             Dict with parsed subscription data
         """
         try:
+            # Google's API returns the subscription product as a field
+            # called `productId` ONLY when querying by purchase token via
+            # the v1 / v2 endpoints. The legacy `purchases.subscriptions`
+            # response we use omits it (the caller already knows it from
+            # the request), so we accept either. The `product_id` kwarg
+            # path goes through subscription_service which passes the
+            # client-claimed product through validate_google_receipt.
+            order_id = purchase_info.get("orderId")
             return {
-                "order_id": purchase_info.get("orderId"),
+                # Canonical idempotency key matching the Apple shape.
+                # On Google, the orderId IS the original transaction
+                # identifier for the subscription's lifetime.
+                "transaction_id": order_id,
+                "original_transaction_id": order_id,
                 "product_id": purchase_info.get("productId"),
-                "purchase_time_ms": purchase_info.get("startTimeMillis"),
-                "expiry_time_ms": purchase_info.get("expiryTimeMillis"),
-                "auto_renewing": purchase_info.get("autoRenewing", False),
-                "payment_state": purchase_info.get(
-                    "paymentState"
-                ),  # 0=pending, 1=received
+                # ISO timestamps to match the Apple parser + Subscription
+                # model contract. _iso_from_millis is defined at module
+                # top and handles missing / unparseable inputs.
+                "purchase_date": _iso_from_millis(purchase_info.get("startTimeMillis")),
+                "expiry_date": _iso_from_millis(purchase_info.get("expiryTimeMillis")),
+                "auto_renew_enabled": bool(purchase_info.get("autoRenewing", False)),
+                # Google has no explicit "trial period" flag; paymentState=2
+                # means free-trial-in-progress (per Google's docs).
+                "is_trial_period": purchase_info.get("paymentState") == 2,
+                "is_in_intro_offer_period": purchase_info.get("paymentState") == 2,
+                # No price / currency exposed by this Google endpoint —
+                # downstream code defaults price to 0.0 which is fine
+                # since SKU + billing_period are the truth source.
+                "price": 0.0,
+                "currency_code": purchase_info.get("priceCurrencyCode", "USD"),
+                "environment": (
+                    "sandbox"
+                    if purchase_info.get("purchaseType") == 0
+                    else "production"
+                ),
+                # Legacy fields kept for callers that haven't migrated.
+                "order_id": order_id,
+                "purchase_time_ms": (
+                    str(purchase_info["startTimeMillis"])
+                    if purchase_info.get("startTimeMillis") is not None
+                    else None
+                ),
+                "expiry_time_ms": (
+                    str(purchase_info["expiryTimeMillis"])
+                    if purchase_info.get("expiryTimeMillis") is not None
+                    else None
+                ),
+                "auto_renewing": bool(purchase_info.get("autoRenewing", False)),
+                "payment_state": purchase_info.get("paymentState"),
                 "cancel_reason": purchase_info.get("cancelReason"),
                 "user_cancellation_time_ms": purchase_info.get(
                     "userCancellationTimeMillis"
