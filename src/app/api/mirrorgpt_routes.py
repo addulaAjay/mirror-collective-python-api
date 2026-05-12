@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..services.conversation_service import ConversationService
 
 from ..core.enhanced_auth import get_user_with_profile
+from ..core.entitlement import EntitledUser, require_entitled
 from ..core.security import get_current_user, get_current_user_optional
 from ..services.dynamodb_service import DynamoDBService
 from ..services.mirror_orchestrator import MIRRORGPT_SYSTEM_PROMPT, MirrorOrchestrator
@@ -365,7 +366,7 @@ def get_dynamodb_service() -> DynamoDBService:
 async def mirrorgpt_chat(
     request: MirrorGPTChatRequest,
     conversation_service: "ConversationService" = Depends(get_conversation_service),
-    current_user: Dict[str, Any] = Depends(get_user_with_profile),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -378,6 +379,7 @@ async def mirrorgpt_chat(
     - Pattern loop identification
     - Personalized responses based on archetype
     """
+    current_user = entitled.user
 
     try:
         session_id = request.session_id or str(uuid.uuid4())
@@ -486,7 +488,7 @@ async def mirrorgpt_chat(
 @router.post("/analyze", response_model=ArchetypeAnalysisResponse)
 async def analyze_archetype(
     request: ArchetypeAnalysisRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -943,7 +945,7 @@ async def get_echo_signals(
     archetype_filter: Optional[str] = Query(
         default=None, description="Filter by primary archetype"
     ),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -953,6 +955,7 @@ async def get_echo_signals(
     from conversation messages. Can be filtered by archetype to see
     patterns for specific archetypal states.
     """
+    current_user = entitled.user
 
     try:
         # Use conversation messages instead of echo_signals table
@@ -997,7 +1000,7 @@ async def get_mirror_moments(
     acknowledged_only: bool = Query(
         default=False, description="Filter for acknowledged moments only"
     ),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -1006,6 +1009,7 @@ async def get_mirror_moments(
     Retrieves detected Mirror Moments which represent significant shifts in
     archetypal patterns, breakthroughs, or pattern loop transformations.
     """
+    current_user = entitled.user
 
     try:
         moments = await orchestrator.dynamodb_service.get_user_mirror_moments(
@@ -1041,7 +1045,7 @@ async def get_mirror_moments(
 )
 async def acknowledge_mirror_moment(
     moment_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -1050,6 +1054,7 @@ async def acknowledge_mirror_moment(
     Marks a Mirror Moment as acknowledged by the user, indicating they have
     recognized and integrated the insight or transformation.
     """
+    current_user = entitled.user
 
     try:
         success = await orchestrator.dynamodb_service.acknowledge_mirror_moment(
@@ -1078,7 +1083,7 @@ async def acknowledge_mirror_moment(
 @router.get("/loops", response_model=PatternLoopResponse)
 async def get_pattern_loops(
     active_only: bool = Query(default=True, description="Filter for active loops only"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -1087,6 +1092,7 @@ async def get_pattern_loops(
     Retrieves detected pattern loops which represent recurring psychological
     themes or motifs in the user's expressions and thoughts.
     """
+    current_user = entitled.user
 
     try:
         loops = await orchestrator.dynamodb_service.get_user_pattern_loops(
@@ -1118,7 +1124,7 @@ async def get_pattern_loops(
 
 @router.get("/insights", response_model=UserInsightsResponse)
 async def get_pattern_insights(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
 ):
     """
@@ -1127,6 +1133,7 @@ async def get_pattern_insights(
     Generates comprehensive insights about the user's archetypal journey,
     signal patterns, and growth indicators based on their historical data.
     """
+    current_user = entitled.user
 
     try:
         insights_data = await orchestrator.get_user_insights(current_user["id"])
@@ -1191,7 +1198,7 @@ async def get_archetype_list(current_user: Dict[str, Any] = Depends(get_current_
 
 @router.get("/session/greeting")
 async def get_session_greeting(
-    current_user: Dict[str, Any] = Depends(get_user_with_profile),
+    entitled: EntitledUser = Depends(require_entitled),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
     conversation_service: "ConversationService" = Depends(get_conversation_service),
 ):
@@ -1204,6 +1211,7 @@ async def get_session_greeting(
     - Continuity memory from previous conversations (summaries)
     - Mirror Moments and behavioral indicators
     """
+    current_user = entitled.user
 
     try:
         # Get user's current profile and history

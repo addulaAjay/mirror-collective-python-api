@@ -9,9 +9,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, validator
 
-from ..core.security import get_current_user
+from ..core.entitlement import EntitledUser, require_entitled
+from ..services.dynamodb_service import DynamoDBService
 from ..services.echo_service import EchoService
 from ..services.email_service import email_service
+from ..services.storage_quota_service import StorageQuotaService
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,8 @@ router = APIRouter(tags=["Echo Vault"])
 
 # Initialize service
 echo_service = EchoService()
+_dynamodb_service = DynamoDBService()
+quota_service = StorageQuotaService(_dynamodb_service)
 
 
 # ========================================
@@ -125,6 +129,12 @@ class UploadUrlRequest(BaseModel):
     # 'profile' → profiles/{user_id}/ path (recipient / guardian photo)
     # 'user_profile' → user_profiles/{user_id}/ path (own avatar)
     upload_type: Optional[str] = "echo"
+    # Declared size in bytes of the file the client is about to upload.
+    # Required for upload_type='echo' so the server can pre-flight the
+    # storage quota check before issuing a presigned URL. Other upload
+    # types ('profile', 'user_profile') aren't counted against the quota
+    # so this field is optional for them.
+    file_size_bytes: Optional[int] = None
 
 
 class CreateRecipientRequest(BaseModel):
@@ -193,10 +203,10 @@ class GuardianResponse(BaseModel):
 @router.post("/echoes", response_model=Dict[str, Any], status_code=201)
 async def create_echo(
     request: CreateEchoRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Create a new echo in the vault."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     echo = await echo_service.create_echo(user_id, request.model_dump())
 
@@ -216,16 +226,48 @@ async def create_echo(
 @router.post("/echoes/upload-url", response_model=Dict[str, Any])
 async def get_upload_url(
     request: UploadUrlRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
-    """Get presigned URL for direct media upload to S3."""
-    user_id = current_user["id"]
+    """Get presigned URL for direct media upload to S3.
+
+    Pre-flights the user's storage quota for `upload_type='echo'` so we
+    don't issue a signed URL the user can't legitimately fill. The check
+    is skipped for non-vault upload types (profile photos, etc.) since
+    those don't count against `echo_vault_used_gb`.
+    """
+    user_id = entitled.user_id
+    upload_type = request.upload_type or "echo"
+
+    if upload_type == "echo":
+        quota_check = await quota_service.can_upload(
+            user_id=user_id,
+            file_size_bytes=request.file_size_bytes or 0,
+        )
+        if not quota_check.get("can_upload"):
+            # 413 Payload Too Large is the closest semantic match for
+            # "exceeds quota". `no_quota` shouldn't happen here because
+            # require_entitled already gated the request, but treat it
+            # as 402 if it does.
+            reason = quota_check.get("reason") or "quota_exceeded"
+            status_code = 402 if reason == "no_quota" else 413
+            raise HTTPException(
+                status_code=status_code,
+                detail={
+                    "code": reason,
+                    "reason": reason,
+                    "message": quota_check.get(
+                        "message",
+                        "Upload would exceed your storage quota.",
+                    ),
+                    "quota_status": quota_check.get("quota_status"),
+                },
+            )
 
     result = await echo_service.generate_upload_url(
         user_id=user_id,
         file_type=request.file_type,
         echo_id=request.echo_id,
-        upload_type=request.upload_type or "echo",
+        upload_type=upload_type,
     )
 
     return {
@@ -242,10 +284,10 @@ async def list_user_echoes(
     status: Optional[str] = Query(
         None, description="Filter by status (DRAFT, LOCKED, RELEASED)"
     ),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """List all echoes created by the current user (vault view)."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     echoes = await echo_service.get_user_echoes(
         user_id=user_id,
@@ -280,7 +322,7 @@ async def list_user_echoes(
 async def list_received_echoes(
     category: Optional[str] = Query(None, description="Filter by category"),
     sender_id: Optional[str] = Query(None, description="Filter by sender"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """List echoes received by the current user (inbox view).
 
@@ -288,9 +330,7 @@ async def list_received_echoes(
     which is populated at recipient creation and back-filled when the recipient
     later signs up. No email lookup is needed.
     """
-    user_id = current_user.get("id") or ""
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID not found in token")
+    user_id = entitled.user_id
 
     try:
         echoes = await echo_service.get_received_echoes(
@@ -336,10 +376,10 @@ async def list_received_echoes(
 @router.get("/echoes/{echo_id}", response_model=Dict[str, Any])
 async def get_echo(
     echo_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Get a specific echo by ID."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     echo = await echo_service.get_echo(echo_id, user_id)
 
@@ -375,10 +415,10 @@ async def get_echo(
 async def update_echo(
     echo_id: str,
     request: UpdateEchoRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Update an echo (only DRAFT status echoes can be updated)."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     try:
         # exclude_unset keeps explicit nulls (so callers can clear release_date
@@ -420,15 +460,31 @@ async def update_echo(
 @router.delete("/echoes/{echo_id}", response_model=Dict[str, Any])
 async def delete_echo(
     echo_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Soft delete an echo."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     success = await echo_service.delete_echo(echo_id, user_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Echo not found")
+
+    # Recompute echo_vault_used_gb from the current S3 inventory. Soft-delete
+    # alone does not free storage (the S3 object remains), but this keeps
+    # the denormalised counter on UserProfile fresh for the next quota
+    # check + paywall calculation, instead of waiting for the user's next
+    # GET /api/subscriptions/quota-status. Failures are logged and ignored
+    # — the delete itself has already succeeded.
+    try:
+        await quota_service.update_user_quota(user_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort recompute
+        logger.warning(
+            "Quota recompute after delete failed for user %s echo %s: %s",
+            user_id,
+            echo_id,
+            exc,
+        )
 
     return {
         "success": True,
@@ -439,7 +495,7 @@ async def delete_echo(
 @router.patch("/echoes/{echo_id}/release", response_model=Dict[str, Any])
 async def release_echo(
     echo_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """
     Release an echo directly to its recipient (no-guardian path).
@@ -454,7 +510,7 @@ async def release_echo(
     """
     from ..core.exceptions import NotFoundError, ValidationError
 
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     try:
         echo = await echo_service.release_echo(echo_id=echo_id, user_id=user_id)
@@ -480,7 +536,7 @@ async def release_echo(
 @router.patch("/echoes/{echo_id}/lock", response_model=Dict[str, Any])
 async def lock_echo(
     echo_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """
     Lock an echo with a guardian (Phase 2).
@@ -494,7 +550,7 @@ async def lock_echo(
     """
     from ..core.exceptions import NotFoundError, ValidationError
 
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     try:
         echo = await echo_service.lock_echo(echo_id=echo_id, user_id=user_id)
@@ -525,10 +581,10 @@ async def lock_echo(
 
 @router.get("/recipients", response_model=Dict[str, Any])
 async def list_recipients(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """List all recipients for the current user."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     recipients = await echo_service.get_user_recipients(user_id)
 
@@ -553,11 +609,11 @@ async def list_recipients(
 @router.post("/recipients", response_model=Dict[str, Any], status_code=201)
 async def create_recipient(
     request: CreateRecipientRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Add a new recipient. Triggers invitation email."""
-    user_id = current_user["id"]
-    user_name = current_user.get("name", current_user.get("email", "Someone"))
+    user_id = entitled.user_id
+    user_name = entitled.user.get("name", entitled.user.get("email", "Someone"))
 
     recipient = await echo_service.create_recipient(user_id, request.model_dump())
 
@@ -587,10 +643,10 @@ async def create_recipient(
 @router.delete("/recipients/{recipient_id}", response_model=Dict[str, Any])
 async def delete_recipient(
     recipient_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Soft delete a recipient."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     success = await echo_service.delete_recipient(recipient_id, user_id)
 
@@ -610,10 +666,10 @@ async def delete_recipient(
 
 @router.get("/guardians", response_model=Dict[str, Any])
 async def list_guardians(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """List all guardians for the current user."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     guardians = await echo_service.get_user_guardians(user_id)
 
@@ -638,11 +694,11 @@ async def list_guardians(
 @router.post("/guardians", response_model=Dict[str, Any], status_code=201)
 async def create_guardian(
     request: CreateGuardianRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Add a new guardian. Triggers invitation email."""
-    user_id = current_user["id"]
-    user_name = current_user.get("name", current_user.get("email", "Someone"))
+    user_id = entitled.user_id
+    user_name = entitled.user.get("name", entitled.user.get("email", "Someone"))
 
     guardian = await echo_service.create_guardian(user_id, request.model_dump())
 
@@ -675,10 +731,10 @@ async def create_guardian(
 async def update_guardian_permissions(
     guardian_id: str,
     request: UpdateGuardianPermissionsRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Update guardian access permissions."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     try:
         guardian = await echo_service.update_guardian_permissions(
@@ -703,10 +759,10 @@ async def update_guardian_permissions(
 @router.delete("/guardians/{guardian_id}", response_model=Dict[str, Any])
 async def delete_guardian(
     guardian_id: str,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
 ):
     """Soft delete a guardian."""
-    user_id = current_user["id"]
+    user_id = entitled.user_id
 
     success = await echo_service.delete_guardian(guardian_id, user_id)
 
