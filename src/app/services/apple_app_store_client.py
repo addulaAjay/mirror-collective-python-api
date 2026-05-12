@@ -199,6 +199,31 @@ def verify_signed_transaction(signed_transaction: str) -> Dict[str, Any]:
     return _payload_to_dict(payload)
 
 
+def verify_signed_renewal_info(signed_renewal_info: str) -> Dict[str, Any]:
+    """Verify a StoreKit 2 signed renewal info payload (JWS).
+
+    The renewal info is a sibling of `signedTransactionInfo` on every
+    `lastTransactions` group from the App Store Server API. It carries
+    fields that the transaction payload does NOT — most importantly:
+
+      - `autoRenewStatus` (0 = off, 1 = on)
+      - `expirationIntent`, `gracePeriodExpiresDate`, `priceIncreaseStatus`
+
+    Raises AppleSignatureVerificationError on any failure. Returns the
+    decoded payload as a dict.
+    """
+    from appstoreserverlibrary.signed_data_verifier import VerificationException
+
+    try:
+        verifier = _get_signed_data_verifier()
+        payload = verifier.verify_and_decode_renewal_info(signed_renewal_info)
+    except VerificationException as exc:
+        logger.warning("Apple renewal info verification failed: %s", exc)
+        raise AppleSignatureVerificationError(str(exc)) from exc
+
+    return _payload_to_dict(payload)
+
+
 def verify_signed_notification(signed_payload: str) -> Dict[str, Any]:
     """Verify an ASSN v2 webhook payload (signedPayload) and return its decoded body.
 
@@ -250,13 +275,34 @@ def get_subscription_statuses(transaction_id: str) -> Dict[str, Any]:
         )
         raise
 
-    # Flatten + verify every signedTransactionInfo in the response.
+    # Flatten + verify every signedTransactionInfo in the response. The
+    # parallel signedRenewalInfo carries autoRenewStatus, which the
+    # transaction payload does NOT — we attach it under
+    # `_renewal_info` so downstream parsers (receipt_validator) can
+    # surface auto_renew_enabled correctly instead of hardcoding True.
     decoded_transactions: list[Dict[str, Any]] = []
     for group in resp.data or []:
         for last_tx in group.lastTransactions or []:
             signed = last_tx.signedTransactionInfo
-            if signed:
-                decoded_transactions.append(verify_signed_transaction(signed))
+            if not signed:
+                continue
+            tx_payload = verify_signed_transaction(signed)
+            renewal = getattr(last_tx, "signedRenewalInfo", None)
+            if renewal:
+                try:
+                    tx_payload["_renewal_info"] = verify_signed_renewal_info(renewal)
+                except AppleSignatureVerificationError as exc:
+                    # Renewal info failed verification but the
+                    # transaction itself is valid. Log + continue with
+                    # transaction-only data; auto_renew falls back to
+                    # the parser's default. Better than dropping the
+                    # whole row.
+                    logger.warning(
+                        "Renewal info verification failed for txn %s: %s",
+                        tx_payload.get("transactionId"),
+                        exc,
+                    )
+            decoded_transactions.append(tx_payload)
 
     # Most-recent by purchaseDate (transactions sorted ascending in
     # most groups, but don't assume — pick by date explicitly).

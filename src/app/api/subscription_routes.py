@@ -173,6 +173,29 @@ async def get_subscription_status(
             in ["trial", "core", "core_plus"],
         }
 
+        # Fetch the active subscription rows so the client can render
+        # billing-period / expiry / auto-renew status on the "Your
+        # Subscription" screen. The UserProfile carries the FK ids;
+        # we look them up in the subscriptions table.
+        core_subscription = None
+        if user_profile.primary_subscription_id:
+            core_subscription = await dynamodb_service.get_item(
+                subscription_service.subscriptions_table,
+                {
+                    "user_id": user_id,
+                    "subscription_id": user_profile.primary_subscription_id,
+                },
+            )
+        storage_subscription = None
+        if user_profile.storage_subscription_id:
+            storage_subscription = await dynamodb_service.get_item(
+                subscription_service.subscriptions_table,
+                {
+                    "user_id": user_id,
+                    "subscription_id": user_profile.storage_subscription_id,
+                },
+            )
+
         return {
             "success": True,
             "data": {
@@ -180,8 +203,8 @@ async def get_subscription_status(
                 "status": user_profile.subscription_status,
                 "trial_days_remaining": trial_days_remaining,
                 "features": features,
-                "core_subscription": None,  # TODO: Fetch from subscriptions table
-                "storage_subscription": None,  # TODO: Fetch from subscriptions table
+                "core_subscription": core_subscription,
+                "storage_subscription": storage_subscription,
                 "has_used_trial": user_profile.has_used_trial,
             },
         }

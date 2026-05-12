@@ -252,10 +252,10 @@ class SubscriptionService:
             }
 
         except ValueError as e:
-            logger.error(f"Receipt validation error for user {user_id}: {e}")
+            logger.error("Receipt validation error for user %s: %s", user_id, e)
             raise
         except Exception as e:
-            logger.error(f"Error activating subscription for user {user_id}: {e}")
+            logger.error("Error activating subscription for user %s: %s", user_id, e)
             raise InternalServerError(f"Failed to activate subscription: {str(e)}")
 
     async def get_user_subscription_status(self, user_id: str) -> Dict[str, Any]:
@@ -307,7 +307,9 @@ class SubscriptionService:
             }
 
         except Exception as e:
-            logger.error(f"Error getting subscription status for user {user_id}: {e}")
+            logger.error(
+                "Error getting subscription status for user %s: %s", user_id, e
+            )
             raise InternalServerError(f"Failed to get subscription status: {str(e)}")
 
     async def restore_user_purchases(
@@ -448,7 +450,7 @@ class SubscriptionService:
                             )
 
                 except Exception as e:
-                    logger.error(f"Error restoring receipt: {e}")
+                    logger.error("Error restoring receipt: %s", e)
                     errors.append(str(e))
 
             logger.info(
@@ -463,7 +465,7 @@ class SubscriptionService:
             }
 
         except Exception as e:
-            logger.error(f"Error restoring purchases for user {user_id}: {e}")
+            logger.error("Error restoring purchases for user %s: %s", user_id, e)
             raise InternalServerError(f"Failed to restore purchases: {str(e)}")
 
     async def handle_apple_webhook(self, notification_payload: Dict) -> Dict[str, Any]:
@@ -550,7 +552,7 @@ class SubscriptionService:
             return {"success": True, "message": "Webhook processed"}
 
         except Exception as e:
-            logger.error(f"Error processing Apple webhook: {e}")
+            logger.error("Error processing Apple webhook: %s", e)
             raise InternalServerError(f"Failed to process webhook: {str(e)}")
 
     async def handle_google_webhook(
@@ -653,7 +655,7 @@ class SubscriptionService:
             return {"success": True, "message": "Webhook processed"}
 
         except Exception as e:
-            logger.error(f"Error processing Google webhook: {e}")
+            logger.error("Error processing Google webhook: %s", e)
             raise InternalServerError(f"Failed to process webhook: {str(e)}")
 
     async def cancel_subscription(
@@ -696,7 +698,9 @@ class SubscriptionService:
                 metadata={"expiry_date": subscription["expiry_date"]},
             )
 
-            logger.info(f"Cancelled subscription {subscription_id} for user {user_id}")
+            logger.info(
+                "Cancelled subscription %s for user %s", subscription_id, user_id
+            )
 
             return {
                 "success": True,
@@ -705,10 +709,10 @@ class SubscriptionService:
             }
 
         except ValueError as e:
-            logger.error(f"Cancellation error: {e}")
+            logger.error("Cancellation error: %s", e)
             raise
         except Exception as e:
-            logger.error(f"Error cancelling subscription: {e}")
+            logger.error("Error cancelling subscription: %s", e)
             raise InternalServerError(f"Failed to cancel subscription: {str(e)}")
 
     async def get_billing_history(self, user_id: str) -> Dict[str, Any]:
@@ -734,7 +738,7 @@ class SubscriptionService:
             return {"success": True, "events": events, "total_events": len(events)}
 
         except Exception as e:
-            logger.error(f"Error getting billing history for user {user_id}: {e}")
+            logger.error("Error getting billing history for user %s: %s", user_id, e)
             raise InternalServerError(f"Failed to get billing history: {str(e)}")
 
     # ========================================
@@ -896,7 +900,7 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error updating user subscription status: {e}")
+            logger.error("Error updating user subscription status: %s", e)
             raise
 
     async def _log_subscription_event(
@@ -935,7 +939,7 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error logging subscription event: {e}")
+            logger.error("Error logging subscription event: %s", e)
             # Don't raise - event logging is non-critical
 
     async def _handle_subscription_renewal(self, transaction_info: Dict) -> None:
@@ -1007,7 +1011,7 @@ class SubscriptionService:
             # would mean the platform sees 200 OK and stops retrying
             # despite our subscription state never updating — silent
             # real-money state loss.
-            logger.error(f"Error handling subscription renewal: {e}", exc_info=True)
+            logger.error("Error handling subscription renewal: %s", e, exc_info=True)
             raise
 
     async def _handle_renewal_failure(self, transaction_info: Dict) -> None:
@@ -1044,10 +1048,17 @@ class SubscriptionService:
                 subscription.user_id
             )
             if user_profile:
-                # TODO: Send push notification about payment failure
-                # This would integrate with your notification service
-                logger.info(
-                    f"Should send payment failure notification to user {subscription.user_id}"
+                # Payment-failure push notifications are a separate
+                # cross-cutting concern handled by PushNotificationService
+                # (not yet wired into this lifecycle path — see the
+                # roadmap in docs/IAP_SUBSCRIPTION_REVIEW.md). For now we
+                # surface the event at WARNING level so operators can
+                # alert on the volume of payment failures in CloudWatch
+                # until the push integration lands.
+                logger.warning(
+                    "Payment failure for user %s subscription %s — push notification not yet wired",
+                    subscription.user_id,
+                    subscription.subscription_id,
                 )
 
             # Log renewal failure event
@@ -1067,7 +1078,7 @@ class SubscriptionService:
             # See _handle_subscription_renewal — re-raise so the
             # platform retries instead of treating the webhook as
             # consumed.
-            logger.error(f"Error handling renewal failure: {e}", exc_info=True)
+            logger.error("Error handling renewal failure: %s", e, exc_info=True)
             raise
 
     async def _handle_subscription_expired(self, transaction_info: Dict) -> None:
@@ -1151,7 +1162,7 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error handling subscription expiration: {e}", exc_info=True)
+            logger.error("Error handling subscription expiration: %s", e, exc_info=True)
             raise
 
     async def _handle_refund(self, transaction_info: Dict) -> None:
@@ -1234,7 +1245,7 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error handling refund: {e}", exc_info=True)
+            logger.error("Error handling refund: %s", e, exc_info=True)
             raise
 
     async def _handle_renewal_status_change(self, transaction_info: Dict) -> None:
@@ -1292,5 +1303,5 @@ class SubscriptionService:
                 )
 
         except Exception as e:
-            logger.error(f"Error handling renewal status change: {e}", exc_info=True)
+            logger.error("Error handling renewal status change: %s", e, exc_info=True)
             raise

@@ -184,6 +184,48 @@ class TestReceiptValidatorApple:
         assert result["valid"] is False
         assert "signature" in result["error"].lower()
 
+    def test_auto_renew_derived_from_signed_renewal_info(self):
+        """parse_apple_signed_transaction must read autoRenewStatus
+        from the JWS-verified renewal info (attached under
+        `_renewal_info` by apple_app_store_client) instead of
+        hardcoding True."""
+        from src.app.services.receipt_validator import ReceiptValidator
+
+        v = ReceiptValidator()
+
+        # Off
+        parsed = v.parse_apple_signed_transaction(
+            {
+                "transactionId": "t1",
+                "originalTransactionId": "ot1",
+                "productId": "com.themirrorcollective.mirror.core.monthly",
+                "_renewal_info": {"autoRenewStatus": 0},
+            }
+        )
+        assert parsed["auto_renew_enabled"] is False
+
+        # On
+        parsed = v.parse_apple_signed_transaction(
+            {
+                "transactionId": "t2",
+                "originalTransactionId": "ot1",
+                "productId": "com.themirrorcollective.mirror.core.monthly",
+                "_renewal_info": {"autoRenewStatus": 1},
+            }
+        )
+        assert parsed["auto_renew_enabled"] is True
+
+        # Missing renewal info → default True for backwards-compat with
+        # migration-window transactions that don't carry it.
+        parsed = v.parse_apple_signed_transaction(
+            {
+                "transactionId": "t3",
+                "originalTransactionId": "ot1",
+                "productId": "com.themirrorcollective.mirror.core.monthly",
+            }
+        )
+        assert parsed["auto_renew_enabled"] is True
+
     @pytest.mark.asyncio
     async def test_happy_path_returns_parsed_transaction(self, monkeypatch):
         from src.app.services import apple_app_store_client

@@ -17,7 +17,7 @@ Google flow:
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +34,6 @@ def _iso_from_millis(millis_value) -> Optional[str]:
         seconds = float(millis_value) / 1000.0
         dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
         return dt.isoformat().replace("+00:00", "Z")
-    except (TypeError, ValueError):
-        return None
-
-
-def _ms_from_millis(millis_value) -> Optional[str]:
-    """Pass-through coerce-to-str for millisecond fields (legacy callers)."""
-    if millis_value is None:
-        return None
-    try:
-        return str(int(millis_value))
     except (TypeError, ValueError):
         return None
 
@@ -68,7 +58,7 @@ class ReceiptValidator:
         self,
         receipt_data: str,
         original_transaction_id: Optional[str] = None,
-    ) -> Dict:
+    ) -> Dict[str, Any]:
         """
         Validate an iOS purchase via the App Store Server API.
 
@@ -149,7 +139,7 @@ class ReceiptValidator:
 
     async def validate_google_receipt(
         self, receipt_data: str, product_id: Optional[str] = None
-    ) -> Dict:
+    ) -> Dict[str, Any]:
         """
         Validate Android receipt with Google Play API
 
@@ -206,7 +196,7 @@ class ReceiptValidator:
                     scopes=["https://www.googleapis.com/auth/androidpublisher"],
                 )
             except Exception as e:
-                logger.error(f"Failed to load service account credentials: {e}")
+                logger.error("Failed to load service account credentials: %s", e)
                 return {
                     "valid": False,
                     "error": f"Failed to load service account credentials: {str(e)}",
@@ -217,7 +207,7 @@ class ReceiptValidator:
             try:
                 service = build("androidpublisher", "v3", credentials=credentials)
             except Exception as e:
-                logger.error(f"Failed to build Google Play API client: {e}")
+                logger.error("Failed to build Google Play API client: %s", e)
                 return {
                     "valid": False,
                     "error": f"Failed to build Google Play API client: {str(e)}",
@@ -257,7 +247,7 @@ class ReceiptValidator:
                 return {"valid": True, "data": parsed_data, "error": None}
 
             except Exception as e:
-                logger.error(f"Google Play API error: {e}")
+                logger.error("Google Play API error: %s", e)
                 return {
                     "valid": False,
                     "error": f"Google Play API error: {str(e)}",
@@ -265,12 +255,14 @@ class ReceiptValidator:
                 }
 
         except Exception as e:
-            logger.error(f"Error validating Google receipt: {e}")
+            logger.error("Error validating Google receipt: %s", e)
             return {"valid": False, "error": str(e), "data": None}
 
     def parse_apple_signed_transaction(
-        self, transaction: Dict, status_response: Optional[Dict] = None
-    ) -> Dict:
+        self,
+        transaction: Dict[str, Any],
+        status_response: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Map a verified Apple JWS transaction payload to the legacy
         parsed shape used by subscription_service.
@@ -286,35 +278,24 @@ class ReceiptValidator:
                 (provides auto_renew_status from the pendingRenewalInfo).
         """
         try:
-            # Renewal info is one level up from individual transactions in
-            # the SDK response; if not provided, default auto_renew_status
-            # to True (the common case for an active subscription).
-            auto_renew = True
-            if status_response:
-                for tx in status_response.get("signed_transactions", []) or []:
-                    if tx.get("originalTransactionId") == transaction.get(
-                        "originalTransactionId"
-                    ):
-                        # The SDK exposes renewal info on a sibling
-                        # signedRenewalInfo field that lives on the
-                        # `lastTransactions` group rather than the
-                        # transaction itself. We don't currently surface
-                        # it explicitly; fall back to True until we wire
-                        # it through.
-                        break
-
-            # SDK timestamps are epoch milliseconds (numeric). Coerce
-            # to ms-string for legacy callers; new callers use the ISO
-            # versions assembled below.
-            purchase_date_ms = _ms_from_millis(
-                transaction.get("purchaseDate") or transaction.get("purchase_date")
-            )
-            expires_date_ms = _ms_from_millis(
-                transaction.get("expiresDate") or transaction.get("expires_date")
-            )
-            cancellation_date_ms = _ms_from_millis(
-                transaction.get("revocationDate") or transaction.get("revocation_date")
-            )
+            # Resolve auto_renew_enabled from the JWS-verified renewal info
+            # that apple_app_store_client now attaches under "_renewal_info"
+            # on each transaction. autoRenewStatus is the SDK's enum
+            # (0 = off, 1 = on). Fallback default = True only when we
+            # have no signal at all, which happens for transactions that
+            # arrived via a path that doesn't carry renewal info (e.g.
+            # legacy receipts during the migration window).
+            renewal_info = transaction.get("_renewal_info") or {}
+            renewal_status = renewal_info.get("autoRenewStatus")
+            if renewal_status is None:
+                auto_renew = True
+            else:
+                try:
+                    auto_renew = int(renewal_status) == 1
+                except (TypeError, ValueError):
+                    # Some payloads serialise the enum as a string;
+                    # fall back to truthiness.
+                    auto_renew = bool(renewal_status)
 
             offer_type = transaction.get("offerType") or transaction.get("offer_type")
             # offer_type=1 is INTRODUCTORY in StoreKit 2 enum semantics.
@@ -369,19 +350,13 @@ class ReceiptValidator:
                 "environment": transaction.get("environment"),
                 "bundle_id": transaction.get("bundleId")
                 or transaction.get("bundle_id"),
-                # Legacy alias fields kept for any caller still on the old
-                # `_ms` shape; remove once all consumers are migrated.
-                "purchase_date_ms": purchase_date_ms,
-                "expires_date_ms": expires_date_ms,
-                "cancellation_date_ms": cancellation_date_ms,
-                "auto_renew_status": auto_renew,
             }
 
         except Exception as e:
-            logger.error(f"Error parsing Apple signed transaction: {e}")
+            logger.error("Error parsing Apple signed transaction: %s", e)
             return {}
 
-    def parse_google_purchase(self, purchase_info: Dict) -> Dict:
+    def parse_google_purchase(self, purchase_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         Extract relevant subscription data from Google purchase
 
@@ -427,26 +402,8 @@ class ReceiptValidator:
                     if purchase_info.get("purchaseType") == 0
                     else "production"
                 ),
-                # Legacy fields kept for callers that haven't migrated.
-                "order_id": order_id,
-                "purchase_time_ms": (
-                    str(purchase_info["startTimeMillis"])
-                    if purchase_info.get("startTimeMillis") is not None
-                    else None
-                ),
-                "expiry_time_ms": (
-                    str(purchase_info["expiryTimeMillis"])
-                    if purchase_info.get("expiryTimeMillis") is not None
-                    else None
-                ),
-                "auto_renewing": bool(purchase_info.get("autoRenewing", False)),
-                "payment_state": purchase_info.get("paymentState"),
-                "cancel_reason": purchase_info.get("cancelReason"),
-                "user_cancellation_time_ms": purchase_info.get(
-                    "userCancellationTimeMillis"
-                ),
             }
 
         except Exception as e:
-            logger.error(f"Error parsing Google purchase: {e}")
+            logger.error("Error parsing Google purchase: %s", e)
             return {}
