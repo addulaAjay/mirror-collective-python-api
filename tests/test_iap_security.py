@@ -541,6 +541,53 @@ class TestVerifyPurchaseIdempotency:
         assert "Product mismatch" in str(exc.value)
 
     @pytest.mark.asyncio
+    async def test_idempotency_uses_verified_original_transaction_id(
+        self, monkeypatch, parsed_transaction
+    ):
+        """Idempotency key must come from the verified receipt, never
+        from the client's claim. If the frontend sends a renewal's
+        transaction_id, the backend should still dedupe by the
+        canonical original_transaction_id."""
+        svc, dynamodb = _build_subscription_service(monkeypatch)
+
+        # Frontend claims the renewal id "renewal-tx-99", but the
+        # verified receipt yields original_transaction_id "ot1".
+        parsed_transaction["transaction_id"] = "renewal-tx-99"
+        parsed_transaction["original_transaction_id"] = "ot1"
+        svc.receipt_validator.validate_apple_receipt = AsyncMock(
+            return_value={"valid": True, "data": parsed_transaction, "error": None}
+        )
+
+        # Simulate an existing subscription row keyed on the ORIGINAL id.
+        existing = {
+            "user_id": "u1",
+            "subscription_id": "ot1",
+            "product_id": "com.themirrorcollective.mirror.core.monthly",
+            "status": "ACTIVE",
+        }
+
+        # The service should call get_item with subscription_id="ot1"
+        # (from the verified receipt) — NOT "renewal-tx-99" (from the
+        # client).
+        async def assert_correct_lookup(_table, key):
+            assert key == {"user_id": "u1", "subscription_id": "ot1"}
+            return existing
+
+        dynamodb.get_item = AsyncMock(side_effect=assert_correct_lookup)
+
+        result = await svc.verify_and_activate_purchase(
+            user_id="u1",
+            platform="ios",
+            receipt_data="legacy",
+            product_id="com.themirrorcollective.mirror.core.monthly",
+            transaction_id="renewal-tx-99",  # client's renewal id
+        )
+
+        assert result["idempotent"] is True
+        assert result["subscription"] == existing
+        dynamodb.put_item.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_trial_period_sets_status_trial(
         self, monkeypatch, parsed_transaction
     ):

@@ -32,14 +32,20 @@ class VerifyPurchaseRequest(BaseModel):
 
     platform: str  # "ios" | "android"
     # iOS: kept for backwards compat. New clients should send
-    # `transaction_id` instead — the App Store Server API flow no
-    # longer needs the legacy base64 receipt blob.
+    # `original_transaction_id` instead — the App Store Server API
+    # flow no longer needs the legacy base64 receipt blob.
     # Android: the purchase token from Google Play Billing.
     receipt_data: str
     product_id: str
-    # Apple's originalTransactionId (iOS) or Google's orderId (Android).
-    # Authoritative idempotency key — repeated /verify-purchase calls
-    # for the same transaction_id are no-ops.
+    # Apple's `originalTransactionId` (iOS) or Google's order base
+    # (Android). Stable across renewals — exactly what we want as the
+    # idempotency key. Required on new clients; older clients that
+    # only send `transaction_id` are still accepted via the fallback
+    # in verify_and_activate_purchase, but the rename is permanent.
+    original_transaction_id: Optional[str] = None
+    # Current transaction id from the SDK. On iOS this is the same as
+    # original_transaction_id for first purchases but a fresh id per
+    # renewal — useful for analytics, not for idempotency.
     transaction_id: str
 
 
@@ -203,12 +209,17 @@ async def verify_purchase(
     try:
         user_id = current_user["id"]
 
+        # Prefer the stable original_transaction_id; fall back to the
+        # legacy transaction_id field for older clients that haven't
+        # been updated yet.
+        lookup_id = request.original_transaction_id or request.transaction_id
+
         result = await subscription_service.verify_and_activate_purchase(
             user_id=user_id,
             platform=request.platform,
             receipt_data=request.receipt_data,
             product_id=request.product_id,
-            transaction_id=request.transaction_id,
+            transaction_id=lookup_id,
         )
 
         return result
