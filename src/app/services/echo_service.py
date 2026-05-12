@@ -502,14 +502,40 @@ class EchoService:
                 echo.category = data["category"]
             if "content" in data:
                 echo.content = data["content"]
-            if "media_url" in data:
+            media_url_in_patch = "media_url" in data
+            if media_url_in_patch:
                 echo.media_url = data["media_url"]
                 logger.info(
                     f"Attached media to echo {echo_id} (status={echo.status.value})"
                 )
-            if "size_bytes" in data:
-                # Quota aggregator sums this column; set whenever media_url
-                # is set or replaced so the cached usage stays accurate.
+
+            # size_bytes resolution — S3 is the source of truth.
+            #
+            # When `media_url` is being set, ignore the client-supplied
+            # `size_bytes` and read the authoritative ContentLength from S3
+            # via HeadObject. This prevents a tampered client from claiming
+            # a small size to under-bill against the storage quota — the
+            # persisted value always matches what's actually in the bucket.
+            #
+            # If HeadObject fails (transient S3 issue, non-S3 URL), fall
+            # back to the client-declared size so we don't drop the info
+            # entirely; the next `calculate_user_storage_usage` call will
+            # re-verify via the same path.
+            #
+            # When `media_url` is NOT in the patch, the client may still
+            # set `size_bytes` directly (e.g., a backfill script). Trust
+            # the value — there's no S3 truth to compare against in that
+            # branch.
+            if media_url_in_patch and echo.media_url:
+                s3_size = await self._head_object_size(echo.media_url)
+                if s3_size is not None:
+                    echo.size_bytes = s3_size
+                elif "size_bytes" in data:
+                    echo.size_bytes = data["size_bytes"]
+            elif media_url_in_patch and not echo.media_url:
+                # media_url explicitly cleared — drop the stale size.
+                echo.size_bytes = None
+            elif "size_bytes" in data:
                 echo.size_bytes = data["size_bytes"]
             if "echo_type" in data:
                 try:
@@ -923,6 +949,35 @@ class EchoService:
         except ClientError as e:
             logger.error(f"S3 error generating presigned URL: {e}")
             raise InternalServerError(f"Failed to generate upload URL: {str(e)}")
+
+    async def _head_object_size(self, media_url: Optional[str]) -> Optional[int]:
+        """Read the authoritative `ContentLength` of an S3 object.
+
+        Used by `update_echo` to override any client-supplied `size_bytes`
+        when media is attached, so the persisted value always matches what
+        S3 has rather than what a possibly-tampered client claimed.
+
+        Returns None when the URL isn't an S3 HTTPS URL, the key is empty,
+        or HeadObject fails. Callers fall back to the client value (if
+        any) on None — never raises so a transient S3 hiccup doesn't fail
+        an otherwise-legitimate echo update.
+        """
+        if not media_url or "amazonaws.com/" not in media_url:
+            return None
+        key = media_url.split("amazonaws.com/", 1)[-1]
+        if not key:
+            return None
+        try:
+            async with self.session.client("s3", region_name=self.region) as s3:
+                head = await s3.head_object(Bucket=self.s3_bucket, Key=key)
+                return int(head.get("ContentLength", 0))
+        except Exception as e:
+            logger.warning(
+                "S3 HeadObject failed during size verification for key %s: %s",
+                key,
+                e,
+            )
+            return None
 
     async def _sign_profile_url(self, url: Optional[str]) -> Optional[str]:
         """Generate presigned GET URL for a profile/avatar image stored in S3.
