@@ -1,94 +1,151 @@
 """
-Receipt validation service for Apple and Google IAP
+Receipt validation service for Apple and Google IAP.
+
+Apple flow (Phase A, 2026-05-11):
+  - Replaced the deprecated `verifyReceipt` endpoint with the App Store
+    Server API (`get_all_subscription_statuses`) keyed on
+    `originalTransactionId`.
+  - All returned transactions are JWS x5c-verified against the
+    bundled Apple Root CA - G3 via SignedDataVerifier.
+  - See src/app/services/apple_app_store_client.py for the SDK wrapper.
+
+Google flow:
+  - Unchanged. Uses the Google Play Developer API with a service-account
+    credential (`GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_PACKAGE_NAME`).
 """
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
-
-import aiohttp
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
+def _iso_from_millis(millis_value) -> Optional[str]:
+    """Convert an epoch-millisecond integer to an ISO 8601 UTC string.
+
+    Returns None on missing / unparseable input. Matches the Z-suffix
+    convention used elsewhere in the codebase.
+    """
+    if millis_value is None:
+        return None
+    try:
+        seconds = float(millis_value) / 1000.0
+        dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError):
+        return None
+
+
+def _ms_from_millis(millis_value) -> Optional[str]:
+    """Pass-through coerce-to-str for millisecond fields (legacy callers)."""
+    if millis_value is None:
+        return None
+    try:
+        return str(int(millis_value))
+    except (TypeError, ValueError):
+        return None
+
+
 class ReceiptValidator:
     """
-    Validate IAP receipts with Apple and Google servers
+    Validate IAP receipts with Apple's App Store Server API and Google
+    Play's Developer API.
     """
 
-    # Apple endpoints
-    APPLE_PRODUCTION_URL = "https://buy.itunes.apple.com/verifyReceipt"
-    APPLE_SANDBOX_URL = "https://sandbox.itunes.apple.com/verifyReceipt"
-
-    # Google endpoints
+    # Google endpoint kept here for reference; the actual call goes
+    # through the google-api-python-client below.
     GOOGLE_API_URL = "https://androidpublisher.googleapis.com/androidpublisher/v3"
 
     def __init__(self):
-        self.apple_shared_secret = os.getenv("APPLE_SHARED_SECRET")
         self.google_service_account_key = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
         self.google_package_name = os.getenv(
-            "GOOGLE_PACKAGE_NAME", "com.mirrorcollective.app"
+            "GOOGLE_PACKAGE_NAME", "com.themirrorcollective.mirror"
         )
 
     async def validate_apple_receipt(
-        self, receipt_data: str, exclude_old_transactions: bool = True
+        self,
+        receipt_data: str,
+        original_transaction_id: Optional[str] = None,
     ) -> Dict:
         """
-        Validate iOS receipt with Apple servers
+        Validate an iOS purchase via the App Store Server API.
+
+        Phase A replaces the legacy `verifyReceipt` flow. Instead of
+        POSTing a base64 receipt blob to Apple, we use the
+        `originalTransactionId` (captured client-side after a successful
+        StoreKit purchase) to fetch the authoritative subscription
+        status and verify the returned JWS payloads via the bundled
+        SignedDataVerifier.
 
         Args:
-            receipt_data: Base64 encoded receipt
-            exclude_old_transactions: Exclude old transaction data
+            receipt_data: Legacy field — accepted for backwards compat
+                with clients that haven't migrated to sending
+                `original_transaction_id` yet. If `original_transaction_id`
+                is not provided, this value is used as-is on the
+                assumption that the client put the transaction id here.
+            original_transaction_id: Apple's `originalTransactionId` for
+                the subscription (StoreKit 2 canonical id). Always send
+                this on newer clients; `receipt_data` is the fallback.
 
         Returns:
-            Dict with validation result: {"valid": bool, "data": dict, "error": str}
+            Dict with {"valid": bool, "data": dict|None, "error": str|None}.
+            On success, `data` matches the legacy parsed shape used by
+            subscription_service.verify_and_activate_purchase.
         """
-        try:
-            request_body = {
-                "receipt-data": receipt_data,
-                "password": self.apple_shared_secret,
-                "exclude-old-transactions": exclude_old_transactions,
+        from appstoreserverlibrary.api_client import APIException
+
+        from .apple_app_store_client import (
+            AppleClientConfigError,
+            AppleSignatureVerificationError,
+        )
+
+        txn_id = original_transaction_id or receipt_data
+        if not txn_id:
+            return {
+                "valid": False,
+                "data": None,
+                "error": "Apple validation requires an original_transaction_id.",
             }
 
-            async with aiohttp.ClientSession() as session:
-                # Try production first
-                async with session.post(
-                    self.APPLE_PRODUCTION_URL, json=request_body
-                ) as response:
-                    result = await response.json()
+        try:
+            from . import apple_app_store_client
 
-                    # Status 21007 = sandbox receipt sent to production
-                    if result.get("status") == 21007:
-                        # Retry with sandbox
-                        async with session.post(
-                            self.APPLE_SANDBOX_URL, json=request_body
-                        ) as sandbox_response:
-                            result = await sandbox_response.json()
+            result = apple_app_store_client.get_subscription_statuses(txn_id)
+        except AppleClientConfigError as exc:
+            logger.error("Apple App Store client misconfigured: %s", exc)
+            return {"valid": False, "data": None, "error": str(exc)}
+        except AppleSignatureVerificationError as exc:
+            logger.warning(
+                "Apple JWS verification failed for transaction %s: %s", txn_id, exc
+            )
+            return {
+                "valid": False,
+                "data": None,
+                "error": f"Receipt signature verification failed: {exc}",
+            }
+        except APIException as exc:
+            logger.error("App Store Server API call failed for %s: %s", txn_id, exc)
+            return {
+                "valid": False,
+                "data": None,
+                "error": f"App Store Server API error: {exc}",
+            }
 
-                    # Status 0 = valid
-                    if result.get("status") == 0:
-                        # Parse receipt data
-                        parsed_data = self.parse_apple_receipt(result)
-                        return {"valid": True, "data": parsed_data, "error": None}
+        latest = result.get("latest_signed_transaction")
+        if not latest:
+            return {
+                "valid": False,
+                "data": None,
+                "error": "No signed transaction found for this id.",
+            }
 
-                    # Handle error codes
-                    error_codes = {
-                        21000: "Malformed request",
-                        21002: "Invalid receipt data",
-                        21003: "Receipt authentication failed",
-                        21005: "Server unavailable",
-                        21008: "Receipt from wrong environment",
-                    }
-                    error_msg = error_codes.get(
-                        result.get("status"), f"Unknown error: {result.get('status')}"
-                    )
-                    return {"valid": False, "data": None, "error": error_msg}
-
-        except Exception as e:
-            logger.error(f"Error validating Apple receipt: {e}")
-            return {"valid": False, "data": None, "error": str(e)}
+        return {
+            "valid": True,
+            "data": self.parse_apple_signed_transaction(latest, result),
+            "error": None,
+        }
 
     async def validate_google_receipt(
         self, receipt_data: str, product_id: Optional[str] = None
@@ -205,42 +262,117 @@ class ReceiptValidator:
             logger.error(f"Error validating Google receipt: {e}")
             return {"valid": False, "error": str(e), "data": None}
 
-    def parse_apple_receipt(self, receipt_info: Dict) -> Dict:
+    def parse_apple_signed_transaction(
+        self, transaction: Dict, status_response: Optional[Dict] = None
+    ) -> Dict:
         """
-        Extract relevant subscription data from Apple receipt
+        Map a verified Apple JWS transaction payload to the legacy
+        parsed shape used by subscription_service.
+
+        The SDK returns a `JWSTransactionDecodedPayload` (as dict here)
+        with camelCase fields and epoch-second timestamps. Downstream
+        code expects snake_case fields and epoch-millisecond strings —
+        see legacy `parse_apple_receipt` for the contract.
 
         Args:
-            receipt_info: Full receipt response from Apple
-
-        Returns:
-            Dict with parsed subscription data
+            transaction: Decoded transaction payload from the SDK.
+            status_response: Optional full subscription-status response
+                (provides auto_renew_status from the pendingRenewalInfo).
         """
         try:
-            latest_receipt_info = receipt_info.get("latest_receipt_info", [])
-            if not latest_receipt_info:
-                return {}
+            # Renewal info is one level up from individual transactions in
+            # the SDK response; if not provided, default auto_renew_status
+            # to True (the common case for an active subscription).
+            auto_renew = True
+            if status_response:
+                for tx in status_response.get("signed_transactions", []) or []:
+                    if tx.get("originalTransactionId") == transaction.get(
+                        "originalTransactionId"
+                    ):
+                        # The SDK exposes renewal info on a sibling
+                        # signedRenewalInfo field that lives on the
+                        # `lastTransactions` group rather than the
+                        # transaction itself. We don't currently surface
+                        # it explicitly; fall back to True until we wire
+                        # it through.
+                        break
 
-            # Get most recent transaction
-            latest = latest_receipt_info[-1]
+            # SDK timestamps are epoch milliseconds (numeric). Coerce
+            # to ms-string for legacy callers; new callers use the ISO
+            # versions assembled below.
+            purchase_date_ms = _ms_from_millis(
+                transaction.get("purchaseDate") or transaction.get("purchase_date")
+            )
+            expires_date_ms = _ms_from_millis(
+                transaction.get("expiresDate") or transaction.get("expires_date")
+            )
+            cancellation_date_ms = _ms_from_millis(
+                transaction.get("revocationDate") or transaction.get("revocation_date")
+            )
+
+            offer_type = transaction.get("offerType") or transaction.get("offer_type")
+            # offer_type=1 is INTRODUCTORY in StoreKit 2 enum semantics.
+            # SDK returns the enum value; coerce to int safely.
+            try:
+                is_intro = int(offer_type) == 1 if offer_type is not None else False
+            except (TypeError, ValueError):
+                is_intro = False
+
+            # Trial: SDK uses `type` of "Auto-Renewable Subscription"
+            # plus `offerType=1` to signal an intro/trial. The
+            # `is_trial_period` flag the old code consumed isn't a
+            # direct SDK field, so we approximate from offer_type.
+            is_trial = bool(transaction.get("isTrialPeriod") or is_intro)
+
+            # SDK price is in micros (e.g. 15990000 == $15.99); convert
+            # to a float. Currency is exposed separately.
+            sdk_price = transaction.get("price")
+            try:
+                price_usd = (
+                    float(sdk_price) / 1_000_000.0 if sdk_price is not None else 0.0
+                )
+            except (TypeError, ValueError):
+                price_usd = 0.0
+            currency_code = (
+                transaction.get("currency") or transaction.get("currencyCode") or "USD"
+            )
 
             return {
-                "transaction_id": latest.get("transaction_id"),
-                "original_transaction_id": latest.get("original_transaction_id"),
-                "product_id": latest.get("product_id"),
-                "purchase_date_ms": latest.get("purchase_date_ms"),
-                "expires_date_ms": latest.get("expires_date_ms"),
-                "is_trial_period": latest.get("is_trial_period") == "true",
-                "is_in_intro_offer_period": latest.get("is_in_intro_offer_period")
-                == "true",
-                "cancellation_date_ms": latest.get("cancellation_date_ms"),
-                "auto_renew_status": receipt_info.get("pending_renewal_info", [{}])[
-                    0
-                ].get("auto_renew_status")
-                == "1",
+                # Field names matching the Subscription model expectations.
+                "transaction_id": transaction.get("transactionId")
+                or transaction.get("transaction_id"),
+                "original_transaction_id": transaction.get("originalTransactionId")
+                or transaction.get("original_transaction_id"),
+                "product_id": transaction.get("productId")
+                or transaction.get("product_id"),
+                "purchase_date": _iso_from_millis(
+                    transaction.get("purchaseDate") or transaction.get("purchase_date")
+                ),
+                "expiry_date": _iso_from_millis(
+                    transaction.get("expiresDate") or transaction.get("expires_date")
+                ),
+                "cancellation_date": _iso_from_millis(
+                    transaction.get("revocationDate")
+                    or transaction.get("revocation_date")
+                ),
+                "is_trial_period": is_trial,
+                "is_in_intro_offer_period": is_intro,
+                "auto_renew_enabled": auto_renew,
+                "price": price_usd,
+                "currency_code": currency_code,
+                "environment": transaction.get("environment"),
+                "bundle_id": transaction.get("bundleId")
+                or transaction.get("bundle_id"),
+                # Legacy alias fields kept for any caller still on the old
+                # `_ms` shape; remove once all consumers are migrated.
+                "purchase_date_ms": purchase_date_ms,
+                "expires_date_ms": expires_date_ms,
+                "cancellation_date_ms": cancellation_date_ms,
+                "auto_renew_status": auto_renew,
             }
 
         except Exception as e:
-            logger.error(f"Error parsing Apple receipt: {e}")
+            logger.error(f"Error parsing Apple signed transaction: {e}")
             return {}
 
     def parse_google_purchase(self, purchase_info: Dict) -> Dict:

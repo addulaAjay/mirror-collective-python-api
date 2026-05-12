@@ -49,91 +49,217 @@ class SubscriptionService:
             "DYNAMODB_SUBSCRIPTION_EVENTS_TABLE", "subscription_events"
         )
 
-    async def _verify_apple_jwt(self, signed_payload: str) -> Optional[Dict]:
+    async def _verify_apple_notification(self, signed_payload: str) -> Optional[Dict]:
         """
-        Verify Apple App Store Server Notification JWT signature
+        Verify an Apple App Store Server Notifications v2 payload.
 
-        Args:
-            signed_payload: JWT string from Apple webhook
+        Replaces the previous insecure `jwt.decode(..., verify_signature=False)`
+        path with x5c chain verification against Apple's bundled root CA
+        (see src/app/services/apple_app_store_client.py).
 
-        Returns:
-            Decoded JWT payload if valid, None if invalid
+        Returns the decoded notification dict on success, None if the
+        signature is invalid or the verifier is misconfigured. Callers
+        must treat None as a HARD failure — do not process unverified
+        webhook payloads.
         """
+        from .apple_app_store_client import (
+            AppleClientConfigError,
+            AppleSignatureVerificationError,
+            verify_signed_notification,
+        )
+
         try:
-            # Import JWT library
-            import jwt
-            from jwt import PyJWKClient
-
-            # Decode JWT header to get key ID
-            header = jwt.get_unverified_header(signed_payload)
-
-            # Apple uses JWK Set for their public keys
-            # For production, implement proper JWK fetching and caching
-            # For now, decode without verification (development only)
-            logger.warning(
-                "Apple JWT signature verification not fully implemented. "
-                "Decoding without verification - DO NOT USE IN PRODUCTION"
-            )
-
-            # Decode without verification (INSECURE - for development only)
-            decoded = jwt.decode(signed_payload, options={"verify_signature": False})
-
-            return decoded
-
-        except Exception as e:
-            logger.error(f"Error verifying Apple JWT: {e}")
+            return verify_signed_notification(signed_payload)
+        except AppleSignatureVerificationError as exc:
+            logger.warning("Rejecting Apple webhook: invalid signature: %s", exc)
             return None
+        except AppleClientConfigError as exc:
+            logger.error("Apple verifier misconfigured: %s", exc)
+            return None
+
+    async def _verify_apple_transaction(
+        self, signed_transaction: str
+    ) -> Optional[Dict]:
+        """Verify an embedded signedTransactionInfo from an ASSN v2 body."""
+        from .apple_app_store_client import (
+            AppleClientConfigError,
+            AppleSignatureVerificationError,
+            verify_signed_transaction,
+        )
+
+        try:
+            return verify_signed_transaction(signed_transaction)
+        except AppleSignatureVerificationError as exc:
+            logger.warning("Rejecting Apple transaction: invalid signature: %s", exc)
+            return None
+        except AppleClientConfigError as exc:
+            logger.error("Apple verifier misconfigured: %s", exc)
+            return None
+
+    # Back-compat alias for callers still referring to the old name.
+    # All new code should call _verify_apple_notification or
+    # _verify_apple_transaction directly so the intent is explicit.
+    async def _verify_apple_jwt(self, signed_payload: str) -> Optional[Dict]:
+        return await self._verify_apple_notification(signed_payload)
 
     async def _verify_google_pubsub_message(self, message_data: str) -> Optional[Dict]:
         """
-        Verify and decode Google Cloud Pub/Sub message from Real-time Developer Notifications
+        Decode a base64 Pub/Sub message payload.
 
-        Args:
-            message_data: Base64 encoded message data from Pub/Sub
-
-        Returns:
-            Decoded notification data if valid, None if invalid
+        NOTE: this does NOT verify the OIDC JWT — that's
+        `_verify_google_pubsub_jwt` and must be called separately by
+        the route handler with the inbound Authorization header.
+        Splitting decode/verify lets us return clearer error responses
+        (`401 invalid signature` vs `400 malformed body`).
         """
         try:
-            # Decode base64 message data
             decoded_data = base64.b64decode(message_data)
             notification = json.loads(decoded_data)
-
-            # Google Pub/Sub notifications come via Cloud Pub/Sub
-            # Signature verification happens at the Pub/Sub level
-            # By the time we receive it, it's already verified by GCP
-
             logger.info("Decoded Google Pub/Sub notification")
             return notification
-
         except Exception as e:
             logger.error(f"Error decoding Google Pub/Sub message: {e}")
             return None
 
+    async def _verify_google_pubsub_jwt(self, auth_header: Optional[str]) -> bool:
+        """
+        Verify the OIDC JWT Google attaches to each Pub/Sub push delivery.
+
+        Google Cloud Pub/Sub push subscriptions sign every delivery with
+        an OIDC token (Authorization: Bearer <jwt>). The token's claims:
+
+            iss   = https://accounts.google.com
+            aud   = the audience configured on the push subscription
+                    (defaults to the endpoint URL)
+            email = the service-account email configured on the push
+                    subscription
+
+        We verify the JWT signature against Google's published certs
+        and require the audience + service-account email to match the
+        configured env vars. Without this check, anyone who knows the
+        webhook URL could forge an "Apple cancelled their subscription"
+        payload and revoke a user's entitlement.
+
+        Required env vars (see docs/IAP_STORE_SETUP.md §B3):
+          GOOGLE_PUBSUB_AUDIENCE              — push subscription audience
+          GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL — push subscription service account
+
+        Returns True iff the JWT is present, signature-valid, and the
+        audience + sa-email claims match. False on any failure (logged).
+
+        Setting `GOOGLE_PUBSUB_VERIFY=false` (intentional, env-gated)
+        bypasses this check — useful for local dev against a mocked
+        webhook, but MUST be unset in production.
+        """
+        if (os.getenv("GOOGLE_PUBSUB_VERIFY", "true") or "").lower() in (
+            "0",
+            "false",
+            "no",
+        ):
+            logger.warning(
+                "GOOGLE_PUBSUB_VERIFY is disabled — Pub/Sub JWT not verified. "
+                "Do NOT use this setting in production."
+            )
+            return True
+
+        if not auth_header:
+            logger.warning("Google webhook missing Authorization header")
+            return False
+
+        if not auth_header.lower().startswith("bearer "):
+            logger.warning("Google webhook Authorization header missing 'Bearer '")
+            return False
+
+        token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            return False
+
+        expected_audience = os.getenv("GOOGLE_PUBSUB_AUDIENCE")
+        expected_email = os.getenv("GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL")
+        if not expected_audience or not expected_email:
+            logger.error(
+                "Google Pub/Sub JWT verification misconfigured: "
+                "GOOGLE_PUBSUB_AUDIENCE and "
+                "GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL are required."
+            )
+            return False
+
+        try:
+            from google.auth.transport import requests as google_requests
+            from google.oauth2 import id_token
+
+            claims = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                audience=expected_audience,
+            )
+        except Exception as exc:
+            logger.warning("Google Pub/Sub JWT verification failed: %s", exc)
+            return False
+
+        if claims.get("email") != expected_email:
+            logger.warning(
+                "Google Pub/Sub JWT email mismatch: got %s, expected %s",
+                claims.get("email"),
+                expected_email,
+            )
+            return False
+
+        if not claims.get("email_verified", False):
+            logger.warning("Google Pub/Sub JWT email_verified=false")
+            return False
+
+        return True
+
     async def verify_and_activate_purchase(
-        self, user_id: str, platform: str, receipt_data: str, product_id: str
+        self,
+        user_id: str,
+        platform: str,
+        receipt_data: str,
+        product_id: str,
+        transaction_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Verify IAP receipt and activate subscription
+        Verify an IAP receipt and (idempotently) activate the subscription.
+
+        Idempotency key: the platform's `original_transaction_id` (iOS)
+        or order base (Android). Repeated calls for the same transaction
+        return the existing record without re-firing
+        SUBSCRIPTION_PURCHASED events or overwriting trial/expiry data.
 
         Args:
-            user_id: Cognito sub
-            platform: "ios" or "android"
-            receipt_data: Receipt string from platform
-            product_id: Product identifier
+            user_id: Cognito sub of the purchasing user.
+            platform: "ios" or "android".
+            receipt_data: Legacy field — accepted but ignored on iOS in
+                favour of `transaction_id`. Still passed through on
+                Android as the purchase token.
+            product_id: Product SKU the client claims this purchase is for.
+            transaction_id: Apple's originalTransactionId (iOS) or
+                Google's orderId (Android). Authoritative identifier.
 
         Returns:
-            Dict with subscription details
+            Dict with subscription details. Idempotent: same
+            transaction_id → same response, no double-activation.
 
         Raises:
-            ValueError: If receipt validation fails
-            InternalServerError: If database operations fail
+            ValueError: receipt validation failed (forged / sandbox /
+                unknown product / Apple JWS bad signature).
+            InternalServerError: database write failed.
         """
         try:
-            # 1. Validate receipt with platform
+            # Defence in depth: refuse SKUs we don't actually sell. Forged
+            # receipts may claim made-up products to confuse the
+            # entitlement flow.
+            from ..constants.products import is_known_sku
+
+            if not is_known_sku(product_id):
+                raise ValueError(f"Unknown product_id: {product_id}")
+
+            # 1. Validate receipt with platform.
             if platform.lower() == "ios":
                 validation_result = await self.receipt_validator.validate_apple_receipt(
-                    receipt_data
+                    receipt_data,
+                    original_transaction_id=transaction_id,
                 )
             elif platform.lower() == "android":
                 validation_result = (
@@ -149,40 +275,86 @@ class SubscriptionService:
                     f"Receipt validation failed: {validation_result.get('error')}"
                 )
 
-            # 2. Extract transaction data
             transaction_data = validation_result["data"]
 
-            # 3. Determine subscription type and billing period from product_id
-            subscription_type, billing_period = self._parse_product_id(product_id)
+            # Cross-check: the SKU in the verified transaction must
+            # match the product_id the client claimed. Otherwise we'd
+            # accept a $0.99 receipt and grant $15.99/mo Core.
+            verified_product = transaction_data.get("product_id")
+            if verified_product and verified_product != product_id:
+                raise ValueError(
+                    f"Product mismatch: client claimed {product_id} but "
+                    f"verified receipt is for {verified_product}"
+                )
 
-            # 4. Create or update subscription record
+            # 2. Idempotency key — original_transaction_id on iOS, order
+            # id on Android. Always derived from the verified receipt,
+            # never from the client.
+            original_txn_id = transaction_data.get(
+                "original_transaction_id"
+            ) or transaction_data.get("transaction_id")
+            if not original_txn_id:
+                raise ValueError("Verified receipt missing original_transaction_id")
+
+            # 3. Idempotency check: if we've already activated this exact
+            # transaction, return the existing record. Skips the
+            # SUBSCRIPTION_PURCHASED event so analytics aren't
+            # double-counted on duplicate client retries.
+            existing = await self.dynamodb_service.get_item(
+                self.subscriptions_table,
+                {"user_id": user_id, "subscription_id": original_txn_id},
+            )
+            if existing:
+                logger.info(
+                    "Idempotent /verify-purchase for user %s txn %s — returning existing record",
+                    user_id,
+                    original_txn_id,
+                )
+                return {
+                    "success": True,
+                    "subscription": existing,
+                    "message": "Subscription already activated",
+                    "idempotent": True,
+                }
+
+            # 4. New activation — create the Subscription record.
+            subscription_type, billing_period = self._parse_product_id(product_id)
+            is_trial = bool(transaction_data.get("is_trial_period"))
+            sub_status = (
+                SubscriptionStatus.TRIAL if is_trial else SubscriptionStatus.ACTIVE
+            )
+
             subscription = Subscription(
                 user_id=user_id,
-                subscription_id=transaction_data["transaction_id"],
+                subscription_id=original_txn_id,
                 product_id=product_id,
                 subscription_type=subscription_type,
                 platform=(
                     Platform.IOS if platform.lower() == "ios" else Platform.ANDROID
                 ),
-                status=SubscriptionStatus.ACTIVE,
+                status=sub_status,
                 billing_period=billing_period,
-                price_usd=transaction_data["price"],
-                purchase_date=transaction_data["purchase_date"],
-                expiry_date=transaction_data["expiry_date"],
+                price_usd=transaction_data.get("price", 0.0),
+                currency_code=transaction_data.get("currency_code", "USD"),
+                purchase_date=transaction_data.get("purchase_date"),
+                expiry_date=transaction_data.get("expiry_date"),
                 auto_renew_enabled=transaction_data.get("auto_renew_enabled", True),
                 receipt_data=receipt_data,
-                is_in_trial=False,  # Paid subscription, not platform trial
+                original_transaction_id=original_txn_id,
+                is_in_trial=is_trial,
+                validation_environment=(
+                    "sandbox"
+                    if transaction_data.get("environment") == "Sandbox"
+                    else "production"
+                ),
             )
 
-            # 5. Save to DynamoDB
             await self.dynamodb_service.put_item(
                 self.subscriptions_table, subscription.to_dynamodb_item()
             )
 
-            # 6. Update user profile subscription status
             await self._update_user_subscription_status(user_id, subscription)
 
-            # 7. Log subscription event
             await self._log_subscription_event(
                 user_id=user_id,
                 subscription_id=subscription.subscription_id,
@@ -190,19 +362,25 @@ class SubscriptionService:
                 platform=platform,
                 metadata={
                     "product_id": product_id,
-                    "price": transaction_data["price"],
-                    "expiry_date": transaction_data["expiry_date"],
+                    "price": subscription.price_usd,
+                    "expiry_date": subscription.expiry_date,
+                    "is_trial": is_trial,
                 },
             )
 
             logger.info(
-                f"Subscription activated for user {user_id}: {subscription.subscription_id}"
+                "Subscription activated user=%s txn=%s product=%s trial=%s",
+                user_id,
+                subscription.subscription_id,
+                product_id,
+                is_trial,
             )
 
             return {
                 "success": True,
                 "subscription": subscription.to_dict(),
                 "message": "Subscription activated successfully",
+                "idempotent": False,
             }
 
         except ValueError as e:
@@ -397,40 +575,68 @@ class SubscriptionService:
 
     async def handle_apple_webhook(self, notification_payload: Dict) -> Dict[str, Any]:
         """
-        Process Apple App Store Server Notification V2
+        Process an Apple App Store Server Notification v2.
+
+        Both layers — the outer notification envelope and the inner
+        signedTransactionInfo — are JWS-verified against Apple's root
+        CA via the SignedDataVerifier. Anything that fails signature
+        check is rejected with `{"success": False, "error": ...}` and
+        the route layer surfaces that as 401, so a forged ASSN v2
+        payload never reaches the lifecycle handlers.
 
         Args:
-            notification_payload: Webhook payload from Apple (contains signedPayload JWT)
+            notification_payload: `{"signedPayload": "<JWS>"}` body
+                posted by Apple to /api/subscriptions/webhook/apple.
 
         Returns:
-            Dict with processing status
+            Dict with processing status. Always returns a dict — never
+            raises — so the route handler can return a predictable
+            response shape regardless of whether the payload was valid.
         """
         try:
-            # Apple sends notifications as signed JWT
             signed_payload = notification_payload.get("signedPayload")
             if not signed_payload:
-                logger.error("Missing signedPayload in Apple webhook")
-                return {"success": False, "error": "Missing signedPayload"}
+                logger.warning("Apple webhook missing signedPayload")
+                return {
+                    "success": False,
+                    "error": "Missing signedPayload",
+                    "status_code": 400,
+                }
 
-            # Verify JWT signature
-            decoded_payload = await self._verify_apple_jwt(signed_payload)
+            # 1. Verify the outer notification envelope.
+            decoded_payload = await self._verify_apple_notification(signed_payload)
             if not decoded_payload:
-                logger.error("Failed to verify Apple JWT signature")
-                return {"success": False, "error": "Invalid JWT signature"}
+                # Signature verification already logged the reason.
+                return {
+                    "success": False,
+                    "error": "Apple notification signature could not be verified",
+                    "status_code": 401,
+                }
 
-            # Extract notification data
             notification_type = decoded_payload.get("notificationType")
-            data = decoded_payload.get("data", {})
+            data = decoded_payload.get("data", {}) or {}
 
-            # Decode signed transaction info
+            # 2. Verify the inner signedTransactionInfo if present. The
+            # SDK already nested-verifies but we re-verify defensively
+            # to make sure no caller bypasses the per-transaction check.
             signed_transaction_info = data.get("signedTransactionInfo")
             transaction_info = None
             if signed_transaction_info:
-                transaction_info = await self._verify_apple_jwt(signed_transaction_info)
+                transaction_info = await self._verify_apple_transaction(
+                    signed_transaction_info
+                )
+                if transaction_info is None:
+                    return {
+                        "success": False,
+                        "error": "Apple transaction signature could not be verified",
+                        "status_code": 401,
+                    }
 
-            logger.info(f"Processing Apple webhook: {notification_type}")
+            logger.info(
+                "Processing Apple webhook notification_type=%s", notification_type
+            )
 
-            # Handle different notification types
+            # 3. Dispatch by notification type.
             if transaction_info:
                 if notification_type == "DID_RENEW":
                     await self._handle_subscription_renewal(transaction_info)
@@ -449,39 +655,62 @@ class SubscriptionService:
             logger.error(f"Error processing Apple webhook: {e}")
             raise InternalServerError(f"Failed to process webhook: {str(e)}")
 
-    async def handle_google_webhook(self, notification_payload: Dict) -> Dict[str, Any]:
+    async def handle_google_webhook(
+        self,
+        notification_payload: Dict,
+        auth_header: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Process Google Play Real-time Developer Notification
+        Process a Google Play Real-time Developer Notification.
 
-        Google sends notifications via Cloud Pub/Sub. The payload structure is:
-        {
-            "message": {
-                "data": "base64-encoded-notification",
-                "messageId": "...",
-                "publishTime": "..."
-            }
-        }
+        Pub/Sub push payload:
+            {"message": {"data": "<base64>", "messageId": "...", ...}}
+
+        Security: BEFORE decoding, we verify the OIDC JWT Google
+        attaches to the request (Authorization: Bearer <jwt>). The
+        token's audience + service-account email must match the
+        env-configured push subscription. Without this, anyone who
+        learns the webhook URL could forge a "subscription cancelled"
+        event and revoke a user's entitlement.
 
         Args:
-            notification_payload: Pub/Sub webhook payload from Google
+            notification_payload: Pub/Sub webhook body.
+            auth_header: Raw Authorization header from the request.
 
         Returns:
-            Dict with processing status
+            Dict with processing status. `status_code` is set to 401
+            when the JWT fails verification so the route layer can
+            propagate the right HTTP code.
         """
         try:
-            # Extract Pub/Sub message
+            # 1. Verify the Pub/Sub OIDC JWT.
+            if not await self._verify_google_pubsub_jwt(auth_header):
+                return {
+                    "success": False,
+                    "error": "Pub/Sub push token could not be verified",
+                    "status_code": 401,
+                }
+
+            # 2. Extract + decode the message payload.
             message = notification_payload.get("message", {})
             message_data = message.get("data")
 
             if not message_data:
-                logger.error("Missing message data in Google webhook")
-                return {"success": False, "error": "Missing message data"}
+                logger.warning("Missing message data in Google webhook")
+                return {
+                    "success": False,
+                    "error": "Missing message data",
+                    "status_code": 400,
+                }
 
-            # Decode and verify Pub/Sub message
             notification = await self._verify_google_pubsub_message(message_data)
             if not notification:
-                logger.error("Failed to decode Google Pub/Sub message")
-                return {"success": False, "error": "Invalid Pub/Sub message"}
+                logger.warning("Failed to decode Google Pub/Sub message")
+                return {
+                    "success": False,
+                    "error": "Invalid Pub/Sub message",
+                    "status_code": 400,
+                }
 
             # Extract notification details
             subscription_notification = notification.get("subscriptionNotification", {})
