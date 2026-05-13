@@ -59,8 +59,23 @@ async def test_dispatches_to_every_registered_device():
         assert kwargs["data"]["type"] == "payment_failed"
         assert kwargs["data"]["subscription_id"] == "sub-123"
         assert kwargs["data"]["deep_link"] == "your_subscription"
-        assert "Payment" in kwargs["title"]
-        assert "payment method" in kwargs["body"].lower()
+
+        # Lock-screen safety (pricing spec 2026-05-12 §8):
+        # the visible APNS title/body must NOT reveal that the user
+        # has a subscription, that it failed, or that the user pays
+        # for the app. Specifically, the words "payment", "subscription",
+        # "renew", "card", and "failed" should not appear.
+        visible_text = f"{kwargs['title']} {kwargs['body']}".lower()
+        for forbidden in ("payment", "subscription", "renew", "card", "failed"):
+            assert forbidden not in visible_text, (
+                f"lock-screen text leaks subscription state: "
+                f"{visible_text!r} contains {forbidden!r}"
+            )
+
+        # Rich copy MUST be tucked into the data block so the in-app
+        # handler can show the detailed alert after the user taps.
+        assert "Payment" in kwargs["data"]["in_app_title"]
+        assert "payment method" in kwargs["data"]["in_app_body"].lower()
 
 
 @pytest.mark.asyncio

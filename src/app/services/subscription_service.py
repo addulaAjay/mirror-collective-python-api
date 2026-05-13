@@ -990,15 +990,35 @@ class SubscriptionService:
             )
             return
 
-        title = "Payment couldn't be processed"
-        body = (
-            "We couldn't renew your Mirror Collective subscription. "
-            "Tap to update your payment method."
-        )
+        # Two-tier copy strategy per pricing spec 2026-05-12 §8 ("no
+        # sensitive details in lock-screen notifications"):
+        #
+        #   title / body  → land in APNS `aps.alert` and the GCM
+        #                   `notification` block, so they're what an
+        #                   unattended phone displays on the lock
+        #                   screen. Kept generic so a passer-by can't
+        #                   tell the user is a paying subscriber whose
+        #                   card just failed.
+        #
+        #   data.in_app_*  → consumed by PushNotificationService on the
+        #                    client after the user taps / opens the
+        #                    app. The detailed copy lives here.
+        #
+        # `mutable-content: 1` is already set on the APNS payload by
+        # SNSService._generate_payload, which is the standard hook
+        # iOS uses to let the client swap visible copy post-receipt
+        # if we ever ship a Notification Service Extension.
+        title = "Mirror Collective"
+        body = "Tap to open Mirror Collective"
         data = {
             "type": "payment_failed",
             "subscription_id": subscription_id,
             "deep_link": "your_subscription",
+            "in_app_title": "Payment couldn't be processed",
+            "in_app_body": (
+                "We couldn't renew your Mirror Collective subscription. "
+                "Update your payment method to keep your subscription."
+            ),
         }
 
         sent = 0
