@@ -853,7 +853,11 @@ class TestUserProfileStatusDerivation:
         assert await_args is not None
         updated = await_args.args[0]
         assert updated.subscription_status == "trial"
-        assert updated.subscription_tier == "basic"
+        # Mid-trial users get tier="trial" — the tier value mirrors the
+        # subscription's status so FEATURE_TIER_MAP entries for "trial"
+        # aren't dead code. Renewal flips it to "basic" on first paid
+        # cycle.
+        assert updated.subscription_tier == "trial"
 
     @pytest.mark.asyncio
     async def test_grace_period_writes_grace_period_status(self, monkeypatch):

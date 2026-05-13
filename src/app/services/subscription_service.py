@@ -132,8 +132,19 @@ class SubscriptionService:
             transaction_data = validation_result["data"]
 
             # Cross-check: the SKU in the verified transaction must
-            # match the product_id the client claimed. Otherwise we'd
-            # accept a $0.99 receipt and grant $15.99/mo Core.
+            # match the product_id the client claimed.
+            #
+            # iOS: the App Store Server SDK returns `product_id` in the
+            # JWS-verified `JWSTransactionDecodedPayload`, so this is a
+            # real comparison against an Apple-signed value.
+            #
+            # Google: the legacy `purchases.subscriptions` endpoint
+            # doesn't echo the productId, so `verified_product` is
+            # None and this branch correctly no-ops. The actual
+            # cross-check on Google is the API call itself in
+            # `validate_google_receipt` — `subscriptions.get(productId,
+            # token)` returns 4xx if they don't match, surfacing as
+            # `valid: False` upstream.
             verified_product = transaction_data.get("product_id")
             if verified_product and verified_product != product_id:
                 raise ValueError(
@@ -897,7 +908,19 @@ class SubscriptionService:
             new_storage_addon_active = user_profile.storage_add_on_active
 
             if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
-                new_tier = "basic"
+                # Tier value mirrors the subscription's status so a
+                # mid-trial user reads as tier="trial". Without this the
+                # `"trial"` key in FEATURE_TIER_MAP would be dead code,
+                # and a future Plus feature whose tier set accidentally
+                # included `"trial"` would silently grant access to
+                # trial users. Renewal handler re-runs this helper, so
+                # TRIAL → ACTIVE flips tier from "trial" to "basic"
+                # naturally as soon as the first paid renewal lands.
+                new_tier = (
+                    "trial"
+                    if subscription.status == SubscriptionStatus.TRIAL
+                    else "basic"
+                )
                 new_primary_sub_id = subscription.subscription_id
                 base_quota = 50.0
             elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
@@ -911,7 +934,7 @@ class SubscriptionService:
             # 100 GB if the add-on is active. The tier value never carries
             # the storage signal — see comment above.
             total_quota = base_quota
-            if new_tier == "basic" and new_storage_addon_active:
+            if new_tier in ("basic", "trial") and new_storage_addon_active:
                 total_quota = 150.0
 
             new_last_check = (

@@ -67,9 +67,20 @@ app = FastAPI(
         "name": "MIT",
     },
     debug=os.getenv("DEBUG", "false").lower() == "true",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    # OpenAPI / Swagger UI / ReDoc disabled in production so unauthenticated
+    # callers can't enumerate the full API surface, parameter schemas, and
+    # which routes require auth. The docs are still useful in lower envs.
+    docs_url=(
+        None if os.getenv("ENVIRONMENT", "").lower() == "production" else "/docs"
+    ),
+    redoc_url=(
+        None if os.getenv("ENVIRONMENT", "").lower() == "production" else "/redoc"
+    ),
+    openapi_url=(
+        None
+        if os.getenv("ENVIRONMENT", "").lower() == "production"
+        else "/openapi.json"
+    ),
 )
 
 # Setup CORS

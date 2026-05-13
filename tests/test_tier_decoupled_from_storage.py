@@ -130,6 +130,112 @@ async def test_basic_purchase_sets_tier_to_basic_not_core():
 
 
 @pytest.mark.asyncio
+async def test_trial_activation_sets_tier_to_trial():
+    """Pricing-spec / feature-flag invariant: mid-trial users have
+    tier="trial" (not "basic"). The string "trial" is one of the values
+    in `FEATURE_TIER_MAP[BASIC_ACCESS]` — without this, the value would
+    be dead code at runtime, and a future Plus feature whose tier set
+    accidentally included "trial" would silently grant trial users.
+    Renewal flips tier to "basic" on the first successful paid cycle.
+    """
+    from src.app.models.subscription import (
+        BillingPeriod,
+        Platform,
+        Subscription,
+        SubscriptionStatus,
+        SubscriptionType,
+    )
+    from src.app.models.user_profile import UserProfile, UserStatus
+
+    svc, dynamodb = _build_service()
+
+    profile = UserProfile(
+        user_id="u1",
+        email="u1@example.com",
+        subscription_status="none",
+        subscription_tier="free",
+        status=UserStatus.CONFIRMED,
+    )
+    dynamodb.get_user_profile = AsyncMock(return_value=profile)
+    dynamodb.update_user_profile = AsyncMock(return_value=profile)
+
+    trial_sub = Subscription(
+        user_id="u1",
+        subscription_id="ot1",
+        product_id="com.themirrorcollective.mirror.core.monthly",
+        subscription_type=SubscriptionType.MIRROR_BASIC,
+        platform=Platform.IOS,
+        status=SubscriptionStatus.TRIAL,
+        billing_period=BillingPeriod.MONTHLY,
+        price_usd=0.0,
+    )
+
+    await svc._update_user_subscription_status("u1", trial_sub)
+
+    await_args = dynamodb.update_user_profile.await_args
+    assert await_args is not None
+    updated = await_args.args[0]
+    assert updated.subscription_status == "trial"
+    assert updated.subscription_tier == "trial"
+    assert updated.echo_vault_quota_gb == 50.0
+
+
+@pytest.mark.asyncio
+async def test_trial_user_with_storage_addon_still_gets_150gb():
+    """Edge case: a user can purchase the storage add-on during their
+    trial. The quota math at line 914 of subscription_service.py must
+    accept tier in {"basic", "trial"} so trial users with the add-on
+    see the full 150 GB.
+    """
+    from src.app.models.subscription import (
+        BillingPeriod,
+        Platform,
+        Subscription,
+        SubscriptionStatus,
+        SubscriptionType,
+    )
+    from src.app.models.user_profile import UserProfile, UserStatus
+
+    svc, dynamodb = _build_service()
+
+    # User is mid-trial with the storage add-on already active.
+    profile = UserProfile(
+        user_id="u1",
+        email="u1@example.com",
+        subscription_status="trial",
+        subscription_tier="trial",
+        echo_vault_quota_gb=150.0,
+        storage_add_on_active=True,
+        status=UserStatus.CONFIRMED,
+    )
+    dynamodb.get_user_profile = AsyncMock(return_value=profile)
+    dynamodb.update_user_profile = AsyncMock(return_value=profile)
+
+    # Imagine a renewal-like event lands and re-runs the helper.
+    trial_sub = Subscription(
+        user_id="u1",
+        subscription_id="ot1",
+        product_id="com.themirrorcollective.mirror.core.monthly",
+        subscription_type=SubscriptionType.MIRROR_BASIC,
+        platform=Platform.IOS,
+        status=SubscriptionStatus.TRIAL,
+        billing_period=BillingPeriod.MONTHLY,
+        price_usd=0.0,
+    )
+
+    await svc._update_user_subscription_status("u1", trial_sub)
+
+    await_args = dynamodb.update_user_profile.await_args
+    assert await_args is not None
+    updated = await_args.args[0]
+    assert updated.subscription_tier == "trial"
+    assert updated.storage_add_on_active is True
+    # 50 GB base + 100 GB add-on — trial users with the add-on get the
+    # full quota.
+    assert updated.echo_vault_quota_gb == 150.0
+
+
+@pytest.mark.asyncio
 async def test_subscription_type_enum_has_basic_value():
     """Catches a rename regression — the wire value must stay 'basic'
     (used in DynamoDB rows + receipt parsing).

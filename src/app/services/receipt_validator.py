@@ -236,14 +236,28 @@ class ReceiptValidator:
                         "data": None,
                     }
 
-                # Parse and return subscription data. The legacy
+                # Parse and return subscription data.
+                #
+                # SECURITY: do NOT inject the caller's claimed
+                # `product_id` as a fallback here. The legacy
                 # `purchases.subscriptions` endpoint doesn't echo the
-                # productId in its response, so inject the value the
-                # caller passed in so the downstream cross-check has
-                # something authoritative to compare against.
+                # productId, but the call itself IS the cross-check:
+                # the URL is `subscriptions/{productId}/tokens/{token}`,
+                # and Google returns 4xx if the token wasn't issued
+                # for that productId — which we'd have already caught
+                # in the `except Exception` block above as
+                # `valid: False`. So a successful response here proves
+                # the (productId, token) pair matched.
+                #
+                # Previous fallback (`parsed_data["product_id"] = product_id`)
+                # made the downstream cross-check in
+                # `verify_and_activate_purchase` compare the caller's
+                # claim against itself — a no-op. Leaving
+                # `product_id` as None on Google means that downstream
+                # check correctly skips (it gates on `verified_product
+                # and ...`) and relies on this Google API call as the
+                # authoritative cross-check.
                 parsed_data = self.parse_google_purchase(result)
-                if product_id and not parsed_data.get("product_id"):
-                    parsed_data["product_id"] = product_id
                 return {"valid": True, "data": parsed_data, "error": None}
 
             except Exception as e:
