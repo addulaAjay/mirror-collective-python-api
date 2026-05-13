@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, confloat, conint
 
+from ..core.entitlement import EntitledUser, require_entitled
 from ..core.exceptions import AllCandidatesFiltered, FallbackOnCooldown
 from ..core.security import get_current_user
 from ..models.echo_loop_state import EchoLoopState
@@ -216,7 +217,7 @@ async def get_snapshot(
             "user's most recent session."
         ),
     ),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     sessions: ReflectionSessionRepo = Depends(get_reflection_session_repo),
     loop_states: EchoLoopStateRepo = Depends(get_echo_loop_state_repo),
     telemetry: TelemetryEmitter = Depends(get_telemetry_emitter),
@@ -227,9 +228,7 @@ async def get_snapshot(
     ``icon`` + ``reflection_line`` from the tone library so the FE doesn't
     need a second fetch. Emits ``echo_signature_view`` on 200 (spec §10).
     """
-    user_id = current_user.get("id") or current_user.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="missing user id in claims")
+    user_id = entitled.user_id
 
     snapshot = await build_snapshot(
         user_id=user_id,
@@ -359,16 +358,14 @@ async def dev_seed_loop_state(
 )
 async def recommend_practice(
     request: RecommendPracticeRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    entitled: EntitledUser = Depends(require_entitled),
     sessions: ReflectionSessionRepo = Depends(get_reflection_session_repo),
     loop_states: EchoLoopStateRepo = Depends(get_echo_loop_state_repo),
     completions: PracticeCompletionRepo = Depends(get_practice_completion_repo),
     prefs: UserPersonalizationRepo = Depends(get_user_personalization_repo),
 ):
     """Return one ranked 1-2 minute practice for an active loop."""
-    user_id = current_user.get("id") or current_user.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="missing user id in claims")
+    user_id = entitled.user_id
 
     # AllCandidatesFiltered + FallbackOnCooldown propagate to the central
     # error handler, which emits the envelope with errorCode + Retry-After

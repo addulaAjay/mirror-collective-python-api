@@ -158,6 +158,15 @@ mock_profile.email = "test@example.com"
 mock_profile.full_name = "Test User"
 mock_profile.chat_name = "Test"
 mock_profile.user_id = "mock-user-123"
+# Default to an entitled state so existing route tests that reset
+# dependency_overrides (and thereby drop the require_entitled override) still
+# pass through the real require_entitled body. Tests exercising the paywall
+# should override require_entitled directly with a function that raises.
+mock_profile.subscription_status = "active"
+mock_profile.subscription_tier = "basic"
+mock_profile.echo_vault_quota_gb = 50.0
+mock_profile.echo_vault_used_gb = 0.0
+mock_profile.has_used_trial = False
 
 # Configure async methods
 mock_user_service_instance.get_user_profile = AsyncMock(return_value=mock_profile)
@@ -225,13 +234,48 @@ mock_models_response.data = [
 mock_openai_health_instance.models.list.return_value = mock_models_response
 
 from src.app.api.mirrorgpt_routes import get_mirror_orchestrator  # noqa: E402
+from src.app.core.entitlement import EntitledUser, require_entitled  # noqa: E402
 from src.app.core.security import get_current_user  # noqa: E402
 from src.app.handler import app  # noqa: E402
+from src.app.models.user_profile import UserProfile, UserStatus  # noqa: E402
+
+
+def _make_test_entitled_user() -> EntitledUser:
+    """Default test fixture: an entitled active subscriber.
+
+    Tests that exercise the paywall path should override this dependency
+    locally with an EntitledUser whose profile.subscription_status maps
+    to the case under test, or replace the override with a function that
+    raises HTTPException(402).
+    """
+    profile = UserProfile(
+        user_id="test-user-123",
+        email="test@example.com",
+        subscription_tier="basic",
+        subscription_status="active",
+        echo_vault_quota_gb=50.0,
+        echo_vault_used_gb=0.0,
+        status=UserStatus.CONFIRMED,
+    )
+    user = {
+        "sub": "test-user-123",
+        "id": "test-user-123",
+        "email": "test@example.com",
+        "given_name": "Test",
+        "family_name": "User",
+    }
+    return EntitledUser(user_id="test-user-123", user=user, profile=profile)
+
+
+async def mock_require_entitled():
+    return _make_test_entitled_user()
+
 
 # Clear any existing overrides and set clean ones
 app.dependency_overrides = {}
 app.dependency_overrides[get_current_user] = mock_get_current_user
 app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
+app.dependency_overrides[require_entitled] = mock_require_entitled
 
 # Store references for test cleanup
 GLOBAL_PATCHES = [
@@ -336,6 +380,7 @@ def clean_dependency_overrides():
     app.dependency_overrides = {}
     app.dependency_overrides[get_current_user] = mock_get_current_user
     app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
+    app.dependency_overrides[require_entitled] = mock_require_entitled
     yield
     # Keep overrides for consistency
 

@@ -1,14 +1,20 @@
-"""Reflection Room V1 — telemetry beacon endpoints (spec §10).
+"""Telemetry beacon endpoints.
 
 These endpoints exist purely so the FE can fire client→server telemetry
 beacons that don't fit the request/response shape of the main routes.
 
-Routes:
+Reflection Room (spec §10):
   POST /telemetry/practice-expand   — fires when a card back opens
   POST /telemetry/nudge-opened      — fires when an external nudge expands
   POST /telemetry/echo-map-refresh  — fires when "Update My Mirror" is tapped
 
-Each emits exactly one event from the spec §10 matrix and returns 204.
+Subscription funnel (pricing spec 2026-05-12 §5):
+  POST /telemetry/paywall-view      — fires on StartFreeTrialScreen mount
+
+Each emits exactly one event and returns 204. The remaining four trial
+events (start_trial, trial_convert, trial_cancel, trial_expire) are
+emitted server-side from SubscriptionService lifecycle handlers — see
+services/telemetry/subscription_events.py.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from ..services.telemetry.reflection_events import (
     get_default_emitter,
     hash_user_id,
 )
+from ..services.telemetry.subscription_events import EVENT_PAYWALL_VIEW
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Telemetry"])
@@ -118,5 +125,41 @@ async def beacon_echo_map_refresh(
     telemetry.emit(
         EVENT_ECHO_MAP_REFRESH,
         user_hash=_user_hash_or_401(current_user),
+    )
+    return Response(status_code=204)
+
+
+class PaywallViewBeacon(BaseModel):
+    """Optional context for the paywall_view event.
+
+    `surface` lets analytics distinguish where the paywall was shown
+    from (the StartFreeTrialScreen on signup vs an upsell flow vs the
+    storage add-on upsell). Defaults to "start_trial" — the v1 launch
+    paywall — so existing FE calls without the field still work.
+    """
+
+    surface: str = "start_trial"
+
+
+@router.post(
+    "/telemetry/paywall-view",
+    status_code=204,
+    summary="Beacon: paywall surface was shown",
+    description=(
+        "Emits paywall_view (pricing spec 2026-05-12 §5). Fired by the "
+        "FE on paywall mount so analytics can compute view→start_trial "
+        "conversion."
+    ),
+)
+async def beacon_paywall_view(
+    request: PaywallViewBeacon = PaywallViewBeacon(),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    telemetry: TelemetryEmitter = Depends(get_telemetry_emitter),
+):
+    """Fired when the user lands on the paywall."""
+    telemetry.emit(
+        EVENT_PAYWALL_VIEW,
+        user_hash=_user_hash_or_401(current_user),
+        surface=request.surface,
     )
     return Response(status_code=204)

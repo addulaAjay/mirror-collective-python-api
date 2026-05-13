@@ -68,7 +68,14 @@ class Echo:
 
     # Media storage (S3 URL for audio/video, inline for text)
     media_url: Optional[str] = None
-    content: Optional[str] = None  # For text type only
+    content: Optional[str] = None  # For text type
+
+    # Size of the uploaded media in bytes (for AUDIO/VIDEO only).
+    # Captured at upload-completion so storage quota can sum across echoes
+    # via DynamoDB query instead of a full S3 prefix scan. None means either
+    # (a) a TEXT echo (no media) or (b) a legacy row created before this
+    # field existed — the quota service back-fills (b) lazily from S3.
+    size_bytes: Optional[int] = None
 
     # Status and delivery
     status: EchoStatus = EchoStatus.DRAFT

@@ -24,7 +24,7 @@ class SubscriptionStatus(Enum):
 class SubscriptionType(Enum):
     """Type of subscription"""
 
-    MIRROR_CORE = "core"  # Mirror Core plan
+    MIRROR_BASIC = "basic"  # Mirror Basic plan (per pricing spec 2026-05-12)
     STORAGE_ADD_ON = "storage"  # Echo Vault Storage add-on
 
 

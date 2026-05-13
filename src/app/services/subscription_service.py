@@ -2,8 +2,6 @@
 Subscription service for managing IAP lifecycle
 """
 
-import base64
-import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -20,7 +18,15 @@ from ..models.subscription import (
 )
 from .dynamodb_service import DynamoDBService
 from .receipt_validator import ReceiptValidator
+from .sns_service import SNSService
 from .storage_quota_service import StorageQuotaService
+from .telemetry.subscription_events import (
+    EVENT_START_TRIAL,
+    EVENT_TRIAL_CANCEL,
+    EVENT_TRIAL_CONVERT,
+    EVENT_TRIAL_EXPIRE,
+    emit_subscription_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,7 @@ class SubscriptionService:
         self.dynamodb_service = dynamodb_service
         self.receipt_validator = ReceiptValidator()
         self.quota_service = StorageQuotaService(dynamodb_service)
+        self.sns_service = SNSService()
         self.subscriptions_table = os.getenv(
             "DYNAMODB_SUBSCRIPTIONS_TABLE", "subscriptions"
         )
@@ -49,91 +56,64 @@ class SubscriptionService:
             "DYNAMODB_SUBSCRIPTION_EVENTS_TABLE", "subscription_events"
         )
 
-    async def _verify_apple_jwt(self, signed_payload: str) -> Optional[Dict]:
-        """
-        Verify Apple App Store Server Notification JWT signature
+    # Apple JWS verification was inlined here as three methods. The
+    # swallow-and-log wrappers now live in apple_app_store_client.py
+    # (try_verify_signed_notification / try_verify_signed_transaction).
+    # handle_apple_webhook below calls them directly.
 
-        Args:
-            signed_payload: JWT string from Apple webhook
-
-        Returns:
-            Decoded JWT payload if valid, None if invalid
-        """
-        try:
-            # Import JWT library
-            import jwt
-            from jwt import PyJWKClient
-
-            # Decode JWT header to get key ID
-            header = jwt.get_unverified_header(signed_payload)
-
-            # Apple uses JWK Set for their public keys
-            # For production, implement proper JWK fetching and caching
-            # For now, decode without verification (development only)
-            logger.warning(
-                "Apple JWT signature verification not fully implemented. "
-                "Decoding without verification - DO NOT USE IN PRODUCTION"
-            )
-
-            # Decode without verification (INSECURE - for development only)
-            decoded = jwt.decode(signed_payload, options={"verify_signature": False})
-
-            return decoded
-
-        except Exception as e:
-            logger.error(f"Error verifying Apple JWT: {e}")
-            return None
-
-    async def _verify_google_pubsub_message(self, message_data: str) -> Optional[Dict]:
-        """
-        Verify and decode Google Cloud Pub/Sub message from Real-time Developer Notifications
-
-        Args:
-            message_data: Base64 encoded message data from Pub/Sub
-
-        Returns:
-            Decoded notification data if valid, None if invalid
-        """
-        try:
-            # Decode base64 message data
-            decoded_data = base64.b64decode(message_data)
-            notification = json.loads(decoded_data)
-
-            # Google Pub/Sub notifications come via Cloud Pub/Sub
-            # Signature verification happens at the Pub/Sub level
-            # By the time we receive it, it's already verified by GCP
-
-            logger.info("Decoded Google Pub/Sub notification")
-            return notification
-
-        except Exception as e:
-            logger.error(f"Error decoding Google Pub/Sub message: {e}")
-            return None
+    # Google Pub/Sub OIDC verification + base64 decoding live in
+    # google_pubsub_client.py. handle_google_webhook below calls them
+    # directly.
 
     async def verify_and_activate_purchase(
-        self, user_id: str, platform: str, receipt_data: str, product_id: str
+        self,
+        user_id: str,
+        platform: str,
+        receipt_data: str,
+        product_id: str,
+        transaction_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Verify IAP receipt and activate subscription
+        Verify an IAP receipt and (idempotently) activate the subscription.
+
+        Idempotency key: the platform's `original_transaction_id` (iOS)
+        or order base (Android). Repeated calls for the same transaction
+        return the existing record without re-firing
+        SUBSCRIPTION_PURCHASED events or overwriting trial/expiry data.
 
         Args:
-            user_id: Cognito sub
-            platform: "ios" or "android"
-            receipt_data: Receipt string from platform
-            product_id: Product identifier
+            user_id: Cognito sub of the purchasing user.
+            platform: "ios" or "android".
+            receipt_data: Legacy field — accepted but ignored on iOS in
+                favour of `transaction_id`. Still passed through on
+                Android as the purchase token.
+            product_id: Product SKU the client claims this purchase is for.
+            transaction_id: Apple's originalTransactionId (iOS) or
+                Google's orderId (Android). Authoritative identifier.
 
         Returns:
-            Dict with subscription details
+            Dict with subscription details. Idempotent: same
+            transaction_id → same response, no double-activation.
 
         Raises:
-            ValueError: If receipt validation fails
-            InternalServerError: If database operations fail
+            ValueError: receipt validation failed (forged / sandbox /
+                unknown product / Apple JWS bad signature).
+            InternalServerError: database write failed.
         """
         try:
-            # 1. Validate receipt with platform
+            # Defence in depth: refuse SKUs we don't actually sell. Forged
+            # receipts may claim made-up products to confuse the
+            # entitlement flow.
+            from ..constants.products import is_known_sku
+
+            if not is_known_sku(product_id):
+                raise ValueError(f"Unknown product_id: {product_id}")
+
+            # 1. Validate receipt with platform.
             if platform.lower() == "ios":
                 validation_result = await self.receipt_validator.validate_apple_receipt(
-                    receipt_data
+                    receipt_data,
+                    original_transaction_id=transaction_id,
                 )
             elif platform.lower() == "android":
                 validation_result = (
@@ -149,40 +129,120 @@ class SubscriptionService:
                     f"Receipt validation failed: {validation_result.get('error')}"
                 )
 
-            # 2. Extract transaction data
             transaction_data = validation_result["data"]
 
-            # 3. Determine subscription type and billing period from product_id
-            subscription_type, billing_period = self._parse_product_id(product_id)
+            # Cross-check: the SKU in the verified transaction must
+            # match the product_id the client claimed.
+            #
+            # iOS: the App Store Server SDK returns `product_id` in the
+            # JWS-verified `JWSTransactionDecodedPayload`, so this is a
+            # real comparison against an Apple-signed value.
+            #
+            # Google: the legacy `purchases.subscriptions` endpoint
+            # doesn't echo the productId, so `verified_product` is
+            # None and this branch correctly no-ops. The actual
+            # cross-check on Google is the API call itself in
+            # `validate_google_receipt` — `subscriptions.get(productId,
+            # token)` returns 4xx if they don't match, surfacing as
+            # `valid: False` upstream.
+            verified_product = transaction_data.get("product_id")
+            if verified_product and verified_product != product_id:
+                raise ValueError(
+                    f"Product mismatch: client claimed {product_id} but "
+                    f"verified receipt is for {verified_product}"
+                )
 
-            # 4. Create or update subscription record
+            # 2. Idempotency key — original_transaction_id on iOS, order
+            # id on Android. Always derived from the verified receipt,
+            # never from the client.
+            original_txn_id = transaction_data.get(
+                "original_transaction_id"
+            ) or transaction_data.get("transaction_id")
+            if not original_txn_id:
+                raise ValueError("Verified receipt missing original_transaction_id")
+
+            # 3. Idempotency check: if we've already activated this exact
+            # transaction, return the existing record. Skips the
+            # SUBSCRIPTION_PURCHASED event so analytics aren't
+            # double-counted on duplicate client retries.
+            existing = await self.dynamodb_service.get_item(
+                self.subscriptions_table,
+                {"user_id": user_id, "subscription_id": original_txn_id},
+            )
+            if existing:
+                logger.info(
+                    "Idempotent /verify-purchase for user %s txn %s — returning existing record",
+                    user_id,
+                    original_txn_id,
+                )
+                return {
+                    "success": True,
+                    "subscription": existing,
+                    "message": "Subscription already activated",
+                    "idempotent": True,
+                }
+
+            # 4. New activation — create the Subscription record.
+            subscription_type, billing_period = self._parse_product_id(product_id)
+            is_trial = bool(transaction_data.get("is_trial_period"))
+            sub_status = (
+                SubscriptionStatus.TRIAL if is_trial else SubscriptionStatus.ACTIVE
+            )
+
             subscription = Subscription(
                 user_id=user_id,
-                subscription_id=transaction_data["transaction_id"],
+                subscription_id=original_txn_id,
                 product_id=product_id,
                 subscription_type=subscription_type,
                 platform=(
                     Platform.IOS if platform.lower() == "ios" else Platform.ANDROID
                 ),
-                status=SubscriptionStatus.ACTIVE,
+                status=sub_status,
                 billing_period=billing_period,
-                price_usd=transaction_data["price"],
-                purchase_date=transaction_data["purchase_date"],
-                expiry_date=transaction_data["expiry_date"],
+                price_usd=transaction_data.get("price", 0.0),
+                currency_code=transaction_data.get("currency_code", "USD"),
+                purchase_date=transaction_data.get("purchase_date"),
+                expiry_date=transaction_data.get("expiry_date"),
                 auto_renew_enabled=transaction_data.get("auto_renew_enabled", True),
                 receipt_data=receipt_data,
-                is_in_trial=False,  # Paid subscription, not platform trial
+                original_transaction_id=original_txn_id,
+                is_in_trial=is_trial,
+                validation_environment=(
+                    "sandbox"
+                    if transaction_data.get("environment") == "Sandbox"
+                    else "production"
+                ),
             )
 
-            # 5. Save to DynamoDB
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, subscription.to_dynamodb_item()
+            # Atomic conditional put — closes the race where two
+            # concurrent /verify-purchase calls both saw existing=None
+            # above and would otherwise both proceed to activate. The
+            # loser gets `created=False`, re-reads the winner's row, and
+            # returns it idempotently.
+            created = await self.dynamodb_service.put_item_if_not_exists(
+                self.subscriptions_table,
+                subscription.to_dynamodb_item(),
+                key_attr="subscription_id",
             )
+            if not created:
+                race_winner = await self.dynamodb_service.get_item(
+                    self.subscriptions_table,
+                    {"user_id": user_id, "subscription_id": original_txn_id},
+                )
+                logger.info(
+                    "Concurrent /verify-purchase for user %s txn %s — returning race-winner",
+                    user_id,
+                    original_txn_id,
+                )
+                return {
+                    "success": True,
+                    "subscription": race_winner or subscription.to_dict(),
+                    "message": "Subscription already activated",
+                    "idempotent": True,
+                }
 
-            # 6. Update user profile subscription status
             await self._update_user_subscription_status(user_id, subscription)
 
-            # 7. Log subscription event
             await self._log_subscription_event(
                 user_id=user_id,
                 subscription_id=subscription.subscription_id,
@@ -190,26 +250,44 @@ class SubscriptionService:
                 platform=platform,
                 metadata={
                     "product_id": product_id,
-                    "price": transaction_data["price"],
-                    "expiry_date": transaction_data["expiry_date"],
+                    "price": subscription.price_usd,
+                    "expiry_date": subscription.expiry_date,
+                    "is_trial": is_trial,
                 },
             )
 
+            # Trial conversion funnel — analytics layer (spec §5).
+            # The DynamoDB audit row above is authoritative; this
+            # emission is the parallel signal for Mixpanel / Segment.
+            if is_trial:
+                emit_subscription_event(
+                    EVENT_START_TRIAL,
+                    user_id=user_id,
+                    subscription_id=subscription.subscription_id,
+                    product_id=product_id,
+                    platform=platform,
+                )
+
             logger.info(
-                f"Subscription activated for user {user_id}: {subscription.subscription_id}"
+                "Subscription activated user=%s txn=%s product=%s trial=%s",
+                user_id,
+                subscription.subscription_id,
+                product_id,
+                is_trial,
             )
 
             return {
                 "success": True,
                 "subscription": subscription.to_dict(),
                 "message": "Subscription activated successfully",
+                "idempotent": False,
             }
 
         except ValueError as e:
-            logger.error(f"Receipt validation error for user {user_id}: {e}")
+            logger.error("Receipt validation error for user %s: %s", user_id, e)
             raise
         except Exception as e:
-            logger.error(f"Error activating subscription for user {user_id}: {e}")
+            logger.error("Error activating subscription for user %s: %s", user_id, e)
             raise InternalServerError(f"Failed to activate subscription: {str(e)}")
 
     async def get_user_subscription_status(self, user_id: str) -> Dict[str, Any]:
@@ -261,7 +339,9 @@ class SubscriptionService:
             }
 
         except Exception as e:
-            logger.error(f"Error getting subscription status for user {user_id}: {e}")
+            logger.error(
+                "Error getting subscription status for user %s: %s", user_id, e
+            )
             raise InternalServerError(f"Failed to get subscription status: {str(e)}")
 
     async def restore_user_purchases(
@@ -328,25 +408,50 @@ class SubscriptionService:
                     if validation_result["valid"]:
                         transaction_data = validation_result["data"]
 
-                        # Check if subscription already exists
+                        # SKU whitelist + cross-check (defence in depth).
+                        # Mirrors verify_and_activate_purchase — a forged
+                        # receipt claiming an unknown product or a
+                        # different product than the caller's claim must
+                        # be rejected on the restore path too.
+                        from ..constants.products import is_known_sku
+
+                        verified_product = transaction_data.get("product_id")
+                        if not verified_product or not is_known_sku(verified_product):
+                            logger.warning(
+                                "Rejecting restore for user %s — unknown SKU %s",
+                                user_id,
+                                verified_product,
+                            )
+                            errors.append(
+                                f"Unknown product_id in receipt: {verified_product}"
+                            )
+                            continue
+
+                        # Idempotency: skip if we already activated this
+                        # transaction (use the verified original_transaction_id
+                        # — never the client-claimed value).
+                        idempotency_id = (
+                            transaction_data.get("original_transaction_id")
+                            or transaction_data["transaction_id"]
+                        )
                         existing = await self.dynamodb_service.get_item(
                             self.subscriptions_table,
                             {
                                 "user_id": user_id,
-                                "subscription_id": transaction_data["transaction_id"],
+                                "subscription_id": idempotency_id,
                             },
                         )
 
                         if not existing:
                             # Create subscription record
-                            product_id = transaction_data["product_id"]
+                            product_id = verified_product
                             subscription_type, billing_period = self._parse_product_id(
                                 product_id
                             )
 
                             subscription = Subscription(
                                 user_id=user_id,
-                                subscription_id=transaction_data["transaction_id"],
+                                subscription_id=idempotency_id,
                                 product_id=product_id,
                                 subscription_type=subscription_type,
                                 platform=(
@@ -365,10 +470,28 @@ class SubscriptionService:
                                 receipt_data=receipt_data,
                             )
 
-                            await self.dynamodb_service.put_item(
-                                self.subscriptions_table,
-                                subscription.to_dynamodb_item(),
+                            # Conditional put — never overwrite an
+                            # existing row. The restore path is
+                            # user-triggered and rare, but a
+                            # concurrent restore from a second device
+                            # (or a webhook landing mid-restore) could
+                            # race a plain `put_item` and clobber more
+                            # recent state. Matches the idempotency
+                            # discipline of `verify_and_activate_purchase`.
+                            inserted = (
+                                await self.dynamodb_service.put_item_if_not_exists(
+                                    self.subscriptions_table,
+                                    subscription.to_dynamodb_item(),
+                                    key_attr="subscription_id",
+                                )
                             )
+                            if not inserted:
+                                logger.info(
+                                    "Restore skipped existing row for user %s "
+                                    "subscription %s — keeping current state.",
+                                    user_id,
+                                    idempotency_id,
+                                )
                             restored_subscriptions.append(subscription.to_dict())
 
                             # Update user profile
@@ -377,7 +500,7 @@ class SubscriptionService:
                             )
 
                 except Exception as e:
-                    logger.error(f"Error restoring receipt: {e}")
+                    logger.error("Error restoring receipt: %s", e)
                     errors.append(str(e))
 
             logger.info(
@@ -392,45 +515,78 @@ class SubscriptionService:
             }
 
         except Exception as e:
-            logger.error(f"Error restoring purchases for user {user_id}: {e}")
+            logger.error("Error restoring purchases for user %s: %s", user_id, e)
             raise InternalServerError(f"Failed to restore purchases: {str(e)}")
 
     async def handle_apple_webhook(self, notification_payload: Dict) -> Dict[str, Any]:
         """
-        Process Apple App Store Server Notification V2
+        Process an Apple App Store Server Notification v2.
+
+        Both layers — the outer notification envelope and the inner
+        signedTransactionInfo — are JWS-verified against Apple's root
+        CA via the SignedDataVerifier. Anything that fails signature
+        check is rejected with `{"success": False, "error": ...}` and
+        the route layer surfaces that as 401, so a forged ASSN v2
+        payload never reaches the lifecycle handlers.
 
         Args:
-            notification_payload: Webhook payload from Apple (contains signedPayload JWT)
+            notification_payload: `{"signedPayload": "<JWS>"}` body
+                posted by Apple to /api/subscriptions/webhook/apple.
 
         Returns:
-            Dict with processing status
+            Dict with processing status. Always returns a dict — never
+            raises — so the route handler can return a predictable
+            response shape regardless of whether the payload was valid.
         """
+        from .apple_app_store_client import (
+            try_verify_signed_notification,
+            try_verify_signed_transaction,
+        )
+
         try:
-            # Apple sends notifications as signed JWT
             signed_payload = notification_payload.get("signedPayload")
             if not signed_payload:
-                logger.error("Missing signedPayload in Apple webhook")
-                return {"success": False, "error": "Missing signedPayload"}
+                logger.warning("Apple webhook missing signedPayload")
+                return {
+                    "success": False,
+                    "error": "Missing signedPayload",
+                    "status_code": 400,
+                }
 
-            # Verify JWT signature
-            decoded_payload = await self._verify_apple_jwt(signed_payload)
+            # 1. Verify the outer notification envelope.
+            decoded_payload = try_verify_signed_notification(signed_payload)
             if not decoded_payload:
-                logger.error("Failed to verify Apple JWT signature")
-                return {"success": False, "error": "Invalid JWT signature"}
+                # Signature verification already logged the reason.
+                return {
+                    "success": False,
+                    "error": "Apple notification signature could not be verified",
+                    "status_code": 401,
+                }
 
-            # Extract notification data
             notification_type = decoded_payload.get("notificationType")
-            data = decoded_payload.get("data", {})
+            data = decoded_payload.get("data", {}) or {}
 
-            # Decode signed transaction info
+            # 2. Verify the inner signedTransactionInfo if present. The
+            # SDK already nested-verifies but we re-verify defensively
+            # to make sure no caller bypasses the per-transaction check.
             signed_transaction_info = data.get("signedTransactionInfo")
             transaction_info = None
             if signed_transaction_info:
-                transaction_info = await self._verify_apple_jwt(signed_transaction_info)
+                transaction_info = try_verify_signed_transaction(
+                    signed_transaction_info
+                )
+                if transaction_info is None:
+                    return {
+                        "success": False,
+                        "error": "Apple transaction signature could not be verified",
+                        "status_code": 401,
+                    }
 
-            logger.info(f"Processing Apple webhook: {notification_type}")
+            logger.info(
+                "Processing Apple webhook notification_type=%s", notification_type
+            )
 
-            # Handle different notification types
+            # 3. Dispatch by notification type.
             if transaction_info:
                 if notification_type == "DID_RENEW":
                     await self._handle_subscription_renewal(transaction_info)
@@ -446,42 +602,67 @@ class SubscriptionService:
             return {"success": True, "message": "Webhook processed"}
 
         except Exception as e:
-            logger.error(f"Error processing Apple webhook: {e}")
+            logger.error("Error processing Apple webhook: %s", e)
             raise InternalServerError(f"Failed to process webhook: {str(e)}")
 
-    async def handle_google_webhook(self, notification_payload: Dict) -> Dict[str, Any]:
+    async def handle_google_webhook(
+        self,
+        notification_payload: Dict,
+        auth_header: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Process Google Play Real-time Developer Notification
+        Process a Google Play Real-time Developer Notification.
 
-        Google sends notifications via Cloud Pub/Sub. The payload structure is:
-        {
-            "message": {
-                "data": "base64-encoded-notification",
-                "messageId": "...",
-                "publishTime": "..."
-            }
-        }
+        Pub/Sub push payload:
+            {"message": {"data": "<base64>", "messageId": "...", ...}}
+
+        Security: BEFORE decoding, we verify the OIDC JWT Google
+        attaches to the request (Authorization: Bearer <jwt>). The
+        token's audience + service-account email must match the
+        env-configured push subscription. Without this, anyone who
+        learns the webhook URL could forge a "subscription cancelled"
+        event and revoke a user's entitlement.
 
         Args:
-            notification_payload: Pub/Sub webhook payload from Google
+            notification_payload: Pub/Sub webhook body.
+            auth_header: Raw Authorization header from the request.
 
         Returns:
-            Dict with processing status
+            Dict with processing status. `status_code` is set to 401
+            when the JWT fails verification so the route layer can
+            propagate the right HTTP code.
         """
+        from .google_pubsub_client import decode_pubsub_message, verify_pubsub_jwt
+
         try:
-            # Extract Pub/Sub message
+            # 1. Verify the Pub/Sub OIDC JWT.
+            if not verify_pubsub_jwt(auth_header):
+                return {
+                    "success": False,
+                    "error": "Pub/Sub push token could not be verified",
+                    "status_code": 401,
+                }
+
+            # 2. Extract + decode the message payload.
             message = notification_payload.get("message", {})
             message_data = message.get("data")
 
             if not message_data:
-                logger.error("Missing message data in Google webhook")
-                return {"success": False, "error": "Missing message data"}
+                logger.warning("Missing message data in Google webhook")
+                return {
+                    "success": False,
+                    "error": "Missing message data",
+                    "status_code": 400,
+                }
 
-            # Decode and verify Pub/Sub message
-            notification = await self._verify_google_pubsub_message(message_data)
+            notification = decode_pubsub_message(message_data)
             if not notification:
-                logger.error("Failed to decode Google Pub/Sub message")
-                return {"success": False, "error": "Invalid Pub/Sub message"}
+                logger.warning("Failed to decode Google Pub/Sub message")
+                return {
+                    "success": False,
+                    "error": "Invalid Pub/Sub message",
+                    "status_code": 400,
+                }
 
             # Extract notification details
             subscription_notification = notification.get("subscriptionNotification", {})
@@ -524,7 +705,7 @@ class SubscriptionService:
             return {"success": True, "message": "Webhook processed"}
 
         except Exception as e:
-            logger.error(f"Error processing Google webhook: {e}")
+            logger.error("Error processing Google webhook: %s", e)
             raise InternalServerError(f"Failed to process webhook: {str(e)}")
 
     async def cancel_subscription(
@@ -567,7 +748,22 @@ class SubscriptionService:
                 metadata={"expiry_date": subscription["expiry_date"]},
             )
 
-            logger.info(f"Cancelled subscription {subscription_id} for user {user_id}")
+            # If the user cancels while still in the trial window, that's
+            # a distinct funnel event from a cancel-after-conversion.
+            # Status on the row is the pre-cancel snapshot here (we
+            # only flipped auto_renew_enabled, not status).
+            if subscription.get("status") == SubscriptionStatus.TRIAL.value:
+                emit_subscription_event(
+                    EVENT_TRIAL_CANCEL,
+                    user_id=user_id,
+                    subscription_id=subscription_id,
+                    product_id=subscription.get("product_id"),
+                    platform=subscription["platform"],
+                )
+
+            logger.info(
+                "Cancelled subscription %s for user %s", subscription_id, user_id
+            )
 
             return {
                 "success": True,
@@ -576,10 +772,10 @@ class SubscriptionService:
             }
 
         except ValueError as e:
-            logger.error(f"Cancellation error: {e}")
+            logger.error("Cancellation error: %s", e)
             raise
         except Exception as e:
-            logger.error(f"Error cancelling subscription: {e}")
+            logger.error("Error cancelling subscription: %s", e)
             raise InternalServerError(f"Failed to cancel subscription: {str(e)}")
 
     async def get_billing_history(self, user_id: str) -> Dict[str, Any]:
@@ -605,84 +801,178 @@ class SubscriptionService:
             return {"success": True, "events": events, "total_events": len(events)}
 
         except Exception as e:
-            logger.error(f"Error getting billing history for user {user_id}: {e}")
+            logger.error("Error getting billing history for user %s: %s", user_id, e)
             raise InternalServerError(f"Failed to get billing history: {str(e)}")
 
     # ========================================
     # PRIVATE HELPER METHODS
     # ========================================
 
-    def _parse_product_id(self, product_id: str) -> tuple:
+    async def _find_subscription_by_transaction_info(
+        self, transaction_info: Dict
+    ) -> Optional[Subscription]:
         """
-        Parse product ID to determine subscription type and billing period
+        Look up a Subscription row from a webhook payload.
+
+        Encapsulates the "extract transaction id + GSI query +
+        from_dynamodb_item" dance that each lifecycle handler used to
+        repeat inline. The five `_handle_*` methods now share this
+        single path, so a future change to the lookup logic (e.g. add
+        a fallback by purchase_token, or paginate the GSI result) lands
+        in one place.
 
         Args:
-            product_id: Product identifier (e.g., com.mirrorcollective.core.monthly)
+            transaction_info: Decoded Apple / Google webhook payload.
+                Apple uses `transactionId` / `originalTransactionId`;
+                Google uses the same keys after we normalise in the
+                Pub/Sub decoder.
 
         Returns:
-            Tuple of (SubscriptionType, BillingPeriod)
+            Subscription if found, None if no matching row.
         """
-        if "core" in product_id.lower():
-            subscription_type = SubscriptionType.MIRROR_CORE
-        elif "storage" in product_id.lower():
-            subscription_type = SubscriptionType.STORAGE_ADD_ON
-        else:
-            subscription_type = SubscriptionType.MIRROR_CORE
+        transaction_id = transaction_info.get("transactionId") or transaction_info.get(
+            "originalTransactionId"
+        )
+        if not transaction_id:
+            return None
 
-        if "monthly" in product_id.lower():
-            billing_period = BillingPeriod.MONTHLY
-        elif "yearly" in product_id.lower():
-            billing_period = BillingPeriod.YEARLY
-        else:
-            billing_period = BillingPeriod.MONTHLY
+        # Query the GSI keyed on subscription_id (= original_transaction_id
+        # for iOS; orderId base for Android). Returns up to one row per
+        # (user_id, subscription_id) pair.
+        rows = await self.dynamodb_service.query_items(
+            table_name=self.subscriptions_table,
+            key_condition="subscription_id = :sid",
+            expression_values={":sid": transaction_id},
+            index_name="subscription-id-index",
+        )
+        if not rows:
+            return None
+        return Subscription.from_dynamodb_item(rows[0])
 
-        return subscription_type, billing_period
+    def _parse_product_id(
+        self, product_id: str
+    ) -> tuple[SubscriptionType, BillingPeriod]:
+        """
+        Resolve a SKU to its (SubscriptionType, BillingPeriod) pair via
+        the canonical products.py catalog.
+
+        Previous implementation used substring matching (`"core" in ...`)
+        which would misclassify a crafted SKU like
+        `com.attacker.core.monthly.evil`. The catalog is the single
+        source of truth — if the SKU isn't there, the caller has
+        already failed `is_known_sku` (defence in depth) and we'd
+        never reach this method for a forged input. But to make this
+        function safe even if called directly, we explicitly raise
+        ValueError on unknown SKUs rather than falling back to defaults.
+        """
+        from ..constants.products import BillingPeriod as ProductBillingPeriod
+        from ..constants.products import ProductKind, descriptor_for_sku
+
+        descriptor = descriptor_for_sku(product_id)
+        if descriptor is None:
+            raise ValueError(f"Unknown product_id: {product_id}")
+
+        if descriptor.kind == ProductKind.BASIC:
+            sub_type = SubscriptionType.MIRROR_BASIC
+        elif descriptor.kind == ProductKind.STORAGE:
+            sub_type = SubscriptionType.STORAGE_ADD_ON
+        else:  # pragma: no cover — exhaustive over ProductKind enum
+            raise ValueError(f"Unsupported product kind: {descriptor.kind}")
+
+        billing = (
+            BillingPeriod.MONTHLY
+            if descriptor.billing_period == ProductBillingPeriod.MONTHLY
+            else BillingPeriod.YEARLY
+        )
+
+        return sub_type, billing
 
     async def _update_user_subscription_status(
         self, user_id: str, subscription: Subscription
     ) -> None:
         """
-        Update user profile with subscription changes
+        Update user profile with subscription changes.
 
-        Args:
-            user_id: Cognito sub
-            subscription: Subscription object
+        Derives the profile's `subscription_status` from the
+        Subscription row's status — NOT a hardcoded "active". Trial
+        activations were previously writing status="active" while the
+        Subscription row said TRIAL, causing the frontend and
+        require_entitled dependency to disagree about whether a user
+        was in a trial.
+
+        Profile updates are applied as a single replace at the end
+        (no in-place mutation between awaits) so a concurrent reader
+        never sees a partially-mutated profile.
         """
         try:
             user_profile = await self.dynamodb_service.get_user_profile(user_id)
             if not user_profile:
                 raise ValueError("User not found")
 
-            # Update subscription fields
-            user_profile.subscription_status = "active"
+            # Derive profile status from the subscription row's status.
+            # SubscriptionStatus.TRIAL -> "trial", ACTIVE -> "active",
+            # GRACE_PERIOD -> "grace_period", etc. Matches the keys the
+            # frontend useEntitlement predicate consumes.
+            new_status = subscription.status.value
 
-            # Update tier and quota based on subscription type
-            if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
-                user_profile.subscription_tier = "core"
-                user_profile.primary_subscription_id = subscription.subscription_id
-                base_quota = 50.0  # Mirror Core gives 50 GB
+            # Tier resolution — `subscription_tier` reflects what the user
+            # PAYS FOR (basic, future plus). It is intentionally decoupled
+            # from the storage add-on, which is tracked separately via
+            # `storage_add_on_active` so the basic/plus axis stays
+            # orthogonal to the +100 GB upgrade (pricing spec 2026-05-12).
+            new_tier = user_profile.subscription_tier
+            new_primary_sub_id = user_profile.primary_subscription_id
+            new_storage_sub_id = user_profile.storage_subscription_id
+            new_storage_addon_active = user_profile.storage_add_on_active
+
+            if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
+                # Tier value mirrors the subscription's status so a
+                # mid-trial user reads as tier="trial". Without this the
+                # `"trial"` key in FEATURE_TIER_MAP would be dead code,
+                # and a future Plus feature whose tier set accidentally
+                # included `"trial"` would silently grant access to
+                # trial users. Renewal handler re-runs this helper, so
+                # TRIAL → ACTIVE flips tier from "trial" to "basic"
+                # naturally as soon as the first paid renewal lands.
+                new_tier = (
+                    "trial"
+                    if subscription.status == SubscriptionStatus.TRIAL
+                    else "basic"
+                )
+                new_primary_sub_id = subscription.subscription_id
+                base_quota = 50.0
             elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
-                user_profile.storage_add_on_active = True
-                user_profile.storage_subscription_id = subscription.subscription_id
-                base_quota = user_profile.echo_vault_quota_gb + 100.0  # Add 100 GB
+                new_storage_addon_active = True
+                new_storage_sub_id = subscription.subscription_id
+                base_quota = user_profile.echo_vault_quota_gb + 100.0
             else:
                 base_quota = user_profile.echo_vault_quota_gb
 
-            # Calculate total quota
+            # Total quota = base entitlement (50 GB for basic/trial) +
+            # 100 GB if the add-on is active. The tier value never carries
+            # the storage signal — see comment above.
             total_quota = base_quota
-            if (
-                user_profile.subscription_tier == "core"
-                and user_profile.storage_add_on_active
-            ):
-                user_profile.subscription_tier = "core_plus"
-                total_quota = 150.0  # 50 GB (core) + 100 GB (storage)
+            if new_tier in ("basic", "trial") and new_storage_addon_active:
+                total_quota = 150.0
 
-            user_profile.echo_vault_quota_gb = total_quota
-            user_profile.last_subscription_check = (
+            new_last_check = (
                 datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             )
 
-            # Save updated profile
+            # Apply all updates in one shot. We still mutate the
+            # dataclass before passing to update_user_profile (the
+            # downstream API expects a full UserProfile) but the
+            # mutations happen contiguously, with no awaits in
+            # between — so a concurrent reader can never observe a
+            # half-updated profile.
+            user_profile.subscription_status = new_status
+            user_profile.subscription_tier = new_tier
+            user_profile.primary_subscription_id = new_primary_sub_id
+            user_profile.storage_subscription_id = new_storage_sub_id
+            user_profile.storage_add_on_active = new_storage_addon_active
+            user_profile.echo_vault_quota_gb = total_quota
+            user_profile.last_subscription_check = new_last_check
+
             await self.dynamodb_service.update_user_profile(user_profile)
 
             logger.info(
@@ -690,8 +980,120 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error updating user subscription status: {e}")
+            logger.error("Error updating user subscription status: %s", e)
             raise
+
+    async def _send_payment_failure_notification(
+        self,
+        user_id: str,
+        subscription_id: str,
+    ) -> None:
+        """Push a payment-failure alert to every device the user has
+        registered for notifications.
+
+        Fan-out behavior:
+          - Skip cleanly if the user hasn't registered any devices (e.g.,
+            declined the notification permission prompt). The CloudWatch
+            renewal-failure audit log still captures the event.
+          - Best-effort per device: SNS failures on one endpoint don't
+            block the rest. Disabled endpoints (token invalidated by
+            APNs/FCM) are flagged by SNSService.publish_to_endpoint at
+            WARNING level so a separate cleanup job can recycle them.
+          - Cross-platform: SNSService renders both APNS + GCM payloads
+            from the same call, so the iOS / Android split lives entirely
+            in the client (the in-app banner UI is iOS-first; the OS-level
+            notification works on both).
+
+        The notification carries enough `data` for the client to:
+          - branch foreground handling on `type='payment_failed'`
+          - deep-link to the subscription management screen on tap
+          - correlate to the subscription record on the backend
+
+        Best-effort overall: a failure here MUST NOT bubble — the renewal
+        failure is already persisted by the caller, and the user can
+        still surface the issue via the in-app YourSubscriptionScreen
+        if the push is lost.
+        """
+        try:
+            tokens = await self.dynamodb_service.get_user_device_tokens(user_id)
+        except Exception as fetch_err:
+            logger.warning(
+                "Could not fetch device tokens for user %s during payment-failure dispatch: %s",
+                user_id,
+                fetch_err,
+            )
+            return
+
+        if not tokens:
+            logger.info(
+                "No registered devices for user %s; skipping payment-failure push.",
+                user_id,
+            )
+            return
+
+        # Two-tier copy strategy per pricing spec 2026-05-12 §8 ("no
+        # sensitive details in lock-screen notifications"):
+        #
+        #   title / body  → land in APNS `aps.alert` and the GCM
+        #                   `notification` block, so they're what an
+        #                   unattended phone displays on the lock
+        #                   screen. Kept generic so a passer-by can't
+        #                   tell the user is a paying subscriber whose
+        #                   card just failed.
+        #
+        #   data.in_app_*  → consumed by PushNotificationService on the
+        #                    client after the user taps / opens the
+        #                    app. The detailed copy lives here.
+        #
+        # `mutable-content: 1` is already set on the APNS payload by
+        # SNSService._generate_payload, which is the standard hook
+        # iOS uses to let the client swap visible copy post-receipt
+        # if we ever ship a Notification Service Extension.
+        title = "Mirror Collective"
+        body = "Tap to open Mirror Collective"
+        data = {
+            "type": "payment_failed",
+            "subscription_id": subscription_id,
+            "deep_link": "your_subscription",
+            "in_app_title": "Payment couldn't be processed",
+            "in_app_body": (
+                "We couldn't renew your Mirror Collective subscription. "
+                "Update your payment method to keep your subscription."
+            ),
+        }
+
+        sent = 0
+        for record in tokens:
+            endpoint_arn = record.get("endpoint_arn")
+            if not endpoint_arn:
+                continue
+            try:
+                message_id = self.sns_service.publish_to_endpoint(
+                    endpoint_arn=endpoint_arn,
+                    title=title,
+                    body=body,
+                    data=data,
+                )
+                if message_id:
+                    sent += 1
+            except Exception as send_err:
+                # publish_to_endpoint already swallows known SNS errors;
+                # this catches anything unexpected so one bad device
+                # can't block the rest.
+                logger.warning(
+                    "Unexpected error sending payment-failure push to endpoint %s for user %s: %s",
+                    endpoint_arn,
+                    user_id,
+                    send_err,
+                )
+
+        logger.info(
+            "Dispatched payment-failure push for user %s subscription %s to %d/%d device(s).",
+            user_id,
+            subscription_id,
+            sent,
+            len(tokens),
+        )
 
     async def _log_subscription_event(
         self,
@@ -729,7 +1131,7 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error logging subscription event: {e}")
+            logger.error("Error logging subscription event: %s", e)
             # Don't raise - event logging is non-critical
 
     async def _handle_subscription_renewal(self, transaction_info: Dict) -> None:
@@ -740,32 +1142,19 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling subscription renewal: {transaction_info}")
+            logger.info(
+                "Handling subscription renewal: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
-            # Extract transaction details
-            # For Apple: transaction_info contains decoded JWT
-            # For Google: transaction_info contains subscriptionNotification
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-            subscription_id_from_webhook = transaction_info.get("subscriptionId")
-            purchase_token = transaction_info.get("purchaseToken")
-
-            # Try to find subscription by transaction ID or purchase token
-            subscription = None
-            if transaction_id:
-                # Query by subscription_id (which is original_transaction_id for iOS)
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
-                logger.warning(f"Subscription not found for renewal: {transaction_id}")
+                logger.warning(
+                    "Subscription not found for renewal: %s",
+                    transaction_info.get("transactionId"),
+                )
                 return
 
             # Update subscription with new expiry date
@@ -783,6 +1172,12 @@ class SubscriptionService:
                 subscription.expiry_date = expiry_date.isoformat().replace(
                     "+00:00", "Z"
                 )
+
+            # Capture the prior status BEFORE we flip it, so we can
+            # distinguish a normal renewal (active -> active) from the
+            # trial→paid conversion (trial -> active) — the latter is
+            # the high-signal funnel event for analytics (spec §5).
+            was_in_trial = subscription.status == SubscriptionStatus.TRIAL
 
             # Update status to active
             subscription.status = SubscriptionStatus.ACTIVE
@@ -807,12 +1202,27 @@ class SubscriptionService:
                 metadata=transaction_info,
             )
 
+            if was_in_trial:
+                emit_subscription_event(
+                    EVENT_TRIAL_CONVERT,
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.subscription_id,
+                    product_id=subscription.product_id,
+                    platform=subscription.platform.value,
+                )
+
             logger.info(
                 f"Successfully processed renewal for subscription {subscription.subscription_id}"
             )
 
         except Exception as e:
-            logger.error(f"Error handling subscription renewal: {e}", exc_info=True)
+            # Re-raise so handle_apple_webhook / handle_google_webhook
+            # propagates a 500 to Apple/Google and they retry. Swallowing
+            # would mean the platform sees 200 OK and stops retrying
+            # despite our subscription state never updating — silent
+            # real-money state loss.
+            logger.error("Error handling subscription renewal: %s", e, exc_info=True)
+            raise
 
     async def _handle_renewal_failure(self, transaction_info: Dict) -> None:
         """
@@ -822,28 +1232,18 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling renewal failure: {transaction_info}")
+            logger.info(
+                "Handling renewal failure: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
                 logger.warning(
-                    f"Subscription not found for renewal failure: {transaction_id}"
+                    "Subscription not found for renewal failure: %s",
+                    transaction_info.get("transactionId"),
                 )
                 return
 
@@ -861,10 +1261,9 @@ class SubscriptionService:
                 subscription.user_id
             )
             if user_profile:
-                # TODO: Send push notification about payment failure
-                # This would integrate with your notification service
-                logger.info(
-                    f"Should send payment failure notification to user {subscription.user_id}"
+                await self._send_payment_failure_notification(
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.subscription_id,
                 )
 
             # Log renewal failure event
@@ -881,7 +1280,11 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error handling renewal failure: {e}", exc_info=True)
+            # See _handle_subscription_renewal — re-raise so the
+            # platform retries instead of treating the webhook as
+            # consumed.
+            logger.error("Error handling renewal failure: %s", e, exc_info=True)
+            raise
 
     async def _handle_subscription_expired(self, transaction_info: Dict) -> None:
         """
@@ -891,30 +1294,25 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling subscription expiration: {transaction_info}")
+            logger.info(
+                "Handling subscription expiration: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
                 logger.warning(
-                    f"Subscription not found for expiration: {transaction_id}"
+                    "Subscription not found for expiration: %s",
+                    transaction_info.get("transactionId"),
                 )
                 return
+
+            # Capture the prior status BEFORE flipping to EXPIRED — a
+            # trial that runs out without conversion is a separate funnel
+            # event (trial_expire) from a paid subscription expiring.
+            was_in_trial = subscription.status == SubscriptionStatus.TRIAL
 
             # Update subscription status to expired
             subscription.status = SubscriptionStatus.EXPIRED
@@ -952,7 +1350,7 @@ class SubscriptionService:
                     user_profile.echo_vault_quota_gb = 0.0
 
                     # Clear subscription references
-                    if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
+                    if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
                         user_profile.primary_subscription_id = None
                     elif (
                         subscription.subscription_type
@@ -972,12 +1370,22 @@ class SubscriptionService:
                 metadata=transaction_info,
             )
 
+            if was_in_trial:
+                emit_subscription_event(
+                    EVENT_TRIAL_EXPIRE,
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.subscription_id,
+                    product_id=subscription.product_id,
+                    platform=subscription.platform.value,
+                )
+
             logger.info(
                 f"Successfully processed expiration for subscription {subscription.subscription_id}"
             )
 
         except Exception as e:
-            logger.error(f"Error handling subscription expiration: {e}", exc_info=True)
+            logger.error("Error handling subscription expiration: %s", e, exc_info=True)
+            raise
 
     async def _handle_refund(self, transaction_info: Dict) -> None:
         """
@@ -987,27 +1395,19 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling refund: {transaction_info}")
+            logger.info(
+                "Handling refund: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
-
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
-                logger.warning(f"Subscription not found for refund: {transaction_id}")
+                logger.warning(
+                    "Subscription not found for refund: %s",
+                    transaction_info.get("transactionId"),
+                )
                 return
 
             # Update subscription status to refunded
@@ -1045,7 +1445,7 @@ class SubscriptionService:
                     user_profile.echo_vault_quota_gb = 0.0
 
                     # Clear subscription references
-                    if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
+                    if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
                         user_profile.primary_subscription_id = None
                     elif (
                         subscription.subscription_type
@@ -1070,7 +1470,8 @@ class SubscriptionService:
             )
 
         except Exception as e:
-            logger.error(f"Error handling refund: {e}", exc_info=True)
+            logger.error("Error handling refund: %s", e, exc_info=True)
+            raise
 
     async def _handle_renewal_status_change(self, transaction_info: Dict) -> None:
         """
@@ -1080,31 +1481,22 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info(f"Handling renewal status change: {transaction_info}")
+            logger.info(
+                "Handling renewal status change: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
-            # Extract transaction details
-            transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
             auto_renew_status = transaction_info.get(
                 "autoRenewStatus"
             ) or transaction_info.get("autoRenewing")
 
-            # Find subscription
-            subscription = None
-            if transaction_id:
-                subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="subscription_id = :sid",
-                    expression_values={":sid": transaction_id},
-                    index_name="subscription-id-index",
-                )
-                if subscriptions:
-                    subscription = Subscription.from_dynamodb_item(subscriptions[0])
-
+            subscription = await self._find_subscription_by_transaction_info(
+                transaction_info
+            )
             if not subscription:
                 logger.warning(
-                    f"Subscription not found for renewal status change: {transaction_id}"
+                    "Subscription not found for renewal status change: %s",
+                    transaction_info.get("transactionId"),
                 )
                 return
 
@@ -1139,4 +1531,5 @@ class SubscriptionService:
                 )
 
         except Exception as e:
-            logger.error(f"Error handling renewal status change: {e}", exc_info=True)
+            logger.error("Error handling renewal status change: %s", e, exc_info=True)
+            raise

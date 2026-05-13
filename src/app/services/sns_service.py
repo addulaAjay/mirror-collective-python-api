@@ -88,7 +88,21 @@ class SNSService:
                 "mutable-content": 1,
             }
         }
-        # Add custom data to APNS payload root
+        # Custom data is intentionally merged at the APNS payload root
+        # (not nested under a `data` key). Reason:
+        #
+        # On iOS, react-native-firebase/messaging flattens non-`aps`
+        # root keys into `remoteMessage.data` for the client. Nesting
+        # would surface as `remoteMessage.data = { data: '{...}' }`,
+        # breaking the platform-symmetric `data.type === 'payment_failed'`
+        # contract the client uses today.
+        #
+        # The lock-screen hygiene win this would buy is marginal: lock
+        # screens render `aps.alert.title/body` only (already generic);
+        # widgets and Notification Service Extensions can read the
+        # full payload regardless of nesting. Keep the flat shape; if
+        # a future review wants nesting, coordinate a backwards-compat
+        # client update first.
         apns_payload.update(data)
 
         message = {

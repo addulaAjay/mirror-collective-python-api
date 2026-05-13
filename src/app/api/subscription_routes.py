@@ -2,7 +2,7 @@
 Subscription API routes for trial management and IAP
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -25,10 +25,49 @@ subscription_service = SubscriptionService(dynamodb_service)
 
 # Request/Response Models
 class VerifyPurchaseRequest(BaseModel):
+    """Body of POST /verify-purchase. The client sends this after a
+    successful StoreKit / BillingClient transaction so the backend can
+    independently verify the receipt with Apple / Google and activate
+    the subscription on this user's account."""
+
     platform: str  # "ios" | "android"
+    # iOS: kept for backwards compat. New clients should send
+    # `original_transaction_id` instead — the App Store Server API
+    # flow no longer needs the legacy base64 receipt blob.
+    # Android: the purchase token from Google Play Billing.
     receipt_data: str
     product_id: str
+    # Apple's `originalTransactionId` (iOS) or Google's order base
+    # (Android). Stable across renewals — exactly what we want as the
+    # idempotency key. Required on new clients; older clients that
+    # only send `transaction_id` are still accepted via the fallback
+    # in verify_and_activate_purchase, but the rename is permanent.
+    original_transaction_id: Optional[str] = None
+    # Current transaction id from the SDK. On iOS this is the same as
+    # original_transaction_id for first purchases but a fresh id per
+    # renewal — useful for analytics, not for idempotency.
     transaction_id: str
+
+
+class StartTrialRequest(BaseModel):
+    """
+    Body of POST /start-trial.
+
+    Deprecated 2026-05-11 — replaced by Apple/Google native intro
+    offers configured on each subscription product. The native intro
+    offer is presented automatically by the OS during the StoreKit /
+    BillingClient flow, so a separate "I want to start a trial"
+    server call is no longer needed.
+
+    The endpoint and this schema are kept for older clients that still
+    call it during onboarding. Once frontend telemetry shows zero calls
+    over a release cycle, remove both.
+    """
+
+    # Optional client metadata for analytics — none of it gates the
+    # trial start.
+    device_id: Optional[str] = None
+    app_version: Optional[str] = None
 
 
 class CancelSubscriptionRequest(BaseModel):
@@ -38,12 +77,22 @@ class CancelSubscriptionRequest(BaseModel):
 # Trial Management Endpoints
 
 
-@router.post("/start-trial")
-async def start_trial(current_user: Dict = Depends(get_user_with_profile)):
+@router.post("/start-trial", deprecated=True)
+async def start_trial(
+    request: Optional[StartTrialRequest] = None,
+    current_user: Dict = Depends(get_user_with_profile),
+):
     """
-    Start 14-day free trial (no payment required)
+    [DEPRECATED — 2026-05-11]
+    Start a 14-day free trial via the legacy no-payment flow.
 
-    Returns trial start date, expiry date, and quota info
+    Use the App Store / Play Store native intro offer instead — the
+    OS-native subscription sheet presents the trial automatically when
+    the user taps START FREE TRIAL on the client. See
+    docs/IAP_STORE_SETUP.md §A2 and §B2 for product configuration.
+
+    This endpoint will be removed once frontend telemetry confirms zero
+    callers in a full release cycle.
     """
     try:
         user_id = current_user["id"]
@@ -113,16 +162,45 @@ async def get_subscription_status(
             if expires > now:
                 trial_days_remaining = (expires - now).days
 
-        # Determine features based on tier
+        # Determine features based on tier. Tier values per pricing spec
+        # 2026-05-12: free | trial | basic (future: plus). Storage add-on
+        # is signalled separately by `storage_add_on_active`.
+        #
+        # MirrorGPT + Echo Vault are both included in Basic — gate them
+        # uniformly. (Echo Map is currently included in Basic for v1; per
+        # spec §10 it will move to Plus in a future tier launch — that's
+        # a routing change, not a flag change, so the flag stays here.)
+        entitled_tiers = ["trial", "basic"]
         features = {
-            "echo_vault_enabled": user_profile.subscription_tier
-            in ["trial", "core", "core_plus"],
+            "mirror_gpt_enabled": user_profile.subscription_tier in entitled_tiers,
+            "echo_vault_enabled": user_profile.subscription_tier in entitled_tiers,
+            "echo_map_enabled": user_profile.subscription_tier in entitled_tiers,
             "quota_gb": user_profile.echo_vault_quota_gb,
             "used_gb": user_profile.echo_vault_used_gb,
-            "mirror_gpt_enabled": True,  # Always enabled
-            "echo_map_enabled": user_profile.subscription_tier
-            in ["trial", "core", "core_plus"],
         }
+
+        # Fetch the active subscription rows so the client can render
+        # billing-period / expiry / auto-renew status on the "Your
+        # Subscription" screen. The UserProfile carries the FK ids;
+        # we look them up in the subscriptions table.
+        core_subscription = None
+        if user_profile.primary_subscription_id:
+            core_subscription = await dynamodb_service.get_item(
+                subscription_service.subscriptions_table,
+                {
+                    "user_id": user_id,
+                    "subscription_id": user_profile.primary_subscription_id,
+                },
+            )
+        storage_subscription = None
+        if user_profile.storage_subscription_id:
+            storage_subscription = await dynamodb_service.get_item(
+                subscription_service.subscriptions_table,
+                {
+                    "user_id": user_id,
+                    "subscription_id": user_profile.storage_subscription_id,
+                },
+            )
 
         return {
             "success": True,
@@ -131,8 +209,8 @@ async def get_subscription_status(
                 "status": user_profile.subscription_status,
                 "trial_days_remaining": trial_days_remaining,
                 "features": features,
-                "core_subscription": None,  # TODO: Fetch from subscriptions table
-                "storage_subscription": None,  # TODO: Fetch from subscriptions table
+                "core_subscription": core_subscription,
+                "storage_subscription": storage_subscription,
                 "has_used_trial": user_profile.has_used_trial,
             },
         }
@@ -160,11 +238,17 @@ async def verify_purchase(
     try:
         user_id = current_user["id"]
 
+        # Prefer the stable original_transaction_id; fall back to the
+        # legacy transaction_id field for older clients that haven't
+        # been updated yet.
+        lookup_id = request.original_transaction_id or request.transaction_id
+
         result = await subscription_service.verify_and_activate_purchase(
             user_id=user_id,
             platform=request.platform,
             receipt_data=request.receipt_data,
             product_id=request.product_id,
+            transaction_id=lookup_id,
         )
 
         return result
@@ -232,35 +316,72 @@ async def get_quota_status(current_user: Dict = Depends(get_user_with_profile)):
 @router.post("/webhook/apple")
 async def apple_webhook(request: Request):
     """
-    Apple App Store Server Notifications V2 webhook
+    Apple App Store Server Notifications V2 webhook.
 
-    Processes subscription lifecycle events from Apple
+    Verifies the outer signedPayload and inner signedTransactionInfo
+    as JWS x5c against Apple's bundled root CA before dispatching to
+    any subscription lifecycle handler. Forged or unsigned payloads
+    return 401 — they never reach business logic.
     """
     try:
         body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}")
 
+    try:
         result = await subscription_service.handle_apple_webhook(body)
+    except Exception as exc:
+        # InternalServerError or other unexpected failure inside the
+        # lifecycle handlers — surface as 500.
+        raise HTTPException(status_code=500, detail=str(exc))
 
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # The service signals signature / payload errors via a
+    # `status_code` field (401/400). Honour it so Apple sees the right
+    # response and stops retrying when appropriate.
+    if not result.get("success"):
+        status_code = result.get("status_code", 400)
+        raise HTTPException(
+            status_code=status_code, detail=result.get("error", "Webhook rejected")
+        )
+
+    return result
 
 
 @router.post("/webhook/google")
 async def google_webhook(request: Request):
     """
-    Google Play Real-time Developer Notifications webhook
+    Google Play Real-time Developer Notifications webhook.
 
-    Processes subscription lifecycle events from Google Play
+    The Pub/Sub OIDC JWT (Authorization: Bearer ...) is verified
+    against Google's published certs by subscription_service before
+    the inner notification payload is dispatched. See
+    `_verify_google_pubsub_message` and `verify_pubsub_jwt`.
     """
     try:
         body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}")
 
-        result = await subscription_service.handle_google_webhook(body)
+    # Forward the Authorization header so the service can verify the
+    # OIDC JWT Google attaches to each push delivery.
+    auth_header = request.headers.get("authorization") or request.headers.get(
+        "Authorization"
+    )
 
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    try:
+        result = await subscription_service.handle_google_webhook(
+            body, auth_header=auth_header
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if not result.get("success"):
+        status_code = result.get("status_code", 400)
+        raise HTTPException(
+            status_code=status_code, detail=result.get("error", "Webhook rejected")
+        )
+
+    return result
 
 
 # Subscription Management

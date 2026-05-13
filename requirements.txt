@@ -18,3 +18,13 @@ PyYAML==6.0.2
 apscheduler==3.10.4
 PyJWT==2.8.0
 aiohttp>=3.8.0
+# Apple's official App Store Server API SDK. Provides:
+#   - App Store Server API client (signed JWT auth)
+#   - SignedDataVerifier for JWS x5c chain verification of
+#     receipts, ASSN v2 webhook payloads, and StoreKit 2 transactions.
+# Replaces the deprecated `verifyReceipt` endpoint and the previously
+# unverified jwt.decode(..., verify_signature=False) pattern.
+app-store-server-library>=3.0.0,<4.0.0
+# cryptography is a transitive dep but pinning here makes the
+# x5c chain validation behaviour predictable across deploys.
+cryptography>=42.0.0

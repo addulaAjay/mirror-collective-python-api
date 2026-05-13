@@ -992,8 +992,10 @@ def echo_client():
     from fastapi.testclient import TestClient
 
     from src.app.api.echo_routes import router
+    from src.app.core.entitlement import EntitledUser, require_entitled
     from src.app.core.error_handlers import setup_error_handlers
     from src.app.core.security import get_current_user
+    from src.app.models.user_profile import UserProfile, UserStatus
 
     mini_app = FastAPI()
     mini_app.include_router(router, prefix="/api")
@@ -1007,7 +1009,28 @@ def echo_client():
             "family_name": "User",
         }
 
+    async def _fake_entitled():
+        return EntitledUser(
+            user_id="test-user-123",
+            user={
+                "id": "test-user-123",
+                "email": "test@example.com",
+                "given_name": "Test",
+                "family_name": "User",
+            },
+            profile=UserProfile(
+                user_id="test-user-123",
+                email="test@example.com",
+                subscription_tier="basic",
+                subscription_status="active",
+                echo_vault_quota_gb=50.0,
+                echo_vault_used_gb=0.0,
+                status=UserStatus.CONFIRMED,
+            ),
+        )
+
     mini_app.dependency_overrides[get_current_user] = _fake_user
+    mini_app.dependency_overrides[require_entitled] = _fake_entitled
 
     with TestClient(mini_app) as c:
         yield c
