@@ -812,7 +812,7 @@ class SubscriptionService:
             raise ValueError(f"Unknown product_id: {product_id}")
 
         if descriptor.kind == ProductKind.CORE:
-            sub_type = SubscriptionType.MIRROR_CORE
+            sub_type = SubscriptionType.MIRROR_BASIC
         elif descriptor.kind == ProductKind.STORAGE:
             sub_type = SubscriptionType.STORAGE_ADD_ON
         else:  # pragma: no cover — exhaustive over ProductKind enum
@@ -854,15 +854,18 @@ class SubscriptionService:
             # frontend useEntitlement predicate consumes.
             new_status = subscription.status.value
 
-            # Tier resolution — apply the same precedence the previous
-            # in-place code had, but compute into locals first.
+            # Tier resolution — `subscription_tier` reflects what the user
+            # PAYS FOR (basic, future plus). It is intentionally decoupled
+            # from the storage add-on, which is tracked separately via
+            # `storage_add_on_active` so the basic/plus axis stays
+            # orthogonal to the +100 GB upgrade (pricing spec 2026-05-12).
             new_tier = user_profile.subscription_tier
             new_primary_sub_id = user_profile.primary_subscription_id
             new_storage_sub_id = user_profile.storage_subscription_id
             new_storage_addon_active = user_profile.storage_add_on_active
 
-            if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
-                new_tier = "core"
+            if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
+                new_tier = "basic"
                 new_primary_sub_id = subscription.subscription_id
                 base_quota = 50.0
             elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
@@ -872,9 +875,11 @@ class SubscriptionService:
             else:
                 base_quota = user_profile.echo_vault_quota_gb
 
+            # Total quota = base entitlement (50 GB for basic/trial) +
+            # 100 GB if the add-on is active. The tier value never carries
+            # the storage signal — see comment above.
             total_quota = base_quota
-            if new_tier == "core" and new_storage_addon_active:
-                new_tier = "core_plus"
+            if new_tier == "basic" and new_storage_addon_active:
                 total_quota = 150.0
 
             new_last_check = (
@@ -1223,7 +1228,7 @@ class SubscriptionService:
                     user_profile.echo_vault_quota_gb = 0.0
 
                     # Clear subscription references
-                    if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
+                    if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
                         user_profile.primary_subscription_id = None
                     elif (
                         subscription.subscription_type
@@ -1306,7 +1311,7 @@ class SubscriptionService:
                     user_profile.echo_vault_quota_gb = 0.0
 
                     # Clear subscription references
-                    if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
+                    if subscription.subscription_type == SubscriptionType.MIRROR_BASIC:
                         user_profile.primary_subscription_id = None
                     elif (
                         subscription.subscription_type

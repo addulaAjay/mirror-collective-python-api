@@ -838,7 +838,7 @@ class TestUserProfileStatusDerivation:
             user_id="u1",
             subscription_id="ot1",
             product_id="com.themirrorcollective.mirror.core.monthly",
-            subscription_type=SubscriptionType.MIRROR_CORE,
+            subscription_type=SubscriptionType.MIRROR_BASIC,
             platform=Platform.IOS,
             status=SubscriptionStatus.TRIAL,
             billing_period=BillingPeriod.MONTHLY,
@@ -853,7 +853,7 @@ class TestUserProfileStatusDerivation:
         assert await_args is not None
         updated = await_args.args[0]
         assert updated.subscription_status == "trial"
-        assert updated.subscription_tier == "core"
+        assert updated.subscription_tier == "basic"
 
     @pytest.mark.asyncio
     async def test_grace_period_writes_grace_period_status(self, monkeypatch):
@@ -871,7 +871,7 @@ class TestUserProfileStatusDerivation:
             user_id="u1",
             email="u1@example.com",
             subscription_status="active",
-            subscription_tier="core",
+            subscription_tier="basic",
             status=UserStatus.CONFIRMED,
         )
         dynamodb.get_user_profile = AsyncMock(return_value=profile)
@@ -881,7 +881,7 @@ class TestUserProfileStatusDerivation:
             user_id="u1",
             subscription_id="ot1",
             product_id="com.themirrorcollective.mirror.core.monthly",
-            subscription_type=SubscriptionType.MIRROR_CORE,
+            subscription_type=SubscriptionType.MIRROR_BASIC,
             platform=Platform.IOS,
             status=SubscriptionStatus.GRACE_PERIOD,
             billing_period=BillingPeriod.MONTHLY,
@@ -956,7 +956,7 @@ class TestParseProductId:
         sub_type, billing = svc._parse_product_id(
             "com.themirrorcollective.mirror.core.monthly"
         )
-        assert sub_type == SubscriptionType.MIRROR_CORE
+        assert sub_type == SubscriptionType.MIRROR_BASIC
         assert billing == BillingPeriod.MONTHLY
 
         sub_type, billing = svc._parse_product_id(

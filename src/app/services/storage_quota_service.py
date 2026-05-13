@@ -168,8 +168,11 @@ class StorageQuotaService:
             # Calculate new quota based on subscription tier
             base_quota = 0.0
 
-            if user_profile.subscription_tier in ["trial", "core", "core_plus"]:
-                base_quota = 50.0  # Mirror Core includes 50GB
+            # Tier grants the 50 GB baseline; storage add-on is the only
+            # signal for the +100 GB upgrade (decoupled from tier per
+            # pricing spec 2026-05-12).
+            if user_profile.subscription_tier in ["trial", "basic"]:
+                base_quota = 50.0  # Mirror Basic includes 50GB
 
             if user_profile.storage_add_on_active:
                 base_quota += 100.0  # Storage add-on adds 100GB

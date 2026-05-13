@@ -47,7 +47,11 @@ class UserProfile:
 
     # Application-specific data
     preferences: Optional[Dict[str, Any]] = None
-    subscription_tier: str = "free"  # free | trial | core | core_plus
+    # Tier reflects what the user pays for. The storage add-on is tracked
+    # separately via `storage_add_on_active` and does NOT promote the tier
+    # (decoupled per pricing spec 2026-05-12 to keep "basic" + "plus"
+    # axis orthogonal to the storage upgrade).
+    subscription_tier: str = "free"  # free | trial | basic   (future: plus)
     conversation_count: int = 0
 
     # Subscription management

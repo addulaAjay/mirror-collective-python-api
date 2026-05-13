@@ -163,7 +163,7 @@ mock_profile.user_id = "mock-user-123"
 # pass through the real require_entitled body. Tests exercising the paywall
 # should override require_entitled directly with a function that raises.
 mock_profile.subscription_status = "active"
-mock_profile.subscription_tier = "core"
+mock_profile.subscription_tier = "basic"
 mock_profile.echo_vault_quota_gb = 50.0
 mock_profile.echo_vault_used_gb = 0.0
 mock_profile.has_used_trial = False
@@ -251,7 +251,7 @@ def _make_test_entitled_user() -> EntitledUser:
     profile = UserProfile(
         user_id="test-user-123",
         email="test@example.com",
-        subscription_tier="core",
+        subscription_tier="basic",
         subscription_status="active",
         echo_vault_quota_gb=50.0,
         echo_vault_used_gb=0.0,

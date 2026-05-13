@@ -57,7 +57,7 @@ def test_entitled_statuses_set() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _make_profile(status: str, tier: str = "core") -> UserProfile:
+def _make_profile(status: str, tier: str = "basic") -> UserProfile:
     return UserProfile(
         user_id="test-user-123",
         email="test@example.com",

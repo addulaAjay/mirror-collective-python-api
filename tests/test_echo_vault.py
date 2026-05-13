@@ -1021,7 +1021,7 @@ def echo_client():
             profile=UserProfile(
                 user_id="test-user-123",
                 email="test@example.com",
-                subscription_tier="core",
+                subscription_tier="basic",
                 subscription_status="active",
                 echo_vault_quota_gb=50.0,
                 echo_vault_used_gb=0.0,

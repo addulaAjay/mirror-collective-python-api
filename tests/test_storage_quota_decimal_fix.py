@@ -28,7 +28,7 @@ async def test_check_quota_handles_decimal_values():
         email="test@example.com",
         echo_vault_quota_gb=Decimal("50.0"),  # type: ignore[arg-type]
         echo_vault_used_gb=Decimal("25.5"),  # type: ignore[arg-type]
-        subscription_tier="core",
+        subscription_tier="basic",
     )
 
     mock_dynamodb.get_user_profile = AsyncMock(return_value=user_profile)

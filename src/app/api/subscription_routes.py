@@ -162,15 +162,21 @@ async def get_subscription_status(
             if expires > now:
                 trial_days_remaining = (expires - now).days
 
-        # Determine features based on tier
+        # Determine features based on tier. Tier values per pricing spec
+        # 2026-05-12: free | trial | basic (future: plus). Storage add-on
+        # is signalled separately by `storage_add_on_active`.
+        #
+        # MirrorGPT + Echo Vault are both included in Basic — gate them
+        # uniformly. (Echo Map is currently included in Basic for v1; per
+        # spec §10 it will move to Plus in a future tier launch — that's
+        # a routing change, not a flag change, so the flag stays here.)
+        entitled_tiers = ["trial", "basic"]
         features = {
-            "echo_vault_enabled": user_profile.subscription_tier
-            in ["trial", "core", "core_plus"],
+            "mirror_gpt_enabled": user_profile.subscription_tier in entitled_tiers,
+            "echo_vault_enabled": user_profile.subscription_tier in entitled_tiers,
+            "echo_map_enabled": user_profile.subscription_tier in entitled_tiers,
             "quota_gb": user_profile.echo_vault_quota_gb,
             "used_gb": user_profile.echo_vault_used_gb,
-            "mirror_gpt_enabled": True,  # Always enabled
-            "echo_map_enabled": user_profile.subscription_tier
-            in ["trial", "core", "core_plus"],
         }
 
         # Fetch the active subscription rows so the client can render
