@@ -843,7 +843,7 @@ class SubscriptionService:
         if descriptor is None:
             raise ValueError(f"Unknown product_id: {product_id}")
 
-        if descriptor.kind == ProductKind.CORE:
+        if descriptor.kind == ProductKind.BASIC:
             sub_type = SubscriptionType.MIRROR_BASIC
         elif descriptor.kind == ProductKind.STORAGE:
             sub_type = SubscriptionType.STORAGE_ADD_ON

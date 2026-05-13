@@ -22,7 +22,12 @@ from typing import Dict
 
 
 class ProductKind(str, Enum):
-    CORE = "core"
+    # Naming aligned to pricing spec 2026-05-12 — the launch tier is
+    # "Mirror Basic" (formerly internally referred to as "core" / "Mirror
+    # Core"). External SKU IDs in App Store Connect / Play Console still
+    # contain the legacy `core` token — renaming those is a separate
+    # store-side migration since the strings appear in receipts.
+    BASIC = "basic"
     STORAGE = "storage"
 
 
@@ -40,19 +45,19 @@ class ProductDescriptor:
     display_name: str
 
 
-_CORE_MONTHLY = ProductDescriptor(
-    key="CORE_MONTHLY",
+_BASIC_MONTHLY = ProductDescriptor(
+    key="BASIC_MONTHLY",
     sku="com.themirrorcollective.mirror.core.monthly",
-    kind=ProductKind.CORE,
+    kind=ProductKind.BASIC,
     billing_period=BillingPeriod.MONTHLY,
-    display_name="Mirror Core (Monthly)",
+    display_name="Mirror Basic (Monthly)",
 )
-_CORE_YEARLY = ProductDescriptor(
-    key="CORE_YEARLY",
+_BASIC_YEARLY = ProductDescriptor(
+    key="BASIC_YEARLY",
     sku="com.themirrorcollective.mirror.core.yearly",
-    kind=ProductKind.CORE,
+    kind=ProductKind.BASIC,
     billing_period=BillingPeriod.YEARLY,
-    display_name="Mirror Core (Yearly)",
+    display_name="Mirror Basic (Yearly)",
 )
 _STORAGE_MONTHLY = ProductDescriptor(
     key="STORAGE_MONTHLY",
@@ -70,7 +75,7 @@ _STORAGE_YEARLY = ProductDescriptor(
 )
 
 ALL_PRODUCTS: Dict[str, ProductDescriptor] = {
-    p.sku: p for p in (_CORE_MONTHLY, _CORE_YEARLY, _STORAGE_MONTHLY, _STORAGE_YEARLY)
+    p.sku: p for p in (_BASIC_MONTHLY, _BASIC_YEARLY, _STORAGE_MONTHLY, _STORAGE_YEARLY)
 }
 
 KNOWN_SKUS = frozenset(ALL_PRODUCTS.keys())
