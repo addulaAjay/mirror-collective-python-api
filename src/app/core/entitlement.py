@@ -1,57 +1,72 @@
 """
-Entitlement enforcement — FastAPI dependency that gates paid features.
+Entitlement enforcement — FastAPI dependency factory that gates paid
+features.
 
-Entitlement matrix (locked 2026-05-11):
+Two-axis gate:
+  1. Status — is the user's subscription currently live?
+       status ∈ {trial, active, grace_period}  -> entitled
+       status ∈ {none, trial_expired, expired, cancelled}  -> 402
+  2. Tier  — does the user's `subscription_tier` grant the requested
+     feature? (See `core.features.FEATURE_TIER_MAP`.)
 
-  status in {trial, active, grace_period}  -> entitled
-  status in {none, trial_expired, expired, cancelled}  -> 402 Payment Required
+Both checks must pass. The status gate is independent of the feature
+so a Plus user whose card expired still gets a 402 (their tier grants
+the feature but the entitlement isn't currently live). The tier gate
+prevents a Basic user from reaching a Plus-only route even though
+their status is fine.
 
-`tier` only differentiates the storage quota; gates use status alone.
-
-Apple billing-retry is intentionally NOT entitled — we want the user to
-update their payment method, and Apple's machinery handles the retry.
-
-The dependency loads the UserProfile from DynamoDB once and returns it
-along with the auth user dict, so handlers don't need to re-fetch the
-profile inside their bodies.
+Apple billing-retry is intentionally NOT entitled — we want the user
+to update their payment method, and Apple's machinery handles the
+retry.
 
 Usage:
 
-    from ..core.entitlement import require_entitled, EntitledUser
+    from ..core.entitlement import require_feature, EntitledUser
+    from ..core.features import Feature
 
     @router.post("/echoes")
     async def create_echo(
         req: CreateEchoRequest,
-        entitled: EntitledUser = Depends(require_entitled),
+        entitled: EntitledUser = Depends(require_feature(Feature.BASIC_ACCESS)),
     ):
         user_id = entitled.user_id
         profile = entitled.profile        # UserProfile, already loaded
         ...
+
+For backwards compatibility, the pre-feature-flag `require_entitled`
+remains exported — it's now an alias for the BASIC_ACCESS gate. New
+routes should prefer `require_feature(Feature.X)` so the intended
+feature is named at the call site.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, NoReturn, Optional
+from typing import Any, Awaitable, Callable, Dict, NoReturn, Optional
 
 from fastapi import Depends, HTTPException, status
 
 from ..models.user_profile import UserProfile
 from ..services.dynamodb_service import DynamoDBService
 from .enhanced_auth import get_user_with_profile
+from .features import FEATURE_TIER_MAP, Feature
 
 logger = logging.getLogger(__name__)
 
 
 ENTITLED_STATUSES = frozenset({"trial", "active", "grace_period"})
-"""Subscription statuses that grant access to paid features."""
+"""Subscription statuses that grant access to paid features.
+
+Independent of which feature is being gated — every feature gate also
+requires the user to be in one of these statuses.
+"""
 
 
 @dataclass(frozen=True)
 class EntitledUser:
     """
-    Bundle of identity + entitlement data returned by `require_entitled`.
+    Bundle of identity + entitlement data returned by `require_feature`.
 
     `user` is the dict returned by `get_user_with_profile` (Cognito-enriched
     auth payload). `profile` is the DynamoDB UserProfile loaded inside the
@@ -63,8 +78,12 @@ class EntitledUser:
     profile: UserProfile
 
 
-def _lock_reason(status_value: str) -> str:
-    """Map a non-entitled status to a UI-friendly reason code."""
+def _lock_reason_from_status(status_value: str) -> str:
+    """Map a non-entitled status to a UI-friendly reason code.
+
+    Clients route to the appropriate paywall by inspecting
+    detail['reason'].
+    """
     if status_value == "trial_expired":
         return "trial_expired"
     if status_value in ("expired", "cancelled"):
@@ -73,12 +92,13 @@ def _lock_reason(status_value: str) -> str:
     return "free"
 
 
+# Backwards-compat alias — pre-feature-flag tests import `_lock_reason`.
+_lock_reason = _lock_reason_from_status
+
+
 def _raise_payment_required(reason: str, message: str) -> NoReturn:
     """
     Raise 402 Payment Required with a structured detail payload.
-
-    Clients can route to the appropriate paywall by inspecting
-    detail['reason'].
     """
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -88,6 +108,27 @@ def _raise_payment_required(reason: str, message: str) -> NoReturn:
             "message": message,
         },
     )
+
+
+def _status_message(reason: str) -> str:
+    """User-facing copy for each status-based denial reason."""
+    if reason == "trial_expired":
+        return "Your trial has ended. Subscribe to keep using this feature."
+    if reason == "expired":
+        return "An active subscription is required for this feature."
+    return "Start your free trial to use this feature."
+
+
+def _feature_lock_message(feature: Feature) -> str:
+    """User-facing copy when the user is in a live status but their
+    tier doesn't grant the requested feature (e.g., Basic user hitting
+    a Plus-only route).
+    """
+    if feature == Feature.PLUS_ACCESS:
+        return "Mirror Plus is required for this feature."
+    # Specific features: surface the feature name so the paywall can
+    # render contextual copy. The wire reason already names it.
+    return "This feature requires an upgraded subscription."
 
 
 # Shared service instance — matches the pattern in subscription_routes.py
@@ -102,17 +143,15 @@ def _get_dynamodb_service() -> DynamoDBService:
     return _dynamodb_service
 
 
-async def require_entitled(
-    current_user: Dict[str, Any] = Depends(get_user_with_profile),
-) -> EntitledUser:
-    """
-    FastAPI dependency: require an entitled subscription state.
+async def _load_and_check_status(
+    current_user: Dict[str, Any],
+) -> tuple[str, UserProfile]:
+    """Shared prefix of every feature gate: load profile + run the
+    status check. Returns `(user_id, profile)` when the user passes
+    the status gate; raises 402 / 401 / 503 otherwise.
 
-    Raises 402 Payment Required when:
-      - the user has no DynamoDB profile yet (brand-new signup pre-trial), or
-      - subscription_status is not in {trial, active, grace_period}.
-
-    Returns an EntitledUser bundle the handler can reuse.
+    Factored out so `require_feature` can layer the tier check on top
+    without duplicating the profile-loading boilerplate.
     """
     user_id = current_user.get("id")
     if not user_id:
@@ -149,24 +188,107 @@ async def require_entitled(
 
     status_value = (profile.subscription_status or "").lower()
     if status_value not in ENTITLED_STATUSES:
-        reason = _lock_reason(status_value)
+        reason = _lock_reason_from_status(status_value)
         logger.info(
             "Entitlement check denied for %s — status=%s reason=%s",
             user_id,
             status_value,
             reason,
         )
+        _raise_payment_required(reason=reason, message=_status_message(reason))
+
+    return user_id, profile
+
+
+def require_feature(
+    feature: Feature,
+) -> Callable[[Dict[str, Any]], Awaitable[EntitledUser]]:
+    """FastAPI dependency factory: gate a route on a specific feature.
+
+    Returns an async dependency that:
+      1. Loads the user's profile,
+      2. Asserts the subscription status is in ENTITLED_STATUSES,
+      3. Asserts the user's `subscription_tier` is in the tier set
+         that grants `feature` (see FEATURE_TIER_MAP), and
+      4. Returns an EntitledUser bundle.
+
+    Failure modes (all 402 with structured `detail` payload):
+      - reason="free" — no profile / status=none. Pre-trial.
+      - reason="trial_expired" — trial ran out without conversion.
+      - reason="expired" — paid subscription lapsed.
+      - reason=<feature.value> — status is live but tier doesn't
+        grant this feature (e.g., Basic user hitting a Plus route).
+        Client routes to the upgrade paywall.
+
+    Why a factory: FastAPI evaluates `Depends(...)` once per route at
+    registration. Calling `require_feature(Feature.X)` returns the
+    actual dependency callable; the closure captures `feature` so the
+    dependency body knows which feature to check.
+    """
+
+    async def _dep(
+        current_user: Dict[str, Any] = Depends(get_user_with_profile),
+    ) -> EntitledUser:
+        user_id, profile = await _load_and_check_status(current_user)
+
+        tier = (profile.subscription_tier or "").lower()
+        allowed_tiers = FEATURE_TIER_MAP[feature]
+        if tier not in allowed_tiers:
+            logger.info(
+                "Feature gate denied for %s — tier=%s feature=%s allowed=%s",
+                user_id,
+                tier,
+                feature.value,
+                sorted(allowed_tiers),
+            )
+            _raise_payment_required(
+                reason=feature.value,
+                message=_feature_lock_message(feature),
+            )
+
+        return EntitledUser(user_id=user_id, user=current_user, profile=profile)
+
+    return _dep
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatibility shim.
+#
+# Every existing route uses `Depends(require_entitled)` from before the
+# feature-flag refactor. That call signature was a bare async function,
+# not a factory — re-implementing it via `require_feature(BASIC_ACCESS)`
+# would require touching every call site.
+#
+# Instead, keep `require_entitled` as a plain async function that runs
+# the BASIC_ACCESS gate. New routes should use
+# `Depends(require_feature(Feature.X))` so the gated feature is named.
+# ---------------------------------------------------------------------------
+
+
+async def require_entitled(
+    current_user: Dict[str, Any] = Depends(get_user_with_profile),
+) -> EntitledUser:
+    """Backwards-compatible alias for `require_feature(Feature.BASIC_ACCESS)`.
+
+    Kept so the dozens of existing `Depends(require_entitled)` call
+    sites don't all need editing for what is, today, a no-op gate
+    (everyone in an entitled status is on the basic tier). New code
+    should prefer `require_feature(Feature.X)` to name its intent.
+    """
+    user_id, profile = await _load_and_check_status(current_user)
+
+    tier = (profile.subscription_tier or "").lower()
+    allowed_tiers = FEATURE_TIER_MAP[Feature.BASIC_ACCESS]
+    if tier not in allowed_tiers:
+        logger.info(
+            "Entitlement check denied for %s — tier=%s not in basic_access set %s",
+            user_id,
+            tier,
+            sorted(allowed_tiers),
+        )
         _raise_payment_required(
-            reason=reason,
-            message=(
-                "Your trial has ended. Subscribe to keep using this feature."
-                if reason == "trial_expired"
-                else (
-                    "An active subscription is required for this feature."
-                    if reason == "expired"
-                    else "Start your free trial to use this feature."
-                )
-            ),
+            reason=Feature.BASIC_ACCESS.value,
+            message=_feature_lock_message(Feature.BASIC_ACCESS),
         )
 
     return EntitledUser(user_id=user_id, user=current_user, profile=profile)
