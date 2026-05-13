@@ -82,3 +82,33 @@ class TestEchoMapRefreshBeacon:
         ev = emitter.events[0]
         assert ev["event"] == "echo_map_refresh"
         assert "user_hash" in ev
+
+
+class TestPaywallViewBeacon:
+    """paywall_view drives the trial conversion funnel (pricing spec
+    2026-05-12 §5). The FE fires it on StartFreeTrialScreen mount."""
+
+    def test_emits_with_default_surface(self, client, emitter):
+        response = client.post("/api/telemetry/paywall-view", json={})
+        assert response.status_code == 204
+        assert len(emitter.events) == 1
+        ev = emitter.events[0]
+        assert ev["event"] == "paywall_view"
+        assert ev["surface"] == "start_trial"
+        assert ev["user_hash"]
+
+    def test_emits_with_custom_surface(self, client, emitter):
+        response = client.post(
+            "/api/telemetry/paywall-view",
+            json={"surface": "echo_vault_upsell"},
+        )
+        assert response.status_code == 204
+        ev = emitter.events[0]
+        assert ev["event"] == "paywall_view"
+        assert ev["surface"] == "echo_vault_upsell"
+
+    def test_empty_body_uses_default(self, client, emitter):
+        """No body at all is allowed — defaults to 'start_trial' surface."""
+        response = client.post("/api/telemetry/paywall-view")
+        assert response.status_code == 204
+        assert emitter.events[0]["surface"] == "start_trial"

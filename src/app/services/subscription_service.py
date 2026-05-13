@@ -20,6 +20,13 @@ from .dynamodb_service import DynamoDBService
 from .receipt_validator import ReceiptValidator
 from .sns_service import SNSService
 from .storage_quota_service import StorageQuotaService
+from .telemetry.subscription_events import (
+    EVENT_START_TRIAL,
+    EVENT_TRIAL_CANCEL,
+    EVENT_TRIAL_CONVERT,
+    EVENT_TRIAL_EXPIRE,
+    emit_subscription_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +244,18 @@ class SubscriptionService:
                     "is_trial": is_trial,
                 },
             )
+
+            # Trial conversion funnel — analytics layer (spec §5).
+            # The DynamoDB audit row above is authoritative; this
+            # emission is the parallel signal for Mixpanel / Segment.
+            if is_trial:
+                emit_subscription_event(
+                    EVENT_START_TRIAL,
+                    user_id=user_id,
+                    subscription_id=subscription.subscription_id,
+                    product_id=product_id,
+                    platform=platform,
+                )
 
             logger.info(
                 "Subscription activated user=%s txn=%s product=%s trial=%s",
@@ -700,6 +719,19 @@ class SubscriptionService:
                 metadata={"expiry_date": subscription["expiry_date"]},
             )
 
+            # If the user cancels while still in the trial window, that's
+            # a distinct funnel event from a cancel-after-conversion.
+            # Status on the row is the pre-cancel snapshot here (we
+            # only flipped auto_renew_enabled, not status).
+            if subscription.get("status") == SubscriptionStatus.TRIAL.value:
+                emit_subscription_event(
+                    EVENT_TRIAL_CANCEL,
+                    user_id=user_id,
+                    subscription_id=subscription_id,
+                    product_id=subscription.get("product_id"),
+                    platform=subscription["platform"],
+                )
+
             logger.info(
                 "Cancelled subscription %s for user %s", subscription_id, user_id
             )
@@ -1077,6 +1109,12 @@ class SubscriptionService:
                     "+00:00", "Z"
                 )
 
+            # Capture the prior status BEFORE we flip it, so we can
+            # distinguish a normal renewal (active -> active) from the
+            # trial→paid conversion (trial -> active) — the latter is
+            # the high-signal funnel event for analytics (spec §5).
+            was_in_trial = subscription.status == SubscriptionStatus.TRIAL
+
             # Update status to active
             subscription.status = SubscriptionStatus.ACTIVE
             subscription.add_event("renewed", transaction_info)
@@ -1099,6 +1137,15 @@ class SubscriptionService:
                 platform=subscription.platform.value,
                 metadata=transaction_info,
             )
+
+            if was_in_trial:
+                emit_subscription_event(
+                    EVENT_TRIAL_CONVERT,
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.subscription_id,
+                    product_id=subscription.product_id,
+                    platform=subscription.platform.value,
+                )
 
             logger.info(
                 f"Successfully processed renewal for subscription {subscription.subscription_id}"
@@ -1192,6 +1239,11 @@ class SubscriptionService:
                 )
                 return
 
+            # Capture the prior status BEFORE flipping to EXPIRED — a
+            # trial that runs out without conversion is a separate funnel
+            # event (trial_expire) from a paid subscription expiring.
+            was_in_trial = subscription.status == SubscriptionStatus.TRIAL
+
             # Update subscription status to expired
             subscription.status = SubscriptionStatus.EXPIRED
             subscription.auto_renew_enabled = False
@@ -1247,6 +1299,15 @@ class SubscriptionService:
                 platform=subscription.platform.value,
                 metadata=transaction_info,
             )
+
+            if was_in_trial:
+                emit_subscription_event(
+                    EVENT_TRIAL_EXPIRE,
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.subscription_id,
+                    product_id=subscription.product_id,
+                    platform=subscription.platform.value,
+                )
 
             logger.info(
                 f"Successfully processed expiration for subscription {subscription.subscription_id}"
