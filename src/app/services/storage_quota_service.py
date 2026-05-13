@@ -7,7 +7,7 @@ import os
 from decimal import Decimal
 from typing import Dict, Optional
 
-import boto3
+import aioboto3
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +25,14 @@ class StorageQuotaService:
             dynamodb_service: DynamoDB service for user profile operations
         """
         self.dynamodb = dynamodb_service
-        self.s3_client = boto3.client("s3")
+        # aioboto3 session — used for non-blocking S3 HeadObject in
+        # `_backfill_size_from_s3`. Previously a sync boto3.client made
+        # inside an `async` method, which blocked the FastAPI event
+        # loop on the round-trip to S3.
+        self.s3_session = aioboto3.Session()
         self.bucket_name = os.getenv("ECHO_MEDIA_BUCKET", "echo-vault-storage-dev")
         self.echoes_table = os.getenv("DYNAMODB_ECHOES_TABLE", "echoes")
+        self.aws_region = os.getenv("AWS_REGION", "us-east-1")
 
     async def calculate_user_storage_usage(self, user_id: str) -> float:
         """
@@ -112,7 +117,8 @@ class StorageQuotaService:
             return None
 
         try:
-            head = self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            async with self.s3_session.client("s3", region_name=self.aws_region) as s3:
+                head = await s3.head_object(Bucket=self.bucket_name, Key=key)
             content_length = int(head.get("ContentLength", 0))
         except Exception as head_err:
             logger.warning(
@@ -288,6 +294,27 @@ class StorageQuotaService:
             }
 
         except Exception as e:
-            logger.error(f"Error checking upload permission for user {user_id}: {e}")
-            # Fail open to avoid blocking legitimate users
-            return {"can_upload": True, "error": str(e)}
+            # Fail-open by product decision: when the quota service
+            # itself is broken (DynamoDB throttling, malformed profile,
+            # etc.), let the upload through rather than block a paying
+            # user. A real over-quota write is caught at delete-time
+            # quota recompute or via webhook reconciliation, so worst
+            # case is a brief over-quota window — not data loss.
+            #
+            # Log at ERROR with both the user id and the underlying
+            # cause so an unusual rate of this branch is alertable in
+            # CloudWatch. Include a structured `reason` in the
+            # response so the route handler can surface a 503-ish
+            # affordance if it ever wants to (today's `echo_routes`
+            # caller doesn't inspect `reason`; this is forward-prep).
+            logger.error(
+                "can_upload failed-open for user %s — quota service error: %s",
+                user_id,
+                e,
+                exc_info=True,
+            )
+            return {
+                "can_upload": True,
+                "reason": "service_unavailable",
+                "error": str(e),
+            }

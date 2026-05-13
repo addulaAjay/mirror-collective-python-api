@@ -470,10 +470,28 @@ class SubscriptionService:
                                 receipt_data=receipt_data,
                             )
 
-                            await self.dynamodb_service.put_item(
-                                self.subscriptions_table,
-                                subscription.to_dynamodb_item(),
+                            # Conditional put — never overwrite an
+                            # existing row. The restore path is
+                            # user-triggered and rare, but a
+                            # concurrent restore from a second device
+                            # (or a webhook landing mid-restore) could
+                            # race a plain `put_item` and clobber more
+                            # recent state. Matches the idempotency
+                            # discipline of `verify_and_activate_purchase`.
+                            inserted = (
+                                await self.dynamodb_service.put_item_if_not_exists(
+                                    self.subscriptions_table,
+                                    subscription.to_dynamodb_item(),
+                                    key_attr="subscription_id",
+                                )
                             )
+                            if not inserted:
+                                logger.info(
+                                    "Restore skipped existing row for user %s "
+                                    "subscription %s — keeping current state.",
+                                    user_id,
+                                    idempotency_id,
+                                )
                             restored_subscriptions.append(subscription.to_dict())
 
                             # Update user profile
@@ -1124,7 +1142,10 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info("Handling subscription renewal: %s", transaction_info)
+            logger.info(
+                "Handling subscription renewal: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
             subscription = await self._find_subscription_by_transaction_info(
                 transaction_info
@@ -1211,7 +1232,10 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info("Handling renewal failure: %s", transaction_info)
+            logger.info(
+                "Handling renewal failure: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
             subscription = await self._find_subscription_by_transaction_info(
                 transaction_info
@@ -1270,7 +1294,10 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info("Handling subscription expiration: %s", transaction_info)
+            logger.info(
+                "Handling subscription expiration: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
             subscription = await self._find_subscription_by_transaction_info(
                 transaction_info
@@ -1368,7 +1395,10 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info("Handling refund: %s", transaction_info)
+            logger.info(
+                "Handling refund: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
             subscription = await self._find_subscription_by_transaction_info(
                 transaction_info
@@ -1451,7 +1481,10 @@ class SubscriptionService:
             transaction_info: Decoded transaction data from webhook
         """
         try:
-            logger.info("Handling renewal status change: %s", transaction_info)
+            logger.info(
+                "Handling renewal status change: txn=%s",
+                transaction_info.get("transactionId"),
+            )
 
             auto_renew_status = transaction_info.get(
                 "autoRenewStatus"

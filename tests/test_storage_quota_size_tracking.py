@@ -21,7 +21,13 @@ GB = 1024**3
 
 
 def _make_service(items, head_object=None):
-    """Build a StorageQuotaService with a stubbed dynamodb + S3 client."""
+    """Build a StorageQuotaService with a stubbed dynamodb + S3 client.
+
+    The S3 client is the aioboto3 async context-manager shape:
+    `async with session.client("s3", ...) as s3: await s3.head_object(...)`.
+    We replace the session attribute with a MagicMock that yields a
+    pre-canned async client when entered.
+    """
     from src.app.services.storage_quota_service import StorageQuotaService
 
     mock_dynamodb = AsyncMock()
@@ -30,10 +36,25 @@ def _make_service(items, head_object=None):
 
     service = StorageQuotaService(mock_dynamodb)
 
-    mock_s3 = MagicMock()
+    # aioboto3 surface: `async with self.s3_session.client("s3", ...) as s3`.
+    # MagicMock plus AsyncMock for the head_object coroutine.
+    mock_s3_client = MagicMock()
     if head_object is not None:
-        mock_s3.head_object = MagicMock(return_value=head_object)
-    service.s3_client = mock_s3
+        mock_s3_client.head_object = AsyncMock(return_value=head_object)
+    else:
+        mock_s3_client.head_object = AsyncMock(
+            side_effect=AssertionError("head_object should not have been called"),
+        )
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=mock_s3_client)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    service.s3_session = MagicMock()
+    service.s3_session.client = MagicMock(return_value=ctx)
+
+    # Tests that previously poked `service.s3_client` directly use the
+    # alias below to override head_object behaviour mid-test.
+    mock_s3 = mock_s3_client
     return service, mock_dynamodb, mock_s3
 
 
@@ -148,7 +169,7 @@ async def test_head_object_failure_does_not_500():
         {"echo_id": "ok", "user_id": "u1", "size_bytes": GB},
     ]
     service, mock_dynamodb, mock_s3 = _make_service(items)
-    mock_s3.head_object = MagicMock(side_effect=RuntimeError("S3 down"))
+    mock_s3.head_object = AsyncMock(side_effect=RuntimeError("S3 down"))
 
     used = await service.calculate_user_storage_usage("u1")
 

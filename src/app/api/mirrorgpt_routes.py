@@ -557,6 +557,12 @@ async def get_quiz_questions(
         )
 
 
+# TODO(security-review 2026-05-12): the anonymous-submission path on
+# /quiz/submit is gated by the global 100-req/min IP middleware only.
+# An attacker rotating IPs can write arbitrary `anon_<id>` profile
+# rows. Add per-IP-per-route cap (e.g., 5 anon submissions/hour) or
+# require a signed challenge token. Flagged as MEDIUM, out of IAP
+# scope — kept here so it doesn't get lost.
 @router.post("/quiz/submit", response_model=ArchetypeQuizResponse)
 async def submit_archetype_quiz(
     request: ArchetypeQuizRequest,

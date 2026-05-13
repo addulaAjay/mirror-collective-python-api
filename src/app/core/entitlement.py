@@ -271,24 +271,13 @@ async def require_entitled(
     """Backwards-compatible alias for `require_feature(Feature.BASIC_ACCESS)`.
 
     Kept so the dozens of existing `Depends(require_entitled)` call
-    sites don't all need editing for what is, today, a no-op gate
-    (everyone in an entitled status is on the basic tier). New code
-    should prefer `require_feature(Feature.X)` to name its intent.
+    sites don't all need editing. New code should prefer
+    `require_feature(Feature.X)` to name its intent.
+
+    Delegates to the factory inner dependency so the gate logic
+    lives in exactly one place — a future change to BASIC_ACCESS
+    semantics (e.g., adding a kill-switch) lands in
+    `require_feature` and this alias picks it up automatically.
     """
-    user_id, profile = await _load_and_check_status(current_user)
-
-    tier = (profile.subscription_tier or "").lower()
-    allowed_tiers = FEATURE_TIER_MAP[Feature.BASIC_ACCESS]
-    if tier not in allowed_tiers:
-        logger.info(
-            "Entitlement check denied for %s — tier=%s not in basic_access set %s",
-            user_id,
-            tier,
-            sorted(allowed_tiers),
-        )
-        _raise_payment_required(
-            reason=Feature.BASIC_ACCESS.value,
-            message=_feature_lock_message(Feature.BASIC_ACCESS),
-        )
-
-    return EntitledUser(user_id=user_id, user=current_user, profile=profile)
+    inner = require_feature(Feature.BASIC_ACCESS)
+    return await inner(current_user)
