@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import os
+from functools import lru_cache
 from typing import Any, Dict, NoReturn, Optional
 
 import boto3
@@ -577,3 +578,17 @@ class CognitoService:
         except Exception as e:
             logger.exception(f"Error in secure user lookup: {str(e)}")
             raise
+
+
+@lru_cache(maxsize=1)
+def get_cognito_service() -> CognitoService:
+    """Process-wide CognitoService singleton.
+
+    The underlying boto3 client (constructed in CognitoService.__init__) is
+    thread-safe and meant to be reused. Previously CognitoService was
+    re-instantiated per request via Depends(lambda: CognitoService()) in
+    enhanced_auth.py, paying the boto3 client construction cost (~30-80 ms)
+    on every authenticated request. This factory caches a single instance
+    for the lifetime of the Lambda container.
+    """
+    return CognitoService()

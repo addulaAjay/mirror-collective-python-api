@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from fastapi import Depends, Request
 
-from ..services.cognito_service import CognitoService
+from ..services.cognito_service import CognitoService, get_cognito_service
 from .security import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 async def get_user_with_profile(
     request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
-    cognito_service: CognitoService = Depends(lambda: CognitoService()),
+    cognito_service: CognitoService = Depends(get_cognito_service),
 ) -> Dict[str, Any]:
     """
     Enhanced user dependency that fetches full profile data from Cognito

@@ -19,7 +19,7 @@ from ..api.models import (
     UserBasic,
     UserRegistrationRequest,
 )
-from ..services.cognito_service import CognitoService
+from ..services.cognito_service import get_cognito_service
 from ..services.dynamodb_service import DynamoDBService
 from ..services.echo_service import EchoService
 from ..services.user_linking_service import UserLinkingService
@@ -32,7 +32,7 @@ class AuthController:
     """Controller for authentication operations"""
 
     def __init__(self):
-        self.cognito_service = CognitoService()
+        self.cognito_service = get_cognito_service()
         self.user_service = UserService()
         self.dynamodb_service = DynamoDBService()
         self.linking_service = UserLinkingService(self.dynamodb_service)
