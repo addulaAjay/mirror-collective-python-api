@@ -19,6 +19,18 @@ ALGORITHM = "RS256"
 security = HTTPBearer(auto_error=False)
 
 
+def _is_dev_environment() -> bool:
+    """Single source of truth for the dev/test bypass.
+
+    Gated strictly on ENVIRONMENT to avoid auth-bypass risk: previously this
+    also honored NODE_ENV/DEBUG, so a stray `DEBUG=true` env var in a
+    deployed stack would grant `mock-user-123` to any tokenless request.
+    The rest of the codebase already uses ENVIRONMENT (see logging_config.py,
+    echo_v1_routes.py); this aligns security.py with that convention.
+    """
+    return os.getenv("ENVIRONMENT", "").lower() in {"development", "test"}
+
+
 # --------------------------------------------------------------------------- #
 # JWKS fetch + cache (defense-in-depth on top of API Gateway JWT authorizer)
 # --------------------------------------------------------------------------- #
@@ -130,19 +142,12 @@ def decode_cognito_jwt(token: str) -> Optional[Dict[str, Any]]:
         # the JWT is signature-verified via JWKS so a forged token cannot
         # reach a protected route even if the API Gateway authorizer is ever
         # misconfigured or removed.
-        is_development = os.getenv("NODE_ENV") in ["development", "test"]
-
-        if is_development:
+        if _is_dev_environment():
             logger.debug("🔧 Development: Decoding JWT without signature verification")
             payload = jwt.get_unverified_claims(token)
         else:
             payload = _verify_jwt_signature(token)
             logger.debug("✅ Production: JWT signature verified")
-
-        # Debug: Log the payload to understand what's missing
-        logger.info(f"🔍 JWT Token Claims: {payload}")
-        email_claim = payload.get("email")
-        logger.info(f"🔍 Email claim value: {email_claim}")
 
         # Basic validation
         now = datetime.now(timezone.utc)
@@ -177,8 +182,6 @@ def decode_cognito_jwt(token: str) -> Optional[Dict[str, Any]]:
 
 def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Map Cognito JWT claims to user profile format"""
-    logger.info(f"🔍 Mapping claims to profile. Input payload: {payload}")
-
     groups: List[str] = payload.get("cognito:groups", []) or []
 
     # Email comes only from the 'email' claim. Cognito ACCESS tokens do not
@@ -196,8 +199,6 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
             "Endpoints that need the user's email must resolve it via the "
             "users table by sub. Available claims: " + ", ".join(payload.keys())
         )
-
-    logger.info(f"🔍 Extracted email from payload: {email}")
 
     profile = {
         "id": payload.get("sub"),
@@ -217,7 +218,6 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
         "features": [],
     }
 
-    logger.info(f"🔍 Final mapped profile: {profile}")
     return profile
 
 
@@ -229,9 +229,7 @@ async def get_current_user(
     Dependency to get current authenticated user from JWT token
     Extracts and validates user information from Cognito JWT tokens
     """
-    is_dev_env = os.getenv("NODE_ENV") in ["development", "test"]
-    is_debug = os.getenv("DEBUG", "false").lower() == "true"
-    is_development = is_dev_env or is_debug
+    is_development = _is_dev_environment()
 
     # Try to get token from Authorization header
     token = None
