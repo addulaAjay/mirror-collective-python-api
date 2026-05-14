@@ -1,8 +1,10 @@
 import logging
 import os
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
+import requests
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -17,6 +19,105 @@ ALGORITHM = "RS256"
 security = HTTPBearer(auto_error=False)
 
 
+# --------------------------------------------------------------------------- #
+# JWKS fetch + cache (defense-in-depth on top of API Gateway JWT authorizer)
+# --------------------------------------------------------------------------- #
+# Cognito rotates signing keys rarely. We fetch the JWKS once per warm Lambda
+# container and refresh on `kid` cache miss. The lock prevents concurrent
+# refresh from racing on cold-start fan-in.
+_JWKS_CACHE: Optional[Dict[str, Any]] = None
+_JWKS_LOCK = Lock()
+
+
+def _jwks_url() -> str:
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+    pool_id = os.getenv("COGNITO_USER_POOL_ID", "")
+    return f"https://cognito-idp.{region}.amazonaws.com/{pool_id}/.well-known/jwks.json"
+
+
+def _expected_issuer() -> str:
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+    pool_id = os.getenv("COGNITO_USER_POOL_ID", "")
+    return f"https://cognito-idp.{region}.amazonaws.com/{pool_id}"
+
+
+def _fetch_jwks(force: bool = False) -> Dict[str, Any]:
+    global _JWKS_CACHE
+    cached = _JWKS_CACHE
+    if cached is not None and not force:
+        return cached
+    with _JWKS_LOCK:
+        cached = _JWKS_CACHE
+        if cached is not None and not force:
+            return cached
+        resp = requests.get(_jwks_url(), timeout=5)
+        resp.raise_for_status()
+        fresh: Dict[str, Any] = resp.json()
+        _JWKS_CACHE = fresh
+        return fresh
+
+
+def _find_key(jwks: Dict[str, Any], kid: str) -> Optional[Dict[str, Any]]:
+    for k in jwks.get("keys", []):
+        if k.get("kid") == kid:
+            return k
+    return None
+
+
+def _verify_jwt_signature(token: str) -> Dict[str, Any]:
+    """Verify a Cognito JWT signature against the User Pool JWKS.
+
+    Cognito access tokens carry `client_id` (no `aud`); ID tokens carry `aud`.
+    We disable jose's `aud` check and validate the client claim explicitly so
+    both token types are accepted.
+    """
+    expected_client_id = os.getenv("COGNITO_CLIENT_ID", "")
+    if not expected_client_id:
+        raise InvalidTokenError("COGNITO_CLIENT_ID is not configured")
+
+    try:
+        headers = jwt.get_unverified_header(token)
+    except JWTError as e:
+        raise InvalidTokenError(f"Malformed token header: {e}") from e
+
+    kid = headers.get("kid")
+    if not kid:
+        raise InvalidTokenError("Token missing 'kid' header")
+
+    jwks = _fetch_jwks()
+    key = _find_key(jwks, kid)
+    if key is None:
+        # Signing key rotated since the last cache refresh — pull JWKS once
+        # more before giving up.
+        jwks = _fetch_jwks(force=True)
+        key = _find_key(jwks, kid)
+    if key is None:
+        raise InvalidTokenError("Token signed by an unknown key")
+
+    try:
+        payload = jwt.decode(
+            token,
+            key,
+            algorithms=[ALGORITHM],
+            issuer=_expected_issuer(),
+            options={"verify_aud": False},
+        )
+    except JWTError as e:
+        raise InvalidTokenError(f"JWT signature verification failed: {e}") from e
+
+    token_use = payload.get("token_use")
+    if token_use == "access":
+        if payload.get("client_id") != expected_client_id:
+            raise InvalidTokenError("Access token client_id mismatch")
+    elif token_use == "id":
+        if payload.get("aud") != expected_client_id:
+            raise InvalidTokenError("ID token aud mismatch")
+    else:
+        raise InvalidTokenError(f"Unexpected token_use: {token_use!r}")
+
+    return payload
+
+
 def decode_cognito_jwt(token: str) -> Optional[Dict[str, Any]]:
     """
     Decode and validate Cognito JWT token
@@ -24,19 +125,19 @@ def decode_cognito_jwt(token: str) -> Optional[Dict[str, Any]]:
     This is primarily for local development and fallback scenarios
     """
     try:
-        # For development/testing: decode without signature verification
-        # In production, API Gateway handles JWT verification
+        # In dev/test, tests supply synthetic tokens that aren't signed by
+        # Cognito; we skip signature verification there. In every other env
+        # the JWT is signature-verified via JWKS so a forged token cannot
+        # reach a protected route even if the API Gateway authorizer is ever
+        # misconfigured or removed.
         is_development = os.getenv("NODE_ENV") in ["development", "test"]
 
         if is_development:
             logger.debug("🔧 Development: Decoding JWT without signature verification")
-            # Decode without verification for development
             payload = jwt.get_unverified_claims(token)
         else:
-            # In production, we should trust API Gateway's validation
-            # But decode payload for user info extraction
-            payload = jwt.get_unverified_claims(token)
-            logger.debug("✅ Production: Extracting claims from pre-validated JWT")
+            payload = _verify_jwt_signature(token)
+            logger.debug("✅ Production: JWT signature verified")
 
         # Debug: Log the payload to understand what's missing
         logger.info(f"🔍 JWT Token Claims: {payload}")
