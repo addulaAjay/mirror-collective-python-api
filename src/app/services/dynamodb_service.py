@@ -5,6 +5,7 @@ DynamoDB service for user profile management
 import logging
 import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 import aioboto3
@@ -1707,3 +1708,15 @@ class DynamoDBService:
         except Exception as e:
             logger.error(f"Unexpected error scanning users with trials: {e}")
             raise InternalServerError(f"Unexpected error: {str(e)}")
+
+
+@lru_cache(maxsize=1)
+def get_dynamodb_service() -> "DynamoDBService":
+    """Process-wide DynamoDBService singleton.
+
+    DynamoDBService was being instantiated ~10 times across routers,
+    controllers, and service classes — each construction sets up an
+    aioboto3 session + table-resource cache. This factory hands out a
+    single instance for the lifetime of the Lambda container.
+    """
+    return DynamoDBService()

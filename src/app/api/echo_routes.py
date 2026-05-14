@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, validator
 
 from ..core.security import get_current_user
-from ..services.echo_service import EchoService
+from ..services.echo_service import get_echo_service
 from ..services.email_service import email_service
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Echo Vault"])
 
 # Initialize service
-echo_service = EchoService()
+echo_service = get_echo_service()
 
 
 # ========================================

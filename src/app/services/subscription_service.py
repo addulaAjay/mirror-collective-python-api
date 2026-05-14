@@ -20,7 +20,7 @@ from ..models.subscription import (
 )
 from .dynamodb_service import DynamoDBService
 from .receipt_validator import ReceiptValidator
-from .storage_quota_service import StorageQuotaService
+from .storage_quota_service import get_storage_quota_service
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class SubscriptionService:
     def __init__(self, dynamodb_service: DynamoDBService):
         self.dynamodb_service = dynamodb_service
         self.receipt_validator = ReceiptValidator()
-        self.quota_service = StorageQuotaService(dynamodb_service)
+        self.quota_service = get_storage_quota_service()
         self.subscriptions_table = os.getenv(
             "DYNAMODB_SUBSCRIPTIONS_TABLE", "subscriptions"
         )

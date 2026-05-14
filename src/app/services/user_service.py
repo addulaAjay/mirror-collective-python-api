@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 from ..core.exceptions import InternalServerError
 from ..models.user_profile import UserProfile
 from .cognito_service import get_cognito_service
-from .dynamodb_service import DynamoDBService
+from .dynamodb_service import get_dynamodb_service
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class UserService:
 
     def __init__(self):
         """Initialize user service with required dependencies"""
-        self.dynamodb_service = DynamoDBService()
+        self.dynamodb_service = get_dynamodb_service()
         self.cognito_service = get_cognito_service()
 
     async def create_user_profile_from_cognito(

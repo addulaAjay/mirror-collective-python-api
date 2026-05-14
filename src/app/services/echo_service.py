@@ -7,6 +7,7 @@ Includes S3 presigned URL generation for media uploads.
 import logging
 import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 import aioboto3
@@ -58,9 +59,9 @@ class EchoService:
         self.session = aioboto3.Session()
 
         # Initialize DynamoDB service for user lookups
-        from src.app.services.dynamodb_service import DynamoDBService
+        from src.app.services.dynamodb_service import get_dynamodb_service
 
-        self.dynamodb_service = DynamoDBService()
+        self.dynamodb_service = get_dynamodb_service()
 
         target = "Local DynamoDB" if self.endpoint_url else "AWS DynamoDB"
         logger.info(
@@ -1393,3 +1394,14 @@ class EchoService:
         except Exception as e:
             logger.error(f"Error deleting guardian: {e}")
             return False
+
+
+@lru_cache(maxsize=1)
+def get_echo_service() -> "EchoService":
+    """Process-wide EchoService singleton.
+
+    EchoService was being instantiated 4 times (routers + controllers).
+    Its __init__ wires up an aioboto3 S3 session + a DynamoDB service —
+    we want exactly one of those per container.
+    """
+    return EchoService()
