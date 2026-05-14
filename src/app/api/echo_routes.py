@@ -242,16 +242,30 @@ async def list_user_echoes(
     status: Optional[str] = Query(
         None, description="Filter by status (DRAFT, LOCKED, RELEASED)"
     ),
+    limit: Optional[int] = Query(
+        None, ge=1, le=100, description="Page size (1..100, default 50)"
+    ),
+    cursor: Optional[str] = Query(
+        None, description="Opaque pagination cursor from a previous response"
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """List all echoes created by the current user (vault view)."""
+    """List echoes created by the current user (vault view), one page at a time.
+
+    Pagination:
+        - ``limit``: 1..100, default 50.
+        - ``cursor``: pass the ``next_cursor`` from a prior response to fetch
+          the next page. ``null`` when there are no more rows.
+    """
     user_id = current_user["id"]
 
-    echoes = await echo_service.get_user_echoes(
+    echoes, next_cursor = await echo_service.get_user_echoes(
         user_id=user_id,
         category=category,
         recipient_id=recipient_id,
         status=status,
+        limit=limit,
+        cursor=cursor,
     )
 
     return {
@@ -273,6 +287,7 @@ async def list_user_echoes(
             for e in echoes
         ],
         "count": len(echoes),
+        "next_cursor": next_cursor,
     }
 
 
@@ -280,6 +295,12 @@ async def list_user_echoes(
 async def list_received_echoes(
     category: Optional[str] = Query(None, description="Filter by category"),
     sender_id: Optional[str] = Query(None, description="Filter by sender"),
+    limit: Optional[int] = Query(
+        None, ge=1, le=100, description="Page size (1..100, default 50)"
+    ),
+    cursor: Optional[str] = Query(
+        None, description="Opaque pagination cursor from a previous response"
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """List echoes received by the current user (inbox view).
@@ -287,16 +308,23 @@ async def list_received_echoes(
     Recipient match is by Cognito sub via recipients.recipient-user-id-index,
     which is populated at recipient creation and back-filled when the recipient
     later signs up. No email lookup is needed.
+
+    Pagination:
+        - ``limit``: 1..100, default 50.
+        - ``cursor``: pass the ``next_cursor`` from a prior response to fetch
+          the next page. ``null`` when there are no more rows.
     """
     user_id = current_user.get("id") or ""
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID not found in token")
 
     try:
-        echoes = await echo_service.get_received_echoes(
+        echoes, next_cursor = await echo_service.get_received_echoes(
             user_id=user_id,
             category=category,
             sender_id=sender_id,
+            limit=limit,
+            cursor=cursor,
         )
     except Exception:
         # Full traceback already logged inside the service. Surface a friendly
@@ -330,6 +358,7 @@ async def list_received_echoes(
             for e in echoes
         ],
         "count": len(echoes),
+        "next_cursor": next_cursor,
     }
 
 
@@ -525,12 +554,26 @@ async def lock_echo(
 
 @router.get("/recipients", response_model=Dict[str, Any])
 async def list_recipients(
+    limit: Optional[int] = Query(
+        None, ge=1, le=100, description="Page size (1..100, default 50)"
+    ),
+    cursor: Optional[str] = Query(
+        None, description="Opaque pagination cursor from a previous response"
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """List all recipients for the current user."""
+    """List recipients for the current user, one page at a time.
+
+    Pagination:
+        - ``limit``: 1..100, default 50.
+        - ``cursor``: pass the ``next_cursor`` from a prior response to fetch
+          the next page. ``null`` when there are no more rows.
+    """
     user_id = current_user["id"]
 
-    recipients = await echo_service.get_user_recipients(user_id)
+    recipients, next_cursor = await echo_service.get_user_recipients(
+        user_id, limit=limit, cursor=cursor
+    )
 
     return {
         "success": True,
@@ -547,6 +590,7 @@ async def list_recipients(
             for r in recipients
         ],
         "count": len(recipients),
+        "next_cursor": next_cursor,
     }
 
 
@@ -610,12 +654,26 @@ async def delete_recipient(
 
 @router.get("/guardians", response_model=Dict[str, Any])
 async def list_guardians(
+    limit: Optional[int] = Query(
+        None, ge=1, le=100, description="Page size (1..100, default 50)"
+    ),
+    cursor: Optional[str] = Query(
+        None, description="Opaque pagination cursor from a previous response"
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """List all guardians for the current user."""
+    """List guardians for the current user, one page at a time.
+
+    Pagination:
+        - ``limit``: 1..100, default 50.
+        - ``cursor``: pass the ``next_cursor`` from a prior response to fetch
+          the next page. ``null`` when there are no more rows.
+    """
     user_id = current_user["id"]
 
-    guardians = await echo_service.get_user_guardians(user_id)
+    guardians, next_cursor = await echo_service.get_user_guardians(
+        user_id, limit=limit, cursor=cursor
+    )
 
     return {
         "success": True,
@@ -632,6 +690,7 @@ async def list_guardians(
             for g in guardians
         ],
         "count": len(guardians),
+        "next_cursor": next_cursor,
     }
 
 

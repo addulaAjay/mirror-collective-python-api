@@ -1998,10 +1998,12 @@ class TestRecipientUserIdLinking:
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
         with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            echoes = await service.get_received_echoes(user_id="user-123")
+            echoes, next_cursor = await service.get_received_echoes(user_id="user-123")
 
         assert len(echoes) == 1
         assert echoes[0].echo_id == "echo-abc"
+        # Single recipient row, no LastEvaluatedKey → no next page.
+        assert next_cursor is None
 
         # Recipients query uses recipient-user-id-index keyed on user_id
         assert mock_recipients_table.query.call_count == 1
@@ -2040,9 +2042,10 @@ class TestRecipientUserIdLinking:
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
         with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            echoes = await service.get_received_echoes(user_id="user-999")
+            echoes, next_cursor = await service.get_received_echoes(user_id="user-999")
 
         assert echoes == []
+        assert next_cursor is None
         assert mock_recipients_table.query.call_count == 1
 
     @pytest.mark.asyncio
@@ -2074,9 +2077,10 @@ class TestRecipientUserIdLinking:
         mock_resource_ctx.__aexit__ = AsyncMock(return_value=None)
 
         with patch.object(service.session, "resource", return_value=mock_resource_ctx):
-            echoes = await service.get_received_echoes(user_id="user-123")
+            echoes, next_cursor = await service.get_received_echoes(user_id="user-123")
 
         assert echoes == []
+        assert next_cursor is None
 
     @pytest.mark.asyncio
     async def test_get_received_echoes_requires_user_id(self):
