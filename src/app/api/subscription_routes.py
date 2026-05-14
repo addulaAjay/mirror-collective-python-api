@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..core.enhanced_auth import get_user_with_profile
-from ..services.dynamodb_service import DynamoDBService
-from ..services.storage_quota_service import StorageQuotaService
+from ..services.dynamodb_service import get_dynamodb_service
+from ..services.storage_quota_service import get_storage_quota_service
 from ..services.subscription_service import SubscriptionService
 from ..services.trial_management_service import TrialManagementService
 
@@ -17,9 +17,9 @@ from ..services.trial_management_service import TrialManagementService
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 
 # Initialize services
-dynamodb_service = DynamoDBService()
+dynamodb_service = get_dynamodb_service()
 trial_service = TrialManagementService(dynamodb_service)
-quota_service = StorageQuotaService(dynamodb_service)
+quota_service = get_storage_quota_service()
 subscription_service = SubscriptionService(dynamodb_service)
 
 

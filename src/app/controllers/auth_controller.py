@@ -20,8 +20,8 @@ from ..api.models import (
     UserRegistrationRequest,
 )
 from ..services.cognito_service import get_cognito_service
-from ..services.dynamodb_service import DynamoDBService
-from ..services.echo_service import EchoService
+from ..services.dynamodb_service import get_dynamodb_service
+from ..services.echo_service import get_echo_service
 from ..services.user_linking_service import UserLinkingService
 from ..services.user_service import UserService
 
@@ -34,9 +34,9 @@ class AuthController:
     def __init__(self):
         self.cognito_service = get_cognito_service()
         self.user_service = UserService()
-        self.dynamodb_service = DynamoDBService()
+        self.dynamodb_service = get_dynamodb_service()
         self.linking_service = UserLinkingService(self.dynamodb_service)
-        self.echo_service = EchoService()
+        self.echo_service = get_echo_service()
 
     async def register(self, payload: UserRegistrationRequest) -> AuthResponse:
         """Register a new user account"""

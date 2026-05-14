@@ -7,8 +7,8 @@ from pydantic import BaseModel
 from ..controllers.auth_controller import AuthController
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user
-from ..services.dynamodb_service import DynamoDBService
-from ..services.echo_service import EchoService
+from ..services.dynamodb_service import get_dynamodb_service
+from ..services.echo_service import get_echo_service
 from ..services.sns_service import SNSService
 from ..services.user_service import UserService
 from .models import (
@@ -34,9 +34,9 @@ router = APIRouter()
 # Initialize controllers
 auth_controller = AuthController()
 sns_service = SNSService()
-dynamodb_service = DynamoDBService()
+dynamodb_service = get_dynamodb_service()
 user_service = UserService()
-echo_service = EchoService()
+echo_service = get_echo_service()
 
 
 class UpdateProfileRequest(BaseModel):

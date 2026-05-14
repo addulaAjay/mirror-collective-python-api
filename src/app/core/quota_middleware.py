@@ -10,8 +10,8 @@ from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from ..services.dynamodb_service import DynamoDBService
-from ..services.storage_quota_service import StorageQuotaService
+from ..services.dynamodb_service import get_dynamodb_service
+from ..services.storage_quota_service import get_storage_quota_service
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ class QuotaEnforcementMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        self.dynamodb_service = DynamoDBService()
-        self.quota_service = StorageQuotaService(self.dynamodb_service)
+        self.dynamodb_service = get_dynamodb_service()
+        self.quota_service = get_storage_quota_service()
 
     def _extract_user_id_from_token(self, request: Request) -> str | None:
         """

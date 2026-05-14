@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user, get_current_user_optional
-from ..services.dynamodb_service import DynamoDBService
+from ..services.dynamodb_service import DynamoDBService, get_dynamodb_service
 from ..services.mirror_orchestrator import MIRRORGPT_SYSTEM_PROMPT, MirrorOrchestrator
 from ..services.openai_service import ChatMessage, OpenAIService
 from .models import (
@@ -146,7 +146,7 @@ router = APIRouter(prefix="/mirrorgpt", tags=["MirrorGPT"])
 
 def get_mirror_orchestrator() -> MirrorOrchestrator:
     """Dependency injection for MirrorOrchestrator"""
-    dynamodb_service = DynamoDBService()
+    dynamodb_service = get_dynamodb_service()
     openai_service = OpenAIService()
     return MirrorOrchestrator(dynamodb_service, openai_service)
 
@@ -354,11 +354,6 @@ async def _try_lazy_summarize(
             f"continuity: lazy summarize failed for "
             f"conversation_id={conversation.conversation_id}: {e}"
         )
-
-
-def get_dynamodb_service() -> DynamoDBService:
-    """Dependency injection for DynamoDBService"""
-    return DynamoDBService()
 
 
 @router.post("/chat", response_model=MirrorGPTChatResponse)

@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from ..services.echo_service import EchoService
+from ..services.echo_service import get_echo_service
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -26,7 +26,7 @@ async def release_due_echoes() -> Dict[str, Any]:
         skipped/failed/errors).
     """
     try:
-        echo_service = EchoService()
+        echo_service = get_echo_service()
         logger.info("Starting echo auto-release scan")
 
         result = await echo_service.release_due_echoes()

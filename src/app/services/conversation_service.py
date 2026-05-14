@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
 from ..models.conversation import Conversation, ConversationMessage, ConversationSummary
-from ..services.dynamodb_service import DynamoDBService
+from ..services.dynamodb_service import get_dynamodb_service
 from ..services.openai_service import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class ConversationService:
     """
 
     def __init__(self):
-        self.dynamodb_service = DynamoDBService()
+        self.dynamodb_service = get_dynamodb_service()
 
         # Configuration for context management - read from environment variables
         self.max_context_messages = int(os.getenv("MAX_CONTEXT_MESSAGES", "30"))

@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from ..services.dynamodb_service import DynamoDBService
+from ..services.dynamodb_service import get_dynamodb_service
 from ..services.trial_management_service import TrialManagementService
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ async def check_trial_expirations() -> Dict[str, Any]:
     """
     try:
         # Initialize services
-        dynamodb_service = DynamoDBService()
+        dynamodb_service = get_dynamodb_service()
         trial_service = TrialManagementService(dynamodb_service)
 
         logger.info("Starting trial expiration check job")

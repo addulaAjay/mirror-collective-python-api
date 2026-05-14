@@ -5,6 +5,7 @@ Storage quota service for Echo Vault storage management
 import logging
 import os
 from decimal import Decimal
+from functools import lru_cache
 from typing import Dict
 
 import boto3
@@ -197,3 +198,16 @@ class StorageQuotaService:
             logger.error(f"Error checking upload permission for user {user_id}: {e}")
             # Fail open to avoid blocking legitimate users
             return {"can_upload": True, "error": str(e)}
+
+
+@lru_cache(maxsize=1)
+def get_storage_quota_service() -> "StorageQuotaService":
+    """Process-wide StorageQuotaService singleton.
+
+    Wires through the DynamoDB singleton (instead of constructing a fresh
+    DynamoDBService at each call site), so a single DDB session is shared
+    across the storage-quota path.
+    """
+    from .dynamodb_service import get_dynamodb_service
+
+    return StorageQuotaService(get_dynamodb_service())

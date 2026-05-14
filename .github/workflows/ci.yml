@@ -172,6 +172,12 @@ jobs:
         npm install --production
         docker --version
         serverless print --stage staging
+      env:
+        # serverless print fully resolves the YAML, so env vars referenced
+        # without defaults in serverless.yml (e.g. cognitoJwtAuthorizer)
+        # must be present here too, not just in the deploy step.
+        COGNITO_USER_POOL_ID: ${{ secrets.STAGING_COGNITO_USER_POOL_ID }}
+        COGNITO_CLIENT_ID: ${{ secrets.STAGING_COGNITO_CLIENT_ID }}
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -231,6 +237,12 @@ jobs:
         npm install --production
         docker --version
         serverless print --stage production
+      env:
+        # serverless print fully resolves the YAML, so env vars referenced
+        # without defaults in serverless.yml (e.g. cognitoJwtAuthorizer)
+        # must be present here too, not just in the deploy step.
+        COGNITO_USER_POOL_ID: ${{ secrets.PROD_COGNITO_USER_POOL_ID }}
+        COGNITO_CLIENT_ID: ${{ secrets.PROD_COGNITO_CLIENT_ID }}
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
