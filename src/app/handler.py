@@ -11,8 +11,6 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
-from src.app.services.scheduler import start_scheduler
-
 from .api.echo_routes import router as echo_router
 from .api.echo_v1_routes import router as echo_v1_router
 from .api.me_routes import router as me_router
@@ -25,9 +23,7 @@ from .api.subscription_routes import router as subscription_router
 from .api.telemetry_routes import router as telemetry_router
 from .core.error_handlers import setup_error_handlers
 from .core.logging_config import setup_logging
-
-# Triggering reload to pick up new ENVs
-load_dotenv()
+from .core.quota_middleware import QuotaEnforcementMiddleware
 
 # Setup logging first
 setup_logging()
@@ -111,14 +107,10 @@ async def rate_limiting_middleware(request: Request, call_next):
     return response
 
 
-# Quota enforcement middleware for Echo Vault
-@app.middleware("http")
-async def quota_enforcement(request: Request, call_next):
-    from .core.quota_middleware import QuotaEnforcementMiddleware
-
-    # Create middleware instance and dispatch
-    quota_middleware = QuotaEnforcementMiddleware(app)
-    return await quota_middleware.dispatch(request, call_next)
+# Quota enforcement middleware for Echo Vault — registered as a real ASGI
+# middleware so its `__init__` (which constructs DynamoDBService +
+# StorageQuotaService) runs ONCE at app startup instead of on every request.
+app.add_middleware(QuotaEnforcementMiddleware)
 
 
 # Security headers middleware
@@ -209,11 +201,6 @@ async def api_health():
     )
 
 
-@app.on_event("startup")
-def startup_event():
-    start_scheduler()
-
-
 # Mount main API routes under /api to mirror Node structure
 app.include_router(api_router, prefix="/api")
 
@@ -233,4 +220,9 @@ app.include_router(practice_router, prefix="/api")
 app.include_router(me_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
 
-handler = Mangum(app)
+# lifespan="off" skips Starlette's startup/shutdown probe on every cold start.
+# We had no real lifespan handlers to run anyway (the previous on_event(startup)
+# kicked off an in-process BackgroundScheduler that never fires reliably on
+# Lambda — actual cron is handled by the trialExpirationCheck and
+# echoReleaseScheduler functions in serverless.yml).
+handler = Mangum(app, lifespan="off")
