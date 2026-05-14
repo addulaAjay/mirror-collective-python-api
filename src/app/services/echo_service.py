@@ -60,6 +60,13 @@ def encode_cursor(last_evaluated_key: Optional[Dict[str, Any]]) -> Optional[str]
 
     Returns None when there is no further page (the natural end-of-query
     signal we surface to API clients as ``next_cursor: null``).
+
+    TODO(security-hardening): the cursor is opaque (base64-encoded JSON) but
+    not authenticated. A tampered cursor is harmless today because the
+    Query's KeyConditionExpression still pins the partition to the
+    requesting user — DynamoDB rejects any ExclusiveStartKey whose hash
+    doesn't match. But defense-in-depth would HMAC the cursor with a
+    deploy-secret. Follow-up PR.
     """
     if not last_evaluated_key:
         return None
@@ -184,6 +191,15 @@ class EchoService:
 
         We cannot allocate the lock in __init__ because that runs at module
         import time, before an event loop exists for the Lambda invocation.
+
+        TODO(correctness): there's a tiny race window where two simultaneous
+        first-callers each see ``self._init_lock is None`` and each create
+        their own Lock. Worst case is two distinct locks briefly + a single
+        duplicate resource allocation. Lambda one-request-per-container
+        means this is effectively unreachable, but technically the
+        double-check inside ``_get_dynamodb_resource`` doesn't protect
+        against this. Cleaner fix: switch to ``threading.Lock`` in
+        ``__init__`` (cheap, no event loop needed). Follow-up PR.
         """
         if self._init_lock is None:
             self._init_lock = asyncio.Lock()
@@ -598,12 +614,18 @@ class EchoService:
 
         async def fetch_chunk(chunk: List[str]) -> List[Dict[str, Any]]:
             request_keys = [{"recipient_id": rid} for rid in chunk]
-            request_items = {self.recipients_table: {"Keys": request_keys}}
+            request_items: Dict[str, Any] = {
+                self.recipients_table: {"Keys": request_keys}
+            }
             collected: List[Dict[str, Any]] = []
             # Loop on UnprocessedKeys — DDB returns unprocessed items when
             # throttled. Adaptive retries in Config handle the backoff;
-            # we just need to drain anything remaining.
-            while request_items:
+            # we just need to drain anything remaining. Cap the outer
+            # loop at 5 rounds: a persistently-throttled DDB shouldn't
+            # spin a Lambda all the way to its 30s timeout.
+            for _attempt in range(5):
+                if not request_items:
+                    break
                 resp = await dynamodb.batch_get_item(RequestItems=request_items)
                 collected.extend(
                     resp.get("Responses", {}).get(self.recipients_table, [])
@@ -757,6 +779,14 @@ class EchoService:
             # (the loop preserved per-recipient order, but with one
             # recipient per page that came out approximately newest-first).
             echoes.sort(key=lambda e: e.created_at or "", reverse=True)
+
+            # Truncate to the requested page size. The cursor pages the
+            # *recipient-rows* query, but a single page of recipients can
+            # fan out to many echoes (e.g. 5 recipients × 10 echoes each =
+            # 50 echoes). Without this clamp the response can exceed
+            # ``limit`` by an order of magnitude, defeating the pagination
+            # contract clients depend on.
+            echoes = echoes[:page_limit]
 
             logger.info(f"Inbox: returning {len(echoes)} released echoes")
             return echoes, next_cursor

@@ -2165,3 +2165,349 @@ class TestRecipientUserIdLinking:
             assert await service.link_user_to_recipients("u-1", "") == 0
             assert await service.link_user_to_recipients("u-1", "   ") == 0
             mock_resource.assert_not_called()
+
+
+# ============================================================
+# SECTION N — Performance refactor coverage
+# (Wave 1B-E4 follow-up: tests for N+1 fixes, pagination, and
+#  long-lived aioboto3 resource reuse.)
+# ============================================================
+
+
+class TestEchoServicePerformanceRefactor:
+    """Cover the new behavior added by the Wave 1B-E4 refactor:
+
+    1. ``get_received_echoes`` parallelizes per-recipient Queries with
+       ``asyncio.gather`` and truncates the post-gather list to ``limit``.
+    2. ``get_user_echoes`` collapses N+1 ``get_item`` enrichment into a
+       single ``batch_get_item`` chunked at the DDB 100-key cap.
+    3. The pagination cursor round-trips correctly.
+    4. The long-lived DynamoDB resource is entered exactly once across
+       multiple service-method calls.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_received_echoes_truncates_to_limit(self):
+        """50 recipients × 3 echoes each must be clamped to ``limit=20``.
+
+        Regression test for the pagination-contract bug where the post-
+        gather list was returned untruncated, defeating page-size limits.
+        """
+        import asyncio
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Build 50 recipient rows on the recipients-by-user-id GSI.
+        recipient_rows = [
+            {
+                "recipient_id": f"rec-{i}",
+                "user_id": "user-1",
+                "recipient_user_id": "user-1",
+                "name": f"R{i}",
+                "email": f"r{i}@x.com",
+                "deleted_at": None,
+            }
+            for i in range(50)
+        ]
+        mock_recipients_table = AsyncMock()
+        mock_recipients_table.query.return_value = {
+            "Items": recipient_rows,
+            "LastEvaluatedKey": None,
+        }
+
+        # Each recipient has 3 RELEASED echoes — total fan-out = 150 echoes.
+        def make_echo_row(rid: str, idx: int) -> dict:
+            return {
+                "echo_id": f"echo-{rid}-{idx}",
+                "user_id": "sender-x",
+                "recipient_id": rid,
+                "title": "t",
+                "category": "c",
+                "echo_type": "TEXT",
+                "status": "RELEASED",
+                "created_at": f"2025-01-{(idx % 28) + 1:02d}T00:00:00Z",
+                "updated_at": "2025-01-01T00:00:00Z",
+            }
+
+        mock_echoes_table = AsyncMock()
+
+        def query_echoes(**kwargs):
+            rid = kwargs["ExpressionAttributeValues"][":rid"]
+            return {
+                "Items": [make_echo_row(rid, i) for i in range(3)],
+                "LastEvaluatedKey": None,
+            }
+
+        mock_echoes_table.query.side_effect = query_echoes
+
+        # Patch _get_dynamodb_resource to return a stub that hands out the
+        # right table mock per name.
+        async def fake_table(name: str):
+            if name == service.recipients_table:
+                return mock_recipients_table
+            if name == service.echoes_table:
+                return mock_echoes_table
+            raise AssertionError(f"unexpected table {name}")
+
+        stub_resource = MagicMock()
+        stub_resource.Table = AsyncMock(side_effect=fake_table)
+
+        with patch.object(
+            service, "_get_dynamodb_resource", AsyncMock(return_value=stub_resource)
+        ):
+            echoes, next_cursor = await service.get_received_echoes(
+                user_id="user-1", limit=20
+            )
+
+        # 50 recipients × 3 echoes = 150 candidates; must clamp to 20.
+        assert len(echoes) == 20
+        assert next_cursor is None  # only one recipient-page
+        # All per-recipient queries fanned out (50 calls).
+        assert mock_echoes_table.query.call_count == 50
+
+    @pytest.mark.asyncio
+    async def test_get_received_echoes_parallelizes_per_recipient_query(self):
+        """The per-recipient queries must run concurrently, not serially.
+
+        Wall-clock test: each per-recipient Query sleeps 100 ms. With 5
+        recipients, serial would be ~500 ms. Parallel via asyncio.gather
+        completes in ~100 ms (one sleep, not five).
+        """
+        import asyncio
+        import time
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        recipient_rows = [
+            {
+                "recipient_id": f"rec-{i}",
+                "user_id": "user-1",
+                "recipient_user_id": "user-1",
+                "name": f"R{i}",
+                "email": f"r{i}@x.com",
+                "deleted_at": None,
+            }
+            for i in range(5)
+        ]
+        mock_recipients_table = AsyncMock()
+        mock_recipients_table.query.return_value = {
+            "Items": recipient_rows,
+            "LastEvaluatedKey": None,
+        }
+
+        async def slow_query(**kwargs):
+            await asyncio.sleep(0.1)
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_echoes_table = AsyncMock()
+        mock_echoes_table.query.side_effect = slow_query
+
+        async def fake_table(name: str):
+            if name == service.recipients_table:
+                return mock_recipients_table
+            if name == service.echoes_table:
+                return mock_echoes_table
+            raise AssertionError(f"unexpected table {name}")
+
+        stub_resource = MagicMock()
+        stub_resource.Table = AsyncMock(side_effect=fake_table)
+
+        with patch.object(
+            service, "_get_dynamodb_resource", AsyncMock(return_value=stub_resource)
+        ):
+            start = time.monotonic()
+            echoes, _ = await service.get_received_echoes(user_id="user-1")
+            elapsed = time.monotonic() - start
+
+        # Serial would be 5 × 100 ms = 500 ms. Parallel should be << 300 ms
+        # (one sleep + overhead). Generous bound to avoid CI flake.
+        assert elapsed < 0.3, f"Expected parallel fan-out; got {elapsed:.3f}s"
+        assert echoes == []
+        assert mock_echoes_table.query.call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_get_user_echoes_uses_batch_get_item(self):
+        """30 distinct recipient_ids across 50 echoes must collapse to one
+        BatchGetItem call (single chunk; chunk size cap is 100)."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # 50 echoes spanning 30 distinct recipients (some shared).
+        echo_rows = [
+            {
+                "echo_id": f"echo-{i}",
+                "user_id": "user-1",
+                "recipient_id": f"rec-{i % 30}",
+                "title": "t",
+                "category": "c",
+                "echo_type": "TEXT",
+                "status": "DRAFT",
+                "created_at": "2025-01-01T00:00:00Z",
+                "updated_at": "2025-01-01T00:00:00Z",
+            }
+            for i in range(50)
+        ]
+        mock_echoes_table = AsyncMock()
+        mock_echoes_table.query.return_value = {
+            "Items": echo_rows,
+            "LastEvaluatedKey": None,
+        }
+
+        # BatchGetItem returns the 30 distinct recipients.
+        recipient_items = [
+            {
+                "recipient_id": f"rec-{i}",
+                "user_id": "user-1",
+                "name": f"R{i}",
+                "email": f"r{i}@x.com",
+                "deleted_at": None,
+            }
+            for i in range(30)
+        ]
+
+        async def fake_table(name: str):
+            return mock_echoes_table
+
+        stub_resource = MagicMock()
+        stub_resource.Table = AsyncMock(side_effect=fake_table)
+        stub_resource.batch_get_item = AsyncMock(
+            return_value={
+                "Responses": {service.recipients_table: recipient_items},
+                "UnprocessedKeys": {},
+            }
+        )
+
+        with (
+            patch.object(
+                service, "_get_dynamodb_resource", AsyncMock(return_value=stub_resource)
+            ),
+            patch.object(
+                service, "_sign_media_url", new=AsyncMock(side_effect=lambda e: e)
+            ),
+            patch.object(
+                service, "_sign_profile_url", new=AsyncMock(return_value=None)
+            ),
+        ):
+            echoes, _ = await service.get_user_echoes(user_id="user-1")
+
+        assert len(echoes) == 50
+        # Critical: exactly ONE BatchGetItem call (30 keys fit in one chunk).
+        # The old code would have done 30 separate get_item calls.
+        assert stub_resource.batch_get_item.call_count == 1
+        # And the batch contained 30 keys, not 50 (distinct dedup worked).
+        request_items = stub_resource.batch_get_item.call_args.kwargs["RequestItems"]
+        assert len(request_items[service.recipients_table]["Keys"]) == 30
+
+    @pytest.mark.asyncio
+    async def test_pagination_encodes_cursor_from_last_evaluated_key(self):
+        """When DDB returns LastEvaluatedKey, the service must surface it
+        as a base64-encoded next_cursor string."""
+        import base64
+        import json
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        last_key = {"echo_id": "echo-page-boundary", "user_id": "user-1"}
+        mock_echoes_table = AsyncMock()
+        mock_echoes_table.query.return_value = {
+            "Items": [],
+            "LastEvaluatedKey": last_key,
+        }
+
+        async def fake_table(name: str):
+            return mock_echoes_table
+
+        stub_resource = MagicMock()
+        stub_resource.Table = AsyncMock(side_effect=fake_table)
+
+        with patch.object(
+            service, "_get_dynamodb_resource", AsyncMock(return_value=stub_resource)
+        ):
+            _, next_cursor = await service.get_user_echoes(user_id="user-1")
+
+        assert next_cursor is not None
+        # Round-trip decode to verify the cursor wraps the LastEvaluatedKey.
+        decoded = json.loads(base64.urlsafe_b64decode(next_cursor.encode("ascii")))
+        assert decoded == last_key
+
+    @pytest.mark.asyncio
+    async def test_pagination_decodes_cursor_to_exclusive_start_key(self):
+        """A client-supplied cursor must round-trip into the Query's
+        ExclusiveStartKey."""
+        import base64
+        import json
+
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        original_key = {"echo_id": "echo-from-prev-page", "user_id": "user-1"}
+        client_cursor = base64.urlsafe_b64encode(
+            json.dumps(original_key).encode("utf-8")
+        ).decode("ascii")
+
+        mock_echoes_table = AsyncMock()
+        mock_echoes_table.query.return_value = {"Items": [], "LastEvaluatedKey": None}
+
+        async def fake_table(name: str):
+            return mock_echoes_table
+
+        stub_resource = MagicMock()
+        stub_resource.Table = AsyncMock(side_effect=fake_table)
+
+        with patch.object(
+            service, "_get_dynamodb_resource", AsyncMock(return_value=stub_resource)
+        ):
+            await service.get_user_echoes(user_id="user-1", cursor=client_cursor)
+
+        call_kwargs = mock_echoes_table.query.call_args.kwargs
+        assert call_kwargs.get("ExclusiveStartKey") == original_key
+
+    @pytest.mark.asyncio
+    async def test_long_lived_resource_entered_exactly_once_per_service(self):
+        """Three back-to-back method calls on a single EchoService instance
+        must enter the aioboto3 resource context-manager exactly once. This
+        is the whole point of the AsyncExitStack pattern; if it regresses
+        we lose the cold-start win and pay per-call TLS+SigV4 overhead."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+
+        # Track how many times the session.resource(...) async context
+        # manager is entered. Once-per-container is the contract.
+        enter_count = 0
+
+        class TrackingCM:
+            async def __aenter__(self):
+                nonlocal enter_count
+                enter_count += 1
+                stub = MagicMock()
+
+                # Three methods we'll call all hit .Table(...) — provide a
+                # stub table whose query returns nothing.
+                async def fake_table(_name: str):
+                    t = AsyncMock()
+                    t.query.return_value = {"Items": [], "LastEvaluatedKey": None}
+                    return t
+
+                stub.Table = AsyncMock(side_effect=fake_table)
+                return stub
+
+            async def __aexit__(self, *a):
+                return None
+
+        with patch.object(service.session, "resource", return_value=TrackingCM()):
+            await service.get_user_echoes(user_id="user-1")
+            await service.get_user_recipients(user_id="user-1")
+            await service.get_user_guardians(user_id="user-1")
+
+        assert (
+            enter_count == 1
+        ), f"resource context should be entered once; entered {enter_count} times"
