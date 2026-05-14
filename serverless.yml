@@ -6,7 +6,7 @@ provider:
   runtime: python3.11
   region: us-east-1
   stage: ${opt:stage, env:STAGE, 'staging'}
-  memorySize: 512
+  memorySize: 1024
   timeout: 30
   environment:
     ALLOWED_ORIGINS: ${env:ALLOWED_ORIGINS, 'http://localhost:3000'}
