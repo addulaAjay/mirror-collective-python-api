@@ -36,58 +36,6 @@ def test_cors_headers(client: TestClient):
     assert "Access-Control-Allow-Headers" in response.headers
 
 
-def test_rate_limiting_basic(client: TestClient):
-    """Test basic rate limiting functionality"""
-    # Reset rate limiter
-    from src.app.core.rate_limiting import rate_limiter
-
-    rate_limiter.requests.clear()
-
-    # Make a smaller number of requests to avoid issues with test client
-    success_count = 0
-    for i in range(50):
-        try:
-            response = client.get("/health")
-            if response.status_code == 200:
-                success_count += 1
-            elif response.status_code == 429:
-                # Rate limit hit, which is expected
-                break
-        except Exception:
-            # Rate limit exception raised, which is also valid behavior
-            break
-
-    # Should have gotten some successful responses
-    assert success_count > 0
-
-    # Try one more request which should definitely be rate limited
-    # since we've made many requests already
-    try:
-        response = client.get("/health")
-        # If we get here, check status code
-        assert response.status_code in [200, 429]  # Either is acceptable
-    except Exception:
-        # Rate limit exception is also acceptable
-        pass
-
-
-def test_rate_limiting_different_ips(client: TestClient):
-    """Test rate limiting with different IP addresses"""
-    from src.app.core.rate_limiting import rate_limiter
-
-    rate_limiter.requests.clear()
-
-    # Simulate requests from different IPs
-    for i in range(50):
-        # First IP
-        response = client.get("/health", headers={"X-Forwarded-For": "192.168.1.1"})
-        assert response.status_code == 200
-
-        # Second IP
-        response = client.get("/health", headers={"X-Forwarded-For": "192.168.1.2"})
-        assert response.status_code == 200
-
-
 def test_sql_injection_protection(client: TestClient):
     """Test protection against SQL injection attempts"""
     malicious_payloads = [

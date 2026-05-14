@@ -13,8 +13,10 @@ provider:
     COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID, ''}
     COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, ''}
     COGNITO_CLIENT_SECRET: ${env:COGNITO_CLIENT_SECRET, ''}
-    RATE_LIMIT_WINDOW_SECONDS: ${env:RATE_LIMIT_WINDOW_SECONDS, 900}
-    RATE_LIMIT_MAX_REQUESTS: ${env:RATE_LIMIT_MAX_REQUESTS, 100}
+    # Rate limiting is now enforced at the API Gateway layer
+    # (resources.extensions.HttpApiStage.DefaultRouteSettings below).
+    # The previous RATE_LIMIT_* env vars only configured an in-memory
+    # per-container limiter which provided no real protection.
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     # SNS/SES Notifications
     SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN, ''}
@@ -194,6 +196,11 @@ provider:
         issuerUrl: https://cognito-idp.${self:provider.region}.amazonaws.com/${env:COGNITO_USER_POOL_ID}
         audience:
           - ${env:COGNITO_CLIENT_ID}
+    # NOTE: Stage-level throttling (DefaultRouteSettings) is applied via the
+    # `resources.extensions.HttpApiStage` block at the bottom of this file.
+    # API Gateway throttling replaces the previous in-memory per-container
+    # rate limiter (deleted in this PR) — its counter is centralized and
+    # actually enforces a global request rate across all Lambda containers.
 
 functions:
   api:
@@ -271,6 +278,27 @@ functions:
           description: Auto-release scheduled echoes
 
 resources:
+  # Stage-level throttling for the HTTP API. Serverless Framework creates the
+  # default stage as logical resource `HttpApiStage` (CloudFormation type
+  # AWS::ApiGatewayV2::Stage). We override its DefaultRouteSettings so that
+  # API Gateway enforces a centralized request rate across ALL Lambda
+  # containers — replacing the deleted in-memory limiter which only counted
+  # requests within a single container.
+  #
+  # ThrottlingRateLimit:  steady-state requests per second (token refill rate)
+  # ThrottlingBurstLimit: peak burst capacity (token bucket size)
+  #
+  # Numbers chosen to allow normal usage but cap abuse. Per-route burst caps
+  # (e.g., stricter on /api/mirrorgpt/chat) can be added in a follow-up PR
+  # via the `routeSettings` map on this same Stage resource.
+  #
+  # Docs: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-stage.html#cfn-apigatewayv2-stage-defaultroutesettings
+  extensions:
+    HttpApiStage:
+      Properties:
+        DefaultRouteSettings:
+          ThrottlingBurstLimit: 5000
+          ThrottlingRateLimit: 1000
   Resources:
     UsersTable:
       Type: AWS::DynamoDB::Table
