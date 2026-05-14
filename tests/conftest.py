@@ -320,16 +320,6 @@ def mock_jwt_token():
 
 
 @pytest.fixture(autouse=True)
-def reset_rate_limiter():
-    """Reset rate limiter between tests"""
-    from src.app.core.rate_limiting import rate_limiter
-
-    rate_limiter.requests.clear()
-    yield
-    rate_limiter.requests.clear()
-
-
-@pytest.fixture(autouse=True)
 def clean_dependency_overrides():
     """Ensure dependency overrides are properly set for each test"""
     # Re-establish clean dependency overrides before each test

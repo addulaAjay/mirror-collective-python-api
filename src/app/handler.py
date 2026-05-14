@@ -44,7 +44,7 @@ app = FastAPI(
     - 💬 AI-powered Chat Mirror
     - 🔒 JWT Token Management
     - 📧 Email Services with AWS SES
-    - 🛡️ Rate Limiting and Security Headers
+    - 🛡️ Security Headers
     - 🔄 Password Reset Functionality
 
     ### Authentication
@@ -53,7 +53,8 @@ app = FastAPI(
     Include the token in the `Authorization` header as `Bearer <token>`.
 
     ### Rate Limiting
-    API requests are rate-limited to 100 requests per minute per IP address.
+    API requests are throttled at the AWS API Gateway layer
+    (see `DefaultRouteSettings` in `serverless.yml`).
     """,
     contact={
         "name": "Mirror Collective API Support",
@@ -97,14 +98,13 @@ async def request_logging_middleware(request: Request, call_next):
     return response
 
 
-# Rate limiting middleware
-@app.middleware("http")
-async def rate_limiting_middleware(request: Request, call_next):
-    from .core.rate_limiting import rate_limit_middleware
-
-    await rate_limit_middleware(request)
-    response = await call_next(request)
-    return response
+# Rate limiting is enforced at the AWS API Gateway HTTP API layer
+# (DefaultRouteSettings in serverless.yml). The previous in-memory
+# defaultdict-based limiter only saw traffic for a single Lambda container,
+# so the documented "100 requests per minute per IP" was actually multiplied
+# by the number of warm containers — providing no real protection against
+# abuse and adding overhead on every request. API Gateway maintains the
+# throttling counters centrally across all backing Lambdas.
 
 
 # Quota enforcement middleware for Echo Vault — registered as a real ASGI
