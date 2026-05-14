@@ -181,12 +181,72 @@ provider:
             - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
   logs:
     http: true
+  httpApi:
+    # JWT authorizer wired at gateway boundary. The backend (core/security.py)
+    # ALSO verifies the JWT signature via JWKS as defense-in-depth — both layers
+    # must pass for a request to reach a protected route. Cognito access tokens
+    # carry client_id (not aud); AWS HTTP API authorizer accepts either claim
+    # when validating against the `audience` setting.
+    authorizers:
+      cognitoJwtAuthorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${self:provider.region}.amazonaws.com/${env:COGNITO_USER_POOL_ID}
+        audience:
+          - ${env:COGNITO_CLIENT_ID}
 
 functions:
   api:
     handler: src/app/handler.handler
     events:
-      - httpApi: '*'
+      # ---- Public routes (no authorizer) ----
+      # Health checks (monitors / load balancers).
+      - httpApi:
+          method: GET
+          path: /health
+      - httpApi:
+          method: GET
+          path: /health/detailed
+      - httpApi:
+          method: GET
+          path: /api/health
+      - httpApi:
+          method: GET
+          path: /api/mirrorgpt/health
+      # Auth endpoints — must be reachable before the user has a token.
+      - httpApi:
+          method: POST
+          path: /api/auth/register
+      - httpApi:
+          method: POST
+          path: /api/auth/login
+      - httpApi:
+          method: POST
+          path: /api/auth/forgot-password
+      - httpApi:
+          method: POST
+          path: /api/auth/reset-password
+      - httpApi:
+          method: POST
+          path: /api/auth/refresh
+      - httpApi:
+          method: POST
+          path: /api/auth/confirm-email
+      - httpApi:
+          method: POST
+          path: /api/auth/resend-verification-code
+      # IAP webhooks — Apple/Google sign the payload; signature is verified
+      # by receipt_validator. Cognito JWT does not apply.
+      - httpApi:
+          method: POST
+          path: /verify-purchase
+      # ---- Authenticated catch-all ----
+      # Every other route requires a valid Cognito JWT.
+      - httpApi:
+          method: '*'
+          path: '*'
+          authorizer:
+            name: cognitoJwtAuthorizer
 
   # Scheduled job for trial expiration checks
   trialExpirationCheck:
