@@ -2,6 +2,7 @@
 Storage quota service for Echo Vault storage management
 """
 
+import asyncio
 import logging
 import os
 from decimal import Decimal
@@ -9,6 +10,7 @@ from functools import lru_cache
 from typing import Dict
 
 import boto3
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,18 @@ class StorageQuotaService:
             dynamodb_service: DynamoDB service for user profile operations
         """
         self.dynamodb = dynamodb_service
-        self.s3_client = boto3.client("s3")
+        # Tune boto3 S3 client for high-concurrency FastAPI/Lambda:
+        # - max_pool_connections=50 keeps the listing paginator (potentially
+        #   many HTTP round-trips for a chatty user) from starving other S3
+        #   work on the same client.
+        # - retries=adaptive backs off intelligently on S3 throttling.
+        self.s3_client = boto3.client(
+            "s3",
+            config=Config(
+                max_pool_connections=50,
+                retries={"max_attempts": 5, "mode": "adaptive"},
+            ),
+        )
         self.bucket_name = os.getenv("ECHO_MEDIA_BUCKET", "echo-vault-storage-dev")
 
     async def calculate_user_storage_usage(self, user_id: str) -> float:
@@ -40,16 +53,26 @@ class StorageQuotaService:
             float: Storage used in GB
         """
         try:
-            total_bytes = 0
             prefix = f"users/{user_id}/"
 
-            # Use paginator to handle large numbers of objects
-            paginator = self.s3_client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+            def _sum_objects_sync() -> int:
+                """Synchronously iterate the S3 paginator and sum object sizes.
 
-            for page in pages:
-                if "Contents" in page:
-                    total_bytes += sum(obj["Size"] for obj in page["Contents"])
+                Each paginator.paginate() iteration issues a blocking
+                ListObjectsV2 HTTP call. Running this inline inside the async
+                method would block the FastAPI event loop for the duration of
+                the entire pagination (potentially many seconds for chatty
+                users). We offload the whole iteration to a worker thread.
+                """
+                paginator = self.s3_client.get_paginator("list_objects_v2")
+                pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+                total = 0
+                for page in pages:
+                    if "Contents" in page:
+                        total += sum(obj["Size"] for obj in page["Contents"])
+                return total
+
+            total_bytes = await asyncio.to_thread(_sum_objects_sync)
 
             # Convert bytes to GB
             total_gb = total_bytes / (1024**3)

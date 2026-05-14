@@ -1,18 +1,29 @@
 # app/services/sns_service.py
+import asyncio
 import json
 import logging
 import os
 from typing import Any, Dict, Optional
 
 import boto3
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
 
 class SNSService:
     def __init__(self):
+        # Tune boto3 client for high-concurrency FastAPI/Lambda:
+        # - max_pool_connections=50 prevents pool exhaustion under push bursts
+        #   (e.g. broadcast topic publish + per-device direct publishes).
+        # - retries=adaptive backs off intelligently on SNS throttling.
         self.sns = boto3.client(
-            "sns", region_name=os.getenv("AWS_SNS_REGION", "us-east-1")
+            "sns",
+            region_name=os.getenv("AWS_SNS_REGION", "us-east-1"),
+            config=Config(
+                max_pool_connections=50,
+                retries={"max_attempts": 5, "mode": "adaptive"},
+            ),
         )
         self.topic_arn = os.getenv("SNS_TOPIC_ARN")
         # Support both platform-specific and generic ARNs
@@ -156,3 +167,48 @@ class SNSService:
         except Exception as e:
             logger.error(f"Failed to delete SNS endpoint {endpoint_arn}: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Async variants
+    # ------------------------------------------------------------------
+    # The sync methods above remain in place because they're called from a
+    # background APScheduler thread (see services/scheduler.py) where the
+    # event loop is not running. The async variants below delegate to the
+    # sync implementations via asyncio.to_thread so async callers (FastAPI
+    # routes) can opt-in to non-blocking SNS calls without spawning their
+    # own threads. Once all callers migrate, the sync wrappers can become
+    # thin proxies or be removed.
+
+    async def create_platform_endpoint_async(
+        self, token: str, platform: str, user_id: str
+    ) -> str:
+        """Async variant of create_platform_endpoint (offloads to threadpool)."""
+        return await asyncio.to_thread(
+            self.create_platform_endpoint, token, platform, user_id
+        )
+
+    async def subscribe_to_topic_async(self, endpoint_arn: str) -> str:
+        """Async variant of subscribe_to_topic (offloads to threadpool)."""
+        return await asyncio.to_thread(self.subscribe_to_topic, endpoint_arn)
+
+    async def publish_to_topic_async(
+        self, title: str, body: str, data: Optional[Dict[str, Any]] = None
+    ):
+        """Async variant of publish_to_topic (offloads to threadpool)."""
+        return await asyncio.to_thread(self.publish_to_topic, title, body, data)
+
+    async def publish_to_endpoint_async(
+        self,
+        endpoint_arn: str,
+        title: str,
+        body: str,
+        data: Optional[Dict[str, Any]] = None,
+    ):
+        """Async variant of publish_to_endpoint (offloads to threadpool)."""
+        return await asyncio.to_thread(
+            self.publish_to_endpoint, endpoint_arn, title, body, data
+        )
+
+    async def delete_platform_endpoint_async(self, endpoint_arn: str):
+        """Async variant of delete_platform_endpoint (offloads to threadpool)."""
+        return await asyncio.to_thread(self.delete_platform_endpoint, endpoint_arn)
