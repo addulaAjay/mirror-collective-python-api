@@ -274,8 +274,11 @@ resources:
   Resources:
     UsersTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-users-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -291,18 +294,16 @@ resources:
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
 
     ActivityTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-activity-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -313,17 +314,16 @@ resources:
             KeyType: HASH
           - AttributeName: activity_date
             KeyType: RANGE
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     # Note: ConversationsTable renamed to -v2 to resolve CloudFormation replacement issue
     # This allows deployment to proceed without requiring manual table deletion
     ConversationsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-conversations-${self:provider.stage}-v2
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: conversation_id
             AttributeType: S
@@ -345,18 +345,14 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     MessagesTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-messages-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: conversation_id
             AttributeType: S
@@ -367,31 +363,31 @@ resources:
             KeyType: HASH
           - AttributeName: timestamp
             KeyType: RANGE
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     # MirrorGPT Tables
     ArchetypeProfilesTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-archetype-profiles-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
         KeySchema:
           - AttributeName: user_id
             KeyType: HASH
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
 
     MirrorMomentsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-mirror-moments-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -415,9 +411,6 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: time-index
             KeySchema:
               - AttributeName: user_id
@@ -426,18 +419,14 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     PatternLoopsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-pattern-loops-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -461,9 +450,6 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: activity-index
             KeySchema:
               - AttributeName: user_id
@@ -472,18 +458,14 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     QuizResultsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-quiz-results-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: quiz_id
             AttributeType: S
@@ -503,33 +485,28 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     QuizQuestionsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-quiz-questions-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: id
             AttributeType: N
         KeySchema:
           - AttributeName: id
             KeyType: HASH
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     DeviceTokensTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:service}-device-tokens-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -540,16 +517,15 @@ resources:
             KeyType: HASH
           - AttributeName: device_token
             KeyType: RANGE
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     # Echo Vault Tables
     EchoVaultEchoesTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_ECHOES_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: echo_id
             AttributeType: S
@@ -573,9 +549,6 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: category-index
             KeySchema:
               - AttributeName: user_id
@@ -584,27 +557,22 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: recipient-echoes-index
             KeySchema:
               - AttributeName: recipient_id
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
 
     EchoVaultRecipientsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_RECIPIENTS_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: recipient_id
             AttributeType: S
@@ -624,36 +592,28 @@ resources:
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: email-index
             KeySchema:
               - AttributeName: email
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: recipient-user-id-index
             KeySchema:
               - AttributeName: recipient_user_id
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
 
     EchoVaultGuardiansTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_GUARDIANS_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: guardian_id
             AttributeType: S
@@ -671,22 +631,12 @@ resources:
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
           - IndexName: email-index
             KeySchema:
               - AttributeName: email
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     EchoVaultMediaBucket:
       Type: AWS::S3::Bucket
@@ -707,8 +657,11 @@ resources:
     # Subscription/IAP Tables
     SubscriptionsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_SUBSCRIPTIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -726,18 +679,14 @@ resources:
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     SubscriptionEventsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_SUBSCRIPTION_EVENTS_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: event_id
             AttributeType: S
@@ -757,13 +706,6 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     # ============================================================
     # Reflection Room V1 Tables
@@ -773,8 +715,11 @@ resources:
     # PK=session_id; GSI by user_id + created_at desc to find latest active.
     ReflectionSessionsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_REFLECTION_SESSIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: session_id
             AttributeType: S
@@ -794,13 +739,6 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
         TimeToLiveSpecification:
           AttributeName: ttl
           Enabled: true
@@ -808,8 +746,11 @@ resources:
     # mc_echo_loop_state: active loop state per user (PK=user_id, SK=loop_id).
     EchoLoopStateTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_ECHO_LOOP_STATE_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -820,18 +761,17 @@ resources:
             KeyType: HASH
           - AttributeName: loop_id
             KeyType: RANGE
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     # mc_practice_completions: per-user completion log.
     # PK=user_id, SK=completion_id (sortable "<ts_iso>#<uuid>").
     # GSI by practice_id+completed_at for cooldown lookup.
     PracticeCompletionsTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_PRACTICE_COMPLETIONS_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
@@ -855,29 +795,21 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-            ProvisionedThroughput:
-              ReadCapacityUnits: 1
-              WriteCapacityUnits: 1
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
     # mc_user_personalization: per-user prefs/flags/recent_use/helpfulness.
     UserPersonalizationTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.DYNAMODB_USER_PERSONALIZATION_TABLE}
+        BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: user_id
             AttributeType: S
         KeySchema:
           - AttributeName: user_id
             KeyType: HASH
-        BillingMode: PROVISIONED
-        ProvisionedThroughput:
-          ReadCapacityUnits: 1
-          WriteCapacityUnits: 1
 
 plugins:
   - serverless-python-requirements
