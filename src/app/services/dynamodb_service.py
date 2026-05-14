@@ -2,13 +2,17 @@
 DynamoDB service for user profile management
 """
 
+import asyncio
 import logging
 import os
+import time
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aioboto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError
@@ -16,6 +20,22 @@ from ..models.conversation import Conversation, ConversationMessage
 from ..models.user_profile import UserProfile
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Quiz-questions in-process cache.
+#
+# `get_quiz_questions` runs a full table.scan(), but the contents are static
+# configuration data that changes at deploy-time, not per-request. Caching the
+# scan result for a few minutes at module scope avoids hammering DynamoDB on
+# every request that touches the quiz flow.
+#
+# State is at module scope (not instance scope) so it survives Lambda container
+# reuse across `lru_cache`-cleared singleton instances and is shared by all
+# `DynamoDBService` clones that may end up in the same process during tests.
+# ---------------------------------------------------------------------------
+_QUIZ_CACHE: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+_QUIZ_CACHE_TTL: int = int(os.getenv("QUIZ_QUESTIONS_CACHE_TTL_SECONDS", "300"))
+_QUIZ_CACHE_LOCK: asyncio.Lock = asyncio.Lock()
 
 
 class DynamoDBService:
@@ -57,9 +77,19 @@ class DynamoDBService:
         )
 
         # Initialize aioboto3 session
-
-        # Initialize aioboto3 session
         self.session = aioboto3.Session()
+
+        # Long-lived aioboto3 resource state. The aiobotocore client backing
+        # the resource performs TLS handshakes, credential resolution, and
+        # endpoint discovery on construction, so building one per call is
+        # expensive at our throughput target. We lazily create a single
+        # resource on first use and keep its async context manager open via
+        # `AsyncExitStack` for the lifetime of this service instance (i.e. the
+        # life of the Lambda container, thanks to the module-level singleton
+        # factory at the bottom of this file).
+        self._exit_stack: Optional[AsyncExitStack] = None
+        self._resource: Any = None
+        self._init_lock: asyncio.Lock = asyncio.Lock()
 
         # Log configuration
         target = "Local DynamoDB" if self.endpoint_url else "AWS DynamoDB"
@@ -72,9 +102,9 @@ class DynamoDBService:
         if self.endpoint_url:
             logger.info(f"Using local DynamoDB endpoint: {self.endpoint_url}")
 
-    def _get_dynamodb_kwargs(self):
-        """Get DynamoDB connection parameters (local or AWS)"""
-        kwargs = {"region_name": self.region}
+    def _get_dynamodb_kwargs(self) -> Dict[str, Any]:
+        """Get DynamoDB connection parameters (local or AWS)."""
+        kwargs: Dict[str, Any] = {"region_name": self.region}
 
         if self.endpoint_url:
             # Local DynamoDB configuration
@@ -86,7 +116,53 @@ class DynamoDBService:
                 }
             )
 
+        # Reuse connections aggressively and let aiobotocore handle
+        # transient failures (adaptive retries back off on throttling).
+        kwargs["config"] = Config(
+            max_pool_connections=50,
+            retries={"max_attempts": 5, "mode": "adaptive"},
+        )
+
         return kwargs
+
+    async def _get_resource(self) -> Any:
+        """Return the long-lived aioboto3 DynamoDB resource, creating it on
+        first use.
+
+        Uses a double-checked lock so concurrent callers during cold-start
+        only pay the construction cost once. The resource is held alive via
+        an :class:`AsyncExitStack` that is closed in :meth:`close` (called
+        in tests; Lambda relies on container teardown).
+        """
+        if self._resource is not None:
+            return self._resource
+        async with self._init_lock:
+            if self._resource is not None:
+                return self._resource
+            stack = AsyncExitStack()
+            try:
+                resource = await stack.enter_async_context(
+                    self.session.resource("dynamodb", **self._get_dynamodb_kwargs())
+                )
+            except Exception:
+                # Ensure we don't leak the partially-entered stack on failure
+                await stack.aclose()
+                raise
+            self._exit_stack = stack
+            self._resource = resource
+            return self._resource
+
+    async def close(self) -> None:
+        """Tear down the long-lived resource. Safe to call multiple times.
+
+        Primarily used by tests; the Lambda runtime will clean up the
+        container on shutdown.
+        """
+        stack = self._exit_stack
+        self._exit_stack = None
+        self._resource = None
+        if stack is not None:
+            await stack.aclose()
 
     async def get_user_profile(self, user_id: str) -> Optional[UserProfile]:
         """
@@ -99,21 +175,19 @@ class DynamoDBService:
             UserProfile if found, None otherwise
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                response = await table.get_item(Key={"user_id": user_id})
+            response = await table.get_item(Key={"user_id": user_id})
 
-                if "Item" in response:
-                    item = response["Item"]
-                    # email is required but may be absent for profiles created
-                    # before the field was enforced — default to empty string
-                    # so the caller can repair it with Cognito data
-                    item.setdefault("email", "")
-                    return UserProfile.from_dynamodb_item(item)
-                return None
+            if "Item" in response:
+                item = response["Item"]
+                # email is required but may be absent for profiles created
+                # before the field was enforced — default to empty string
+                # so the caller can repair it with Cognito data
+                item.setdefault("email", "")
+                return UserProfile.from_dynamodb_item(item)
+            return None
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting user profile {user_id}: {e}")
@@ -133,20 +207,18 @@ class DynamoDBService:
             Created UserProfile
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                item = user_profile.to_dynamodb_item()
+            item = user_profile.to_dynamodb_item()
 
-                # Use condition to prevent overwriting existing users
-                await table.put_item(
-                    Item=item, ConditionExpression="attribute_not_exists(user_id)"
-                )
+            # Use condition to prevent overwriting existing users
+            await table.put_item(
+                Item=item, ConditionExpression="attribute_not_exists(user_id)"
+            )
 
-                logger.info(f"Created user profile for {user_profile.user_id}")
-                return user_profile
+            logger.info(f"Created user profile for {user_profile.user_id}")
+            return user_profile
 
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -182,17 +254,15 @@ class DynamoDBService:
                 datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             )
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                item = user_profile.to_dynamodb_item()
+            item = user_profile.to_dynamodb_item()
 
-                await table.put_item(Item=item)
+            await table.put_item(Item=item)
 
-                logger.info(f"Updated user profile for {user_profile.user_id}")
-                return user_profile
+            logger.info(f"Updated user profile for {user_profile.user_id}")
+            return user_profile
 
         except ClientError as e:
             logger.error(f"DynamoDB error updating user profile: {e}")
@@ -212,15 +282,13 @@ class DynamoDBService:
             True if deleted successfully
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                await table.delete_item(Key={"user_id": user_id})
+            await table.delete_item(Key={"user_id": user_id})
 
-                logger.info(f"Deleted user profile for {user_id}")
-                return True
+            logger.info(f"Deleted user profile for {user_id}")
+            return True
 
         except ClientError as e:
             logger.error(f"DynamoDB error deleting user profile: {e}")
@@ -271,41 +339,37 @@ class DynamoDBService:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.activity_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.activity_table)
 
-                # Use atomic updates to increment counters
-                key = {"user_id": user_id, "activity_date": today}
+            # Use atomic updates to increment counters
+            key = {"user_id": user_id, "activity_date": today}
 
-                if activity_type == "chat":
-                    await table.update_item(
-                        Key=key,
-                        UpdateExpression=(
-                            "ADD chat_messages :inc SET last_chat_at = :time"
-                        ),
-                        ExpressionAttributeValues={":inc": 1, ":time": current_time},
-                    )
-                elif activity_type == "login":
-                    await table.update_item(
-                        Key=key,
-                        UpdateExpression=(
-                            "ADD login_count :inc SET last_login_at = :time"
-                        ),
-                        ExpressionAttributeValues={":inc": 1, ":time": current_time},
-                    )
+            if activity_type == "chat":
+                await table.update_item(
+                    Key=key,
+                    UpdateExpression=(
+                        "ADD chat_messages :inc SET last_chat_at = :time"
+                    ),
+                    ExpressionAttributeValues={":inc": 1, ":time": current_time},
+                )
+            elif activity_type == "login":
+                await table.update_item(
+                    Key=key,
+                    UpdateExpression=("ADD login_count :inc SET last_login_at = :time"),
+                    ExpressionAttributeValues={":inc": 1, ":time": current_time},
+                )
 
-                # Also update the user profile's conversation count if it's a chat
-                if activity_type == "chat":
-                    users_table = await dynamodb.Table(self.users_table)
-                    await users_table.update_item(
-                        Key={"user_id": user_id},
-                        UpdateExpression=(
-                            "ADD conversation_count :inc SET updated_at = :time"
-                        ),
-                        ExpressionAttributeValues={":inc": 1, ":time": current_time},
-                    )
+            # Also update the user profile's conversation count if it's a chat
+            if activity_type == "chat":
+                users_table = await dynamodb.Table(self.users_table)
+                await users_table.update_item(
+                    Key={"user_id": user_id},
+                    UpdateExpression=(
+                        "ADD conversation_count :inc SET updated_at = :time"
+                    ),
+                    ExpressionAttributeValues={":inc": 1, ":time": current_time},
+                )
 
         except ClientError as e:
             logger.error(f"DynamoDB error recording activity: {e}")
@@ -327,21 +391,19 @@ class DynamoDBService:
             # Normalize email to lowercase for case-insensitive matching
             normalized_email = email.lower().strip()
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                # Query GSI on email
-                response = await table.query(
-                    IndexName="email-index",
-                    KeyConditionExpression="email = :email",
-                    ExpressionAttributeValues={":email": normalized_email},
-                )
+            # Query GSI on email
+            response = await table.query(
+                IndexName="email-index",
+                KeyConditionExpression="email = :email",
+                ExpressionAttributeValues={":email": normalized_email},
+            )
 
-                if response["Items"]:
-                    return UserProfile.from_dynamodb_item(response["Items"][0])
-                return None
+            if response["Items"]:
+                return UserProfile.from_dynamodb_item(response["Items"][0])
+            return None
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting user by email: {e}")
@@ -360,19 +422,17 @@ class DynamoDBService:
         try:
             current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                await table.update_item(
-                    Key={"user_id": user_id},
-                    UpdateExpression="SET last_login_at = :time, updated_at = :time",
-                    ExpressionAttributeValues={":time": current_time},
-                )
+            await table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET last_login_at = :time, updated_at = :time",
+                ExpressionAttributeValues={":time": current_time},
+            )
 
-                # Also record login activity
-                await self.record_user_activity(user_id, "login")
+            # Also record login activity
+            await self.record_user_activity(user_id, "login")
 
         except Exception as e:
             logger.error(f"Error updating last login: {e}")
@@ -396,24 +456,22 @@ class DynamoDBService:
             InternalServerError: If conversation creation fails
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.conversations_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
 
-                # Convert to DynamoDB item
-                item = conversation.to_dynamodb_item()
+            # Convert to DynamoDB item
+            item = conversation.to_dynamodb_item()
 
-                await table.put_item(
-                    Item=item,
-                    ConditionExpression="attribute_not_exists(conversation_id)",
-                )
+            await table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(conversation_id)",
+            )
 
-                logger.info(
-                    f"Created conversation {conversation.conversation_id} "
-                    f"for user {conversation.user_id}"
-                )
-                return conversation
+            logger.info(
+                f"Created conversation {conversation.conversation_id} "
+                f"for user {conversation.user_id}"
+            )
+            return conversation
 
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -442,27 +500,25 @@ class DynamoDBService:
             Optional[Conversation]: The conversation if found and belongs to user
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.conversations_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
 
-                response = await table.get_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id}
-                )
+            response = await table.get_item(
+                Key={"conversation_id": conversation_id, "user_id": user_id}
+            )
 
-                if "Item" in response:
-                    conversation = Conversation.from_dynamodb_item(response["Item"])
-                    # Security check: ensure conversation belongs to the requesting user
-                    if conversation.user_id == user_id:
-                        return conversation
-                    else:
-                        logger.warning(
-                            f"User {user_id} attempted to access conversation "
-                            f"{conversation_id} owned by {conversation.user_id}"
-                        )
-                        return None
-                return None
+            if "Item" in response:
+                conversation = Conversation.from_dynamodb_item(response["Item"])
+                # Security check: ensure conversation belongs to the requesting user
+                if conversation.user_id == user_id:
+                    return conversation
+                else:
+                    logger.warning(
+                        f"User {user_id} attempted to access conversation "
+                        f"{conversation_id} owned by {conversation.user_id}"
+                    )
+                    return None
+            return None
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting conversation: {e}")
@@ -482,37 +538,35 @@ class DynamoDBService:
             Conversation: The updated conversation
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.conversations_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
 
-                # Update only specific fields to avoid overwriting
-                update_expression = (
-                    "SET #title = :title, updated_at = :updated_at, "
-                    "message_count = :message_count, total_tokens = :total_tokens, "
-                    "last_message_at = :last_message_at"
-                )
-                expression_attribute_names = {"#title": "title"}
-                expression_attribute_values = {
-                    ":title": conversation.title,
-                    ":updated_at": conversation.updated_at,
-                    ":message_count": conversation.message_count,
-                    ":total_tokens": conversation.total_tokens,
-                    ":last_message_at": conversation.last_message_at,
-                }
+            # Update only specific fields to avoid overwriting
+            update_expression = (
+                "SET #title = :title, updated_at = :updated_at, "
+                "message_count = :message_count, total_tokens = :total_tokens, "
+                "last_message_at = :last_message_at"
+            )
+            expression_attribute_names = {"#title": "title"}
+            expression_attribute_values = {
+                ":title": conversation.title,
+                ":updated_at": conversation.updated_at,
+                ":message_count": conversation.message_count,
+                ":total_tokens": conversation.total_tokens,
+                ":last_message_at": conversation.last_message_at,
+            }
 
-                await table.update_item(
-                    Key={
-                        "conversation_id": conversation.conversation_id,
-                        "user_id": conversation.user_id,
-                    },
-                    UpdateExpression=update_expression,
-                    ExpressionAttributeNames=expression_attribute_names,
-                    ExpressionAttributeValues=expression_attribute_values,
-                )
+            await table.update_item(
+                Key={
+                    "conversation_id": conversation.conversation_id,
+                    "user_id": conversation.user_id,
+                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=expression_attribute_names,
+                ExpressionAttributeValues=expression_attribute_values,
+            )
 
-                return conversation
+            return conversation
 
         except ClientError as e:
             logger.error(f"DynamoDB error updating conversation: {e}")
@@ -531,33 +585,31 @@ class DynamoDBService:
         path. See docs/MIRRORGPT_CONTINUITY_MEMORY.md.
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.conversations_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
 
-                await table.update_item(
-                    Key={
-                        "conversation_id": conversation.conversation_id,
-                        "user_id": conversation.user_id,
-                    },
-                    UpdateExpression=(
-                        "SET summary = :summary, "
-                        "key_themes = :key_themes, "
-                        "open_threads = :open_threads, "
-                        "summarized_through_message_id = :stmid, "
-                        "summarized_at = :sat"
-                    ),
-                    ExpressionAttributeValues={
-                        ":summary": conversation.summary,
-                        ":key_themes": conversation.key_themes or [],
-                        ":open_threads": conversation.open_threads or [],
-                        ":stmid": conversation.summarized_through_message_id,
-                        ":sat": conversation.summarized_at,
-                    },
-                )
+            await table.update_item(
+                Key={
+                    "conversation_id": conversation.conversation_id,
+                    "user_id": conversation.user_id,
+                },
+                UpdateExpression=(
+                    "SET summary = :summary, "
+                    "key_themes = :key_themes, "
+                    "open_threads = :open_threads, "
+                    "summarized_through_message_id = :stmid, "
+                    "summarized_at = :sat"
+                ),
+                ExpressionAttributeValues={
+                    ":summary": conversation.summary,
+                    ":key_themes": conversation.key_themes or [],
+                    ":open_threads": conversation.open_threads or [],
+                    ":stmid": conversation.summarized_through_message_id,
+                    ":sat": conversation.summarized_at,
+                },
+            )
 
-                return conversation
+            return conversation
 
         except ClientError as e:
             logger.error(f"DynamoDB error updating conversation summary: {e}")
@@ -583,31 +635,29 @@ class DynamoDBService:
             List[Conversation]: User's conversations
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.conversations_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
 
-                # Query using GSI (user_id + last_message_at)
-                response = await table.query(
-                    IndexName="user-conversations-index",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                    ScanIndexForward=False,  # Sort by last_message_at descending
-                    Limit=limit,
-                )
+            # Query using GSI (user_id + last_message_at)
+            response = await table.query(
+                IndexName="user-conversations-index",
+                KeyConditionExpression="user_id = :user_id",
+                ExpressionAttributeValues={":user_id": user_id},
+                ScanIndexForward=False,  # Sort by last_message_at descending
+                Limit=limit,
+            )
 
-                conversations = []
-                for item in response.get("Items", []):
-                    conversation = Conversation.from_dynamodb_item(item)
+            conversations = []
+            for item in response.get("Items", []):
+                conversation = Conversation.from_dynamodb_item(item)
 
-                    # Filter archived conversations if not requested
-                    if not include_archived and conversation.is_archived:
-                        continue
+                # Filter archived conversations if not requested
+                if not include_archived and conversation.is_archived:
+                    continue
 
-                    conversations.append(conversation)
+                conversations.append(conversation)
 
-                return conversations
+            return conversations
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting user conversations: {e}")
@@ -628,34 +678,30 @@ class DynamoDBService:
             bool: True if archived successfully
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.conversations_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
 
-                # First verify the conversation belongs to the user
-                response = await table.get_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id}
-                )
-                if "Item" not in response:
-                    return False
+            # First verify the conversation belongs to the user
+            response = await table.get_item(
+                Key={"conversation_id": conversation_id, "user_id": user_id}
+            )
+            if "Item" not in response:
+                return False
 
-                update_expr = "SET is_archived = :archived, updated_at = :updated_at"
-                await table.update_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id},
-                    UpdateExpression=update_expr,
-                    ExpressionAttributeValues={
-                        ":archived": True,
-                        ":updated_at": datetime.now(timezone.utc)
-                        .isoformat()
-                        .replace("+00:00", "Z"),
-                    },
-                )
+            update_expr = "SET is_archived = :archived, updated_at = :updated_at"
+            await table.update_item(
+                Key={"conversation_id": conversation_id, "user_id": user_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues={
+                    ":archived": True,
+                    ":updated_at": datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                },
+            )
 
-                logger.info(
-                    f"Archived conversation {conversation_id} for user {user_id}"
-                )
-                return True
+            logger.info(f"Archived conversation {conversation_id} for user {user_id}")
+            return True
 
         except ClientError as e:
             logger.error(f"DynamoDB error archiving conversation: {e}")
@@ -676,49 +722,47 @@ class DynamoDBService:
             bool: True if deleted successfully
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
+            dynamodb = await self._get_resource()
 
-                # Delete all messages first
-                messages_table = await dynamodb.Table(self.messages_table)
+            # Delete all messages first
+            messages_table = await dynamodb.Table(self.messages_table)
 
-                # Query all messages for this conversation
-                response = await messages_table.query(
-                    KeyConditionExpression="conversation_id = :conversation_id",
-                    ExpressionAttributeValues={":conversation_id": conversation_id},
-                )
+            # Query all messages for this conversation
+            response = await messages_table.query(
+                KeyConditionExpression="conversation_id = :conversation_id",
+                ExpressionAttributeValues={":conversation_id": conversation_id},
+            )
 
-                # Delete messages in batches
-                if response.get("Items"):
-                    with messages_table.batch_writer() as batch:
-                        for item in response["Items"]:
-                            batch.delete_item(
-                                Key={
-                                    "conversation_id": item["conversation_id"],
-                                    "timestamp": item["timestamp"],
-                                }
-                            )
+            # Delete messages in batches
+            if response.get("Items"):
+                with messages_table.batch_writer() as batch:
+                    for item in response["Items"]:
+                        batch.delete_item(
+                            Key={
+                                "conversation_id": item["conversation_id"],
+                                "timestamp": item["timestamp"],
+                            }
+                        )
 
-                # Delete the conversation
-                conversations_table = await dynamodb.Table(self.conversations_table)
+            # Delete the conversation
+            conversations_table = await dynamodb.Table(self.conversations_table)
 
-                # First verify the conversation belongs to the user
-                conversation_response = await conversations_table.get_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id}
-                )
-                if "Item" not in conversation_response:
-                    return False
+            # First verify the conversation belongs to the user
+            conversation_response = await conversations_table.get_item(
+                Key={"conversation_id": conversation_id, "user_id": user_id}
+            )
+            if "Item" not in conversation_response:
+                return False
 
-                await conversations_table.delete_item(
-                    Key={"conversation_id": conversation_id, "user_id": user_id}
-                )
+            await conversations_table.delete_item(
+                Key={"conversation_id": conversation_id, "user_id": user_id}
+            )
 
-                logger.info(
-                    f"Deleted conversation {conversation_id} and its messages "
-                    f"for user {user_id}"
-                )
-                return True
+            logger.info(
+                f"Deleted conversation {conversation_id} and its messages "
+                f"for user {user_id}"
+            )
+            return True
 
         except ClientError as e:
             logger.error(f"DynamoDB error deleting conversation: {e}")
@@ -742,21 +786,19 @@ class DynamoDBService:
             ConversationMessage: The created message
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.messages_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.messages_table)
 
-                # Convert to DynamoDB item
-                item = message.to_dynamodb_item()
+            # Convert to DynamoDB item
+            item = message.to_dynamodb_item()
 
-                await table.put_item(Item=item)
+            await table.put_item(Item=item)
 
-                logger.debug(
-                    f"Created message {message.message_id} in conversation "
-                    f"{message.conversation_id}"
-                )
-                return message
+            logger.debug(
+                f"Created message {message.message_id} in conversation "
+                f"{message.conversation_id}"
+            )
+            return message
 
         except ClientError as e:
             logger.error(f"DynamoDB error creating message: {e}")
@@ -783,33 +825,31 @@ class DynamoDBService:
             tuple: (messages, next_pagination_key)
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.messages_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.messages_table)
 
-                query_kwargs = {
-                    "KeyConditionExpression": "conversation_id = :conversation_id",
-                    "ExpressionAttributeValues": {":conversation_id": conversation_id},
-                    "ScanIndexForward": True,  # Sort by timestamp ascending
-                }
+            query_kwargs = {
+                "KeyConditionExpression": "conversation_id = :conversation_id",
+                "ExpressionAttributeValues": {":conversation_id": conversation_id},
+                "ScanIndexForward": True,  # Sort by timestamp ascending
+            }
 
-                if limit:
-                    query_kwargs["Limit"] = limit
+            if limit:
+                query_kwargs["Limit"] = limit
 
-                if last_evaluated_key:
-                    query_kwargs["ExclusiveStartKey"] = last_evaluated_key
+            if last_evaluated_key:
+                query_kwargs["ExclusiveStartKey"] = last_evaluated_key
 
-                response = await table.query(**query_kwargs)
+            response = await table.query(**query_kwargs)
 
-                messages = []
-                for item in response.get("Items", []):
-                    messages.append(ConversationMessage.from_dynamodb_item(item))
+            messages = []
+            for item in response.get("Items", []):
+                messages.append(ConversationMessage.from_dynamodb_item(item))
 
-                # Return pagination key if there are more items
-                next_key = response.get("LastEvaluatedKey")
+            # Return pagination key if there are more items
+            next_key = response.get("LastEvaluatedKey")
 
-                return messages, next_key
+            return messages, next_key
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting messages: {e}")
@@ -832,25 +872,23 @@ class DynamoDBService:
             List[ConversationMessage]: Recent messages in chronological order
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.messages_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.messages_table)
 
-                response = await table.query(
-                    KeyConditionExpression="conversation_id = :conversation_id",
-                    ExpressionAttributeValues={":conversation_id": conversation_id},
-                    ScanIndexForward=False,  # Get newest first
-                    Limit=limit,
-                )
+            response = await table.query(
+                KeyConditionExpression="conversation_id = :conversation_id",
+                ExpressionAttributeValues={":conversation_id": conversation_id},
+                ScanIndexForward=False,  # Get newest first
+                Limit=limit,
+            )
 
-                messages = []
-                for item in response.get("Items", []):
-                    messages.append(ConversationMessage.from_dynamodb_item(item))
+            messages = []
+            for item in response.get("Items", []):
+                messages.append(ConversationMessage.from_dynamodb_item(item))
 
-                # Reverse to get chronological order (oldest first)
-                messages.reverse()
-                return messages
+            # Reverse to get chronological order (oldest first)
+            messages.reverse()
+            return messages
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting recent messages: {e}")
@@ -864,22 +902,47 @@ class DynamoDBService:
     # ========================================
 
     async def get_quiz_questions(self) -> List[Dict[str, Any]]:
-        """
-        Get all active quiz questions from DynamoDB
+        """Get all active quiz questions from DynamoDB.
+
+        Quiz questions are static configuration that changes only at deploy
+        time, but historically this method ran a full `table.scan()` on every
+        request that touched the quiz flow. We cache the scan result in-process
+        with a TTL (default 5 minutes, override via
+        ``QUIZ_QUESTIONS_CACHE_TTL_SECONDS``).
 
         Returns:
-            List of question objects
+            List of question objects (the items DynamoDB returns; empty list
+            on error, mirroring previous behavior).
         """
-        try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
+        global _QUIZ_CACHE
+
+        # Fast path: serve from cache without taking the lock.
+        cached = _QUIZ_CACHE
+        if cached is not None:
+            expiry, data = cached
+            if time.monotonic() < expiry:
+                return data
+
+        # Slow path: serialize re-population so a stampede of concurrent
+        # callers (e.g. a burst of quiz starts) collapses to a single scan.
+        async with _QUIZ_CACHE_LOCK:
+            cached = _QUIZ_CACHE
+            if cached is not None:
+                expiry, data = cached
+                if time.monotonic() < expiry:
+                    return data
+            try:
+                dynamodb = await self._get_resource()
                 table = await dynamodb.Table(self.quiz_questions_table)
                 response = await table.scan()
-                return response.get("Items", [])
-        except Exception as e:
-            logger.error(f"Error getting quiz questions: {e}")
-            return []
+                questions = response.get("Items", [])
+            except Exception as e:
+                logger.error(f"Error getting quiz questions: {e}")
+                # Don't cache failures — return empty list so a transient
+                # DDB error doesn't poison the cache for 5 minutes.
+                return []
+            _QUIZ_CACHE = (time.monotonic() + _QUIZ_CACHE_TTL, questions)
+            return questions
 
     # ========================================
     # PUSH NOTIFICATION DEVICE TOKEN METHODS
@@ -910,17 +973,15 @@ class DynamoDBService:
                 platform=platform,
             )
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.device_tokens_table)
-                await table.put_item(Item=token_obj.to_dynamodb_item())
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
+            await table.put_item(Item=token_obj.to_dynamodb_item())
 
-                logger.info(
-                    f"Saved device token for user {user_id} on {platform}. "
-                    f"Endpoint: {endpoint_arn}"
-                )
-                return True
+            logger.info(
+                f"Saved device token for user {user_id} on {platform}. "
+                f"Endpoint: {endpoint_arn}"
+            )
+            return True
         except Exception as e:
             logger.error(f"Error saving device token for user {user_id}: {e}")
             return False
@@ -936,15 +997,13 @@ class DynamoDBService:
             List of device token records
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.device_tokens_table)
-                response = await table.query(
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                )
-                return response.get("Items", [])
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
+            response = await table.query(
+                KeyConditionExpression="user_id = :user_id",
+                ExpressionAttributeValues={":user_id": user_id},
+            )
+            return response.get("Items", [])
         except Exception as e:
             logger.error(f"Error getting device tokens for user {user_id}: {e}")
             return []
@@ -963,14 +1022,12 @@ class DynamoDBService:
             Device token record if found
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.device_tokens_table)
-                response = await table.get_item(
-                    Key={"user_id": user_id, "device_token": device_token}
-                )
-                return response.get("Item")
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
+            response = await table.get_item(
+                Key={"user_id": user_id, "device_token": device_token}
+            )
+            return response.get("Item")
         except Exception as e:
             logger.error(
                 f"Error getting device token {device_token} for user {user_id}: {e}"
@@ -1004,18 +1061,16 @@ class DynamoDBService:
                 platform=reg["platform"],
             )
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.device_tokens_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
 
-                # Save as GUEST
-                await table.put_item(Item=guest_token.to_dynamodb_item())
+            # Save as GUEST
+            await table.put_item(Item=guest_token.to_dynamodb_item())
 
-                # Delete the user-specific record
-                await table.delete_item(
-                    Key={"user_id": user_id, "device_token": device_token}
-                )
+            # Delete the user-specific record
+            await table.delete_item(
+                Key={"user_id": user_id, "device_token": device_token}
+            )
 
             logger.info(
                 f"De-identified device {device_token} for user {user_id} "
@@ -1031,15 +1086,13 @@ class DynamoDBService:
         Hard delete a device token record (e.g., on token invalidation)
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.device_tokens_table)
-                await table.delete_item(
-                    Key={"user_id": user_id, "device_token": device_token}
-                )
-                logger.info(f"Deleted device token {device_token} for user {user_id}")
-                return True
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
+            await table.delete_item(
+                Key={"user_id": user_id, "device_token": device_token}
+            )
+            logger.info(f"Deleted device token {device_token} for user {user_id}")
+            return True
         except Exception as e:
             logger.error(
                 f"Error deleting device token {device_token} for user {user_id}: {e}"
@@ -1052,14 +1105,12 @@ class DynamoDBService:
         Called when a real user registers the device.
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.device_tokens_table)
-                await table.delete_item(
-                    Key={"user_id": "GUEST", "device_token": device_token}
-                )
-                logger.info(f"Cleaned up guest registration for device {device_token}")
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
+            await table.delete_item(
+                Key={"user_id": "GUEST", "device_token": device_token}
+            )
+            logger.info(f"Cleaned up guest registration for device {device_token}")
         except Exception as e:
             logger.debug(f"Guest cleanup failed (likely didn't exist): {e}")
 
@@ -1076,16 +1127,14 @@ class DynamoDBService:
             Dict containing archetype profile data or None
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.archetype_profiles_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.archetype_profiles_table)
 
-                response = await table.get_item(Key={"user_id": user_id})
+            response = await table.get_item(Key={"user_id": user_id})
 
-                if "Item" in response:
-                    return dict(response["Item"])
-                return None
+            if "Item" in response:
+                return dict(response["Item"])
+            return None
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting archetype profile: {e}")
@@ -1107,17 +1156,15 @@ class DynamoDBService:
             The saved profile data
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.archetype_profiles_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.archetype_profiles_table)
 
-                await table.put_item(Item=profile_data)
+            await table.put_item(Item=profile_data)
 
-                logger.info(
-                    f"Saved archetype profile for user {profile_data.get('user_id')}"
-                )
-                return profile_data
+            logger.info(
+                f"Saved archetype profile for user {profile_data.get('user_id')}"
+            )
+            return profile_data
 
         except ClientError as e:
             logger.error(f"DynamoDB error saving archetype profile: {e}")
@@ -1141,18 +1188,16 @@ class DynamoDBService:
             The saved moment data
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.mirror_moments_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.mirror_moments_table)
 
-                await table.put_item(Item=moment_data)
+            await table.put_item(Item=moment_data)
 
-                logger.info(
-                    f"Saved mirror moment {moment_data.get('moment_id')} "
-                    f"for user {moment_data.get('user_id')}"
-                )
-                return moment_data
+            logger.info(
+                f"Saved mirror moment {moment_data.get('moment_id')} "
+                f"for user {moment_data.get('user_id')}"
+            )
+            return moment_data
 
         except ClientError as e:
             logger.error(f"DynamoDB error saving mirror moment: {e}")
@@ -1176,27 +1221,25 @@ class DynamoDBService:
             List of mirror moments
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.mirror_moments_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.mirror_moments_table)
 
-                query_kwargs: Dict[str, Any] = {
-                    "KeyConditionExpression": "user_id = :user_id",
-                    "ExpressionAttributeValues": {":user_id": user_id},
-                    "ScanIndexForward": False,  # Most recent first
-                    "Limit": limit,
-                }
+            query_kwargs: Dict[str, Any] = {
+                "KeyConditionExpression": "user_id = :user_id",
+                "ExpressionAttributeValues": {":user_id": user_id},
+                "ScanIndexForward": False,  # Most recent first
+                "Limit": limit,
+            }
 
-                if acknowledged_only:
-                    query_kwargs["FilterExpression"] = "acknowledged = :ack"
-                    if "ExpressionAttributeValues" not in query_kwargs:
-                        query_kwargs["ExpressionAttributeValues"] = {}
-                    query_kwargs["ExpressionAttributeValues"][":ack"] = True
+            if acknowledged_only:
+                query_kwargs["FilterExpression"] = "acknowledged = :ack"
+                if "ExpressionAttributeValues" not in query_kwargs:
+                    query_kwargs["ExpressionAttributeValues"] = {}
+                query_kwargs["ExpressionAttributeValues"][":ack"] = True
 
-                response = await table.query(**query_kwargs)
+            response = await table.query(**query_kwargs)
 
-                return [dict(item) for item in response.get("Items", [])]
+            return [dict(item) for item in response.get("Items", [])]
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting mirror moments: {e}")
@@ -1217,29 +1260,23 @@ class DynamoDBService:
             True if successful
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.mirror_moments_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.mirror_moments_table)
 
-                current_time = (
-                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                )
+            current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-                update_expr = "SET acknowledged = :ack, acknowledged_at = :timestamp"
-                await table.update_item(
-                    Key={"user_id": user_id, "moment_id": moment_id},
-                    UpdateExpression=update_expr,
-                    ExpressionAttributeValues={
-                        ":ack": True,
-                        ":timestamp": current_time,
-                    },
-                )
+            update_expr = "SET acknowledged = :ack, acknowledged_at = :timestamp"
+            await table.update_item(
+                Key={"user_id": user_id, "moment_id": moment_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues={
+                    ":ack": True,
+                    ":timestamp": current_time,
+                },
+            )
 
-                logger.info(
-                    f"Acknowledged mirror moment {moment_id} for user {user_id}"
-                )
-                return True
+            logger.info(f"Acknowledged mirror moment {moment_id} for user {user_id}")
+            return True
 
         except ClientError as e:
             logger.error(f"DynamoDB error acknowledging mirror moment: {e}")
@@ -1263,18 +1300,16 @@ class DynamoDBService:
             The saved loop data
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.pattern_loops_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.pattern_loops_table)
 
-                await table.put_item(Item=loop_data)
+            await table.put_item(Item=loop_data)
 
-                logger.debug(
-                    f"Saved pattern loop {loop_data.get('loop_id')} "
-                    f"for user {loop_data.get('user_id')}"
-                )
-                return loop_data
+            logger.debug(
+                f"Saved pattern loop {loop_data.get('loop_id')} "
+                f"for user {loop_data.get('user_id')}"
+            )
+            return loop_data
 
         except ClientError as e:
             logger.error(f"DynamoDB error saving pattern loop: {e}")
@@ -1297,34 +1332,32 @@ class DynamoDBService:
             List of pattern loops
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.pattern_loops_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.pattern_loops_table)
 
-                query_kwargs: Dict[str, Any] = {
-                    "KeyConditionExpression": "user_id = :user_id",
-                    "ExpressionAttributeValues": {":user_id": user_id},
-                    "ScanIndexForward": False,
+            query_kwargs: Dict[str, Any] = {
+                "KeyConditionExpression": "user_id = :user_id",
+                "ExpressionAttributeValues": {":user_id": user_id},
+                "ScanIndexForward": False,
+            }
+
+            if active_only:
+                query_kwargs["FilterExpression"] = (
+                    "#trend IN (:rising, :stable) AND #transformed <> :true"
+                )
+                query_kwargs["ExpressionAttributeNames"] = {
+                    "#trend": "trend",
+                    "#transformed": "transformation_detected",
                 }
+                if "ExpressionAttributeValues" not in query_kwargs:
+                    query_kwargs["ExpressionAttributeValues"] = {}
+                query_kwargs["ExpressionAttributeValues"].update(
+                    {":rising": "rising", ":stable": "stable", ":true": True}
+                )
 
-                if active_only:
-                    query_kwargs["FilterExpression"] = (
-                        "#trend IN (:rising, :stable) AND #transformed <> :true"
-                    )
-                    query_kwargs["ExpressionAttributeNames"] = {
-                        "#trend": "trend",
-                        "#transformed": "transformation_detected",
-                    }
-                    if "ExpressionAttributeValues" not in query_kwargs:
-                        query_kwargs["ExpressionAttributeValues"] = {}
-                    query_kwargs["ExpressionAttributeValues"].update(
-                        {":rising": "rising", ":stable": "stable", ":true": True}
-                    )
+            response = await table.query(**query_kwargs)
 
-                response = await table.query(**query_kwargs)
-
-                return [dict(item) for item in response.get("Items", [])]
+            return [dict(item) for item in response.get("Items", [])]
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting pattern loops: {e}")
@@ -1348,45 +1381,43 @@ class DynamoDBService:
             True if successful
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.pattern_loops_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.pattern_loops_table)
 
-                # Build update expression dynamically
-                update_expressions = []
-                expression_values = {}
-                expression_names = {}
+            # Build update expression dynamically
+            update_expressions = []
+            expression_values = {}
+            expression_names = {}
 
-                for field, value in updates.items():
-                    if field in [
-                        "trend",
-                        "strength_score",
-                        "transformation_detected",
-                        "last_seen",
-                        "occurrence_count",
-                    ]:
-                        attr_name = f"#{field}"
-                        attr_value = f":{field}"
+            for field, value in updates.items():
+                if field in [
+                    "trend",
+                    "strength_score",
+                    "transformation_detected",
+                    "last_seen",
+                    "occurrence_count",
+                ]:
+                    attr_name = f"#{field}"
+                    attr_value = f":{field}"
 
-                        update_expressions.append(f"{attr_name} = {attr_value}")
-                        expression_names[attr_name] = field
-                        expression_values[attr_value] = value
+                    update_expressions.append(f"{attr_name} = {attr_value}")
+                    expression_names[attr_name] = field
+                    expression_values[attr_value] = value
 
-                if not update_expressions:
-                    return False
+            if not update_expressions:
+                return False
 
-                update_expression = "SET " + ", ".join(update_expressions)
+            update_expression = "SET " + ", ".join(update_expressions)
 
-                await table.update_item(
-                    Key={"user_id": user_id, "loop_id": loop_id},
-                    UpdateExpression=update_expression,
-                    ExpressionAttributeNames=expression_names,
-                    ExpressionAttributeValues=expression_values,
-                )
+            await table.update_item(
+                Key={"user_id": user_id, "loop_id": loop_id},
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=expression_names,
+                ExpressionAttributeValues=expression_values,
+            )
 
-                logger.debug(f"Updated pattern loop {loop_id} for user {user_id}")
-                return True
+            logger.debug(f"Updated pattern loop {loop_id} for user {user_id}")
+            return True
 
         except ClientError as e:
             logger.error(f"DynamoDB error updating pattern loop: {e}")
@@ -1413,16 +1444,14 @@ class DynamoDBService:
             Item data or None
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(table_name)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(table_name)
 
-                response = await table.get_item(Key=key)
+            response = await table.get_item(Key=key)
 
-                if "Item" in response:
-                    return dict(response["Item"])
-                return None
+            if "Item" in response:
+                return dict(response["Item"])
+            return None
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting item from {table_name}: {e}")
@@ -1443,14 +1472,12 @@ class DynamoDBService:
             The stored item data
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(table_name)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(table_name)
 
-                await table.put_item(Item=item)
+            await table.put_item(Item=item)
 
-                return item
+            return item
 
         except ClientError as e:
             logger.error(f"DynamoDB error putting item to {table_name}: {e}")
@@ -1487,32 +1514,30 @@ class DynamoDBService:
             List of items
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(table_name)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(table_name)
 
-                query_kwargs = {
-                    "KeyConditionExpression": key_condition,
-                    "ExpressionAttributeValues": expression_values,
-                    "ScanIndexForward": scan_index_forward,
-                }
+            query_kwargs = {
+                "KeyConditionExpression": key_condition,
+                "ExpressionAttributeValues": expression_values,
+                "ScanIndexForward": scan_index_forward,
+            }
 
-                if index_name:
-                    query_kwargs["IndexName"] = index_name
+            if index_name:
+                query_kwargs["IndexName"] = index_name
 
-                if limit:
-                    query_kwargs["Limit"] = limit
+            if limit:
+                query_kwargs["Limit"] = limit
 
-                if filter_expression:
-                    query_kwargs["FilterExpression"] = filter_expression
+            if filter_expression:
+                query_kwargs["FilterExpression"] = filter_expression
 
-                if expression_names:
-                    query_kwargs["ExpressionAttributeNames"] = expression_names
+            if expression_names:
+                query_kwargs["ExpressionAttributeNames"] = expression_names
 
-                response = await table.query(**query_kwargs)
+            response = await table.query(**query_kwargs)
 
-                return [dict(item) for item in response.get("Items", [])]
+            return [dict(item) for item in response.get("Items", [])]
 
         except ClientError as e:
             logger.error(f"DynamoDB error querying {table_name}: {e}")
@@ -1543,23 +1568,21 @@ class DynamoDBService:
             True if successful
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(table_name)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(table_name)
 
-                update_kwargs = {
-                    "Key": key,
-                    "UpdateExpression": update_expression,
-                    "ExpressionAttributeValues": expression_values,
-                }
+            update_kwargs = {
+                "Key": key,
+                "UpdateExpression": update_expression,
+                "ExpressionAttributeValues": expression_values,
+            }
 
-                if expression_names:
-                    update_kwargs["ExpressionAttributeNames"] = expression_names
+            if expression_names:
+                update_kwargs["ExpressionAttributeNames"] = expression_names
 
-                await table.update_item(**update_kwargs)
+            await table.update_item(**update_kwargs)
 
-                return True
+            return True
 
         except ClientError as e:
             logger.error(f"DynamoDB error updating item in {table_name}: {e}")
@@ -1579,20 +1602,18 @@ class DynamoDBService:
             List of quiz results
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.quiz_results_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.quiz_results_table)
 
-                # Query by user_id. Based on create_mirrorgpt_tables.py,
-                # archetype_quiz_results has user-index
-                response = await table.query(
-                    IndexName="user-index",
-                    KeyConditionExpression="user_id = :uid",
-                    ExpressionAttributeValues={":uid": user_id},
-                )
+            # Query by user_id. Based on create_mirrorgpt_tables.py,
+            # archetype_quiz_results has user-index
+            response = await table.query(
+                IndexName="user-index",
+                KeyConditionExpression="user_id = :uid",
+                ExpressionAttributeValues={":uid": user_id},
+            )
 
-                return [dict(item) for item in response.get("Items", [])]
+            return [dict(item) for item in response.get("Items", [])]
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting quiz results for {user_id}: {e}")
@@ -1612,25 +1633,23 @@ class DynamoDBService:
             Dict with success status and quiz_id
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.quiz_results_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.quiz_results_table)
 
-                # Add quiz_id as partition key if not present
-                if "quiz_id" not in quiz_data:
-                    now_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                    quiz_data["quiz_id"] = f"quiz_{quiz_data['user_id']}_{now_str}"
+            # Add quiz_id as partition key if not present
+            if "quiz_id" not in quiz_data:
+                now_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                quiz_data["quiz_id"] = f"quiz_{quiz_data['user_id']}_{now_str}"
 
-                await table.put_item(Item=quiz_data)
+            await table.put_item(Item=quiz_data)
 
-                logger.info(f"Quiz results saved for user {quiz_data['user_id']}")
+            logger.info(f"Quiz results saved for user {quiz_data['user_id']}")
 
-                return {
-                    "success": True,
-                    "quiz_id": quiz_data["quiz_id"],
-                    "user_id": quiz_data["user_id"],
-                }
+            return {
+                "success": True,
+                "quiz_id": quiz_data["quiz_id"],
+                "user_id": quiz_data["user_id"],
+            }
 
         except ClientError as e:
             logger.error(f"DynamoDB error saving quiz results: {e}")
@@ -1650,12 +1669,10 @@ class DynamoDBService:
             True if deleted successfully
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.archetype_profiles_table)
-                await table.delete_item(Key={"user_id": user_id})
-                return True
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.archetype_profiles_table)
+            await table.delete_item(Key={"user_id": user_id})
+            return True
         except Exception as e:
             logger.error(f"Error deleting archetype profile for {user_id}: {e}")
             return False
@@ -1674,33 +1691,31 @@ class DynamoDBService:
             List of UserProfile objects with active trials
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.users_table)
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.users_table)
 
-                # Scan for users with trial status
+            # Scan for users with trial status
+            response = await table.scan(
+                FilterExpression="subscription_status = :trial",
+                ExpressionAttributeValues={":trial": "trial"},
+            )
+
+            user_profiles = []
+            for item in response.get("Items", []):
+                user_profiles.append(UserProfile.from_dynamodb_item(item))
+
+            # Handle pagination if there are more items
+            while "LastEvaluatedKey" in response:
                 response = await table.scan(
                     FilterExpression="subscription_status = :trial",
                     ExpressionAttributeValues={":trial": "trial"},
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
                 )
-
-                user_profiles = []
                 for item in response.get("Items", []):
                     user_profiles.append(UserProfile.from_dynamodb_item(item))
 
-                # Handle pagination if there are more items
-                while "LastEvaluatedKey" in response:
-                    response = await table.scan(
-                        FilterExpression="subscription_status = :trial",
-                        ExpressionAttributeValues={":trial": "trial"},
-                        ExclusiveStartKey=response["LastEvaluatedKey"],
-                    )
-                    for item in response.get("Items", []):
-                        user_profiles.append(UserProfile.from_dynamodb_item(item))
-
-                logger.info(f"Found {len(user_profiles)} users with active trials")
-                return user_profiles
+            logger.info(f"Found {len(user_profiles)} users with active trials")
+            return user_profiles
 
         except ClientError as e:
             logger.error(f"DynamoDB error scanning users with trials: {e}")
