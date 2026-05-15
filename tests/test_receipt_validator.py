@@ -175,6 +175,40 @@ class TestAppleModernPath:
         assert result["valid"] is False
         assert "not found" in result["error"]
 
+    async def test_production_5xx_does_not_fall_through_to_sandbox(
+        self, apple_creds_env, monkeypatch
+    ):
+        """Regression: a 5xx (or 401/429) from production MUST NOT cause a
+        silent sandbox fallthrough — that would let a sandbox 200 on a
+        forged transaction grant production entitlements.
+        """
+        from src.app.services.receipt_validator import AppleTransactionError
+
+        validator = ReceiptValidator()
+        calls = []
+
+        async def fake_get(transaction_id, token, *, sandbox):
+            calls.append(sandbox)
+            if not sandbox:
+                # Production raises (e.g. 503 / 401 / 429)
+                raise AppleTransactionError(
+                    "Apple production transactions API returned HTTP 503"
+                )
+            # If sandbox ever gets called, this would be the bug — return
+            # a forged-looking valid transaction so the test can assert it
+            # never reaches here.
+            return {"signedTransactionInfo": "would-be-forged"}
+
+        monkeypatch.setattr(rv_module, "_apple_get_transaction", fake_get)
+
+        result = await validator.validate_apple_receipt("tx-3")
+
+        # Sandbox path must NOT have been called.
+        assert calls == [False], f"Production error fell through to sandbox: {calls}"
+        # Caller sees a clear error, not a silent valid=True.
+        assert result["valid"] is False
+        assert "503" in str(result["error"]) or "production" in str(result["error"])
+
 
 # --------------------------------------------------------------------------- #
 # Apple legacy fallback (emergency rollback path)

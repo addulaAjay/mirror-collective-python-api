@@ -54,7 +54,20 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 _session: Optional[aiohttp.ClientSession] = None
-_session_lock = asyncio.Lock()
+# Lock is allocated lazily by `_get_session_lock` because constructing
+# ``asyncio.Lock()`` at module import time binds it to whatever event loop
+# is current then — on Lambda that's the synthetic init loop, NOT the loop
+# that serves the request. A Lock bound to a dead loop raises
+# ``RuntimeError: Task got Future attached to a different loop`` the first
+# time it is awaited.
+_session_lock: Optional[asyncio.Lock] = None
+
+
+def _get_session_lock() -> asyncio.Lock:
+    global _session_lock
+    if _session_lock is None:
+        _session_lock = asyncio.Lock()
+    return _session_lock
 
 
 async def _get_session() -> aiohttp.ClientSession:
@@ -67,18 +80,24 @@ async def _get_session() -> aiohttp.ClientSession:
     global _session
     if _session is not None and not _session.closed:
         return _session
-    async with _session_lock:
+    async with _get_session_lock():
         if _session is None or _session.closed:
             _session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
     return _session
 
 
 async def close_session() -> None:
-    """Close the shared session (used in tests / graceful shutdown)."""
-    global _session
+    """Close the shared session (used in tests / graceful shutdown).
+
+    Also clears the lazy lock so a subsequent ``_get_session`` call in a
+    different event loop (typical in pytest with fresh per-test loops)
+    doesn't try to reuse a Lock bound to the previous loop.
+    """
+    global _session, _session_lock
     if _session is not None and not _session.closed:
         await _session.close()
     _session = None
+    _session_lock = None
 
 
 @lru_cache(maxsize=1)
@@ -194,16 +213,45 @@ def _build_apple_jwt(creds: Dict[str, str]) -> str:
 
 
 def _decode_jws_payload(jws: str) -> Dict:
-    """Decode a JWS-signed transaction/renewal payload from Apple.
+    r"""Decode a JWS-signed transaction/renewal payload from Apple.
 
-    Apple's payloads are signed with a leaf cert + x5c chain rooted at
-    Apple's CA. Proper verification belongs in
-    ``app_store_server_library.SignedDataVerifier`` — that library is not
-    in this project's requirements (and we can't add deps), so for now we
-    decode without signature verification. The payload is delivered over
-    a TLS-authenticated connection to Apple's own API host, so the
-    transport is authenticated; we log a TODO to swap in the SDK once
-    it's added.
+    ===========================================================================
+    TODO(security-CRITICAL): JWS signature is NOT verified here.
+
+    Apple's signedTransactionInfo is a JWS signed with a leaf cert chained
+    to Apple's CA root. Today we trust the TLS connection to
+    api.storekit.itunes.apple.com — but TLS authenticates the channel, NOT
+    the payload content. Any infrastructure compromise (caching proxy,
+    MITM at the boundary, replay) could inject a crafted JWS that claims
+    any subscription is valid -> free premium entitlements.
+
+    Required fix (separate PR):
+      1. Add ``app-store-server-library>=3.0.0,<4.0.0`` to requirements
+         (the SDK that handles x5c chain verification + Apple root cert
+         pinning + environment detection in one call).
+      2. Replace this function body with::
+
+           from appstoreserverlibrary.signed_data_verifier import (
+               SignedDataVerifier,
+           )
+           verifier = SignedDataVerifier(
+               root_certificates=[apple_root_g3_bytes],
+               enable_online_checks=False,
+               bundle_id=os.getenv("APPLE_APP_STORE_BUNDLE_ID"),
+               app_apple_id=int(os.getenv("APPLE_APP_ID", "0")),
+               environment=Environment.PRODUCTION,
+           )
+           return verifier.verify_and_decode_signed_transaction(jws)
+
+      3. Ship Apple's Root CA G3 PEM as a project asset (or fetch from
+         apple.com/certificateauthority at module load).
+      4. Add a test that an unsigned/tampered JWS is rejected.
+
+    Until then this path is BLOCKED for production use of paid
+    subscriptions — set ``LEGACY_APPLE_VERIFYRECEIPT_ENABLED=true`` and
+    let the deprecated /verifyReceipt endpoint validate (Apple still
+    serves that, with full signature verification on their side).
+    ===========================================================================
     """
     if not jws or not isinstance(jws, str):
         return {}
@@ -245,10 +293,29 @@ def _extract_transaction_id(receipt_data: str) -> Optional[str]:
     return None
 
 
+class AppleTransactionError(Exception):
+    """Raised when Apple's transactions API returns a non-recoverable error.
+
+    Distinct from "not found" (which returns None) so the caller can
+    distinguish "try sandbox" from "fatal — propagate to client."
+    """
+
+
 async def _apple_get_transaction(
     transaction_id: str, jwt_token: str, *, sandbox: bool
 ) -> Optional[Dict]:
-    """GET /inApp/v1/transactions/{transactionId} on production or sandbox."""
+    """GET /inApp/v1/transactions/{transactionId} on production or sandbox.
+
+    Returns:
+        - dict on 200 OK (the transaction payload)
+        - None on 404 (transaction genuinely doesn't exist on this env)
+
+    Raises:
+        AppleTransactionError on 4xx (other than 404) or 5xx. We MUST NOT
+        silently fall through to sandbox on auth failures (401), rate
+        limits (429), or server errors (5xx) — sandbox 200 on a forged
+        transaction would otherwise grant production entitlements.
+    """
     base = _APPLE_API_SANDBOX if sandbox else _APPLE_API_PRODUCTION
     url = f"{base}/inApp/v1/transactions/{transaction_id}"
     headers = {"Authorization": f"Bearer {jwt_token}"}
@@ -258,10 +325,14 @@ async def _apple_get_transaction(
             return None
         if resp.status >= 400:
             body = await resp.text()
-            logger.warning(
-                f"Apple transactions GET failed: status={resp.status} body={body[:300]}"
+            env = "sandbox" if sandbox else "production"
+            logger.error(
+                f"Apple {env} transactions GET failed: "
+                f"status={resp.status} body={body[:300]}"
             )
-            return None
+            raise AppleTransactionError(
+                f"Apple {env} transactions API returned HTTP {resp.status}"
+            )
         return await resp.json()
 
 
@@ -330,6 +401,14 @@ class ReceiptValidator:
 
         # Try production first; on 404, fall through to sandbox (mirrors
         # the legacy 21007 sandbox-receipt-sent-to-prod behaviour).
+        #
+        # CRITICAL: only 404 triggers the sandbox fallthrough. Auth failures
+        # (401), rate limits (429), and server errors (5xx) from production
+        # MUST propagate as errors — silently falling through on those would
+        # let a sandbox 200 on a forged transaction grant production
+        # entitlements. _apple_get_transaction raises AppleTransactionError
+        # on any 4xx/5xx other than 404; we let it propagate to the outer
+        # except in validate_apple_receipt.
         body = await _apple_get_transaction(transaction_id, token, sandbox=False)
         if body is None:
             body = await _apple_get_transaction(transaction_id, token, sandbox=True)
