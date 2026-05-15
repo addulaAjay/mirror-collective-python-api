@@ -35,7 +35,27 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _QUIZ_CACHE: Optional[Tuple[float, List[Dict[str, Any]]]] = None
 _QUIZ_CACHE_TTL: int = int(os.getenv("QUIZ_QUESTIONS_CACHE_TTL_SECONDS", "300"))
-_QUIZ_CACHE_LOCK: asyncio.Lock = asyncio.Lock()
+# Lock is allocated lazily inside `_get_quiz_cache_lock` because constructing
+# `asyncio.Lock()` at module import time can bind it to whatever event loop
+# happens to be current at import — on Lambda that's the synthetic loop
+# Mangum spins up during init, NOT the loop that serves the request. Using a
+# Lock bound to a dead loop raises "RuntimeError: ... attached to a different
+# loop" the first time it's awaited.
+_QUIZ_CACHE_LOCK: Optional[asyncio.Lock] = None
+
+
+def _get_quiz_cache_lock() -> asyncio.Lock:
+    global _QUIZ_CACHE_LOCK
+    if _QUIZ_CACHE_LOCK is None:
+        _QUIZ_CACHE_LOCK = asyncio.Lock()
+    return _QUIZ_CACHE_LOCK
+
+
+def _reset_quiz_cache_for_tests() -> None:
+    """Test-only: clear the cache AND the lock so tests start fresh."""
+    global _QUIZ_CACHE, _QUIZ_CACHE_LOCK
+    _QUIZ_CACHE = None
+    _QUIZ_CACHE_LOCK = None
 
 
 class DynamoDBService:
@@ -733,11 +753,15 @@ class DynamoDBService:
                 ExpressionAttributeValues={":conversation_id": conversation_id},
             )
 
-            # Delete messages in batches
+            # Delete messages in batches. aioboto3's batch_writer is an ASYNC
+            # context manager; using `with` (not `async with`) silently skipped
+            # the flush-on-exit, so buffered deletes were never written to
+            # DynamoDB — orphaned messages would accumulate after a
+            # conversation delete.
             if response.get("Items"):
-                with messages_table.batch_writer() as batch:
+                async with messages_table.batch_writer() as batch:
                     for item in response["Items"]:
-                        batch.delete_item(
+                        await batch.delete_item(
                             Key={
                                 "conversation_id": item["conversation_id"],
                                 "timestamp": item["timestamp"],
@@ -925,7 +949,7 @@ class DynamoDBService:
 
         # Slow path: serialize re-population so a stampede of concurrent
         # callers (e.g. a burst of quiz starts) collapses to a single scan.
-        async with _QUIZ_CACHE_LOCK:
+        async with _get_quiz_cache_lock():
             cached = _QUIZ_CACHE
             if cached is not None:
                 expiry, data = cached
@@ -1636,19 +1660,26 @@ class DynamoDBService:
             dynamodb = await self._get_resource()
             table = await dynamodb.Table(self.quiz_results_table)
 
-            # Add quiz_id as partition key if not present
-            if "quiz_id" not in quiz_data:
+            # Add quiz_id as partition key if not present. Build a new dict
+            # rather than mutating the caller's — the project coding rule is
+            # "ALWAYS create new objects, NEVER mutate existing ones."
+            if "quiz_id" in quiz_data:
+                item = quiz_data
+            else:
                 now_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                quiz_data["quiz_id"] = f"quiz_{quiz_data['user_id']}_{now_str}"
+                item = {
+                    **quiz_data,
+                    "quiz_id": f"quiz_{quiz_data['user_id']}_{now_str}",
+                }
 
-            await table.put_item(Item=quiz_data)
+            await table.put_item(Item=item)
 
-            logger.info(f"Quiz results saved for user {quiz_data['user_id']}")
+            logger.info(f"Quiz results saved for user {item['user_id']}")
 
             return {
                 "success": True,
-                "quiz_id": quiz_data["quiz_id"],
-                "user_id": quiz_data["user_id"],
+                "quiz_id": item["quiz_id"],
+                "user_id": item["user_id"],
             }
 
         except ClientError as e:
