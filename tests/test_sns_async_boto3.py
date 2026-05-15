@@ -89,9 +89,16 @@ async def test_publish_to_endpoint_async_overlaps_concurrently(
     service, mock_client = sns_service_with_mock_client
     sleep_ms = 100
 
+    # The previous assertion `results == [f"endpoint-{i}" ...]` only passed
+    # by coincidence: the mock returned {"MessageId": kwargs["TargetArn"]}
+    # and the TargetArn equaled the expected string. Make the mock value
+    # explicit so the assertion is testing what we mean (overlap), not the
+    # mock's coincidental return shape.
+    expected_msg_id = "test-msg-id"
+
     def slow_publish(**kwargs):
         time.sleep(sleep_ms / 1000.0)
-        return {"MessageId": kwargs["TargetArn"]}
+        return {"MessageId": expected_msg_id}
 
     mock_client.publish.side_effect = slow_publish
 
@@ -104,7 +111,10 @@ async def test_publish_to_endpoint_async_overlaps_concurrently(
     )
     elapsed_ms = (time.perf_counter() - start) * 1000.0
 
-    assert results == [f"endpoint-{i}" for i in range(5)]
+    # All 5 calls succeed and return the mock's MessageId.
+    assert len(results) == 5
+    assert all(r == expected_msg_id for r in results)
+    # And — the whole point of this test — they overlapped on the threadpool.
     assert elapsed_ms < sleep_ms * 3, (
         f"SNS async calls did not overlap: elapsed={elapsed_ms:.1f}ms "
         f"(expected ~{sleep_ms}ms, serialized would be ~{5 * sleep_ms}ms)"

@@ -3,12 +3,30 @@ import asyncio
 import json
 import logging
 import os
+import warnings
 from typing import Any, Dict, Optional
 
 import boto3
 from botocore.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_sync_sns_call(method_name: str) -> None:
+    """Emit a DeprecationWarning when an SNS sync method is called.
+
+    The sync wrappers blocking-call boto3 from inside async contexts —
+    silently stalling the event loop. Each has an `*_async` counterpart
+    that wraps the same call in `asyncio.to_thread`. This warning makes
+    accidental sync use visible in CI / dev logs without breaking
+    production behavior.
+    """
+    warnings.warn(
+        f"SNSService.{method_name} is sync and blocks the event loop. "
+        f"Call SNSService.{method_name}_async() from async contexts.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 class SNSService:
@@ -44,6 +62,7 @@ class SNSService:
         """
         Creates a platform endpoint in AWS SNS.
         """
+        _warn_sync_sns_call("create_platform_endpoint")
         platform_arn = self._get_platform_arn(platform)
         if not platform_arn:
             logger.error(f"No Platform Application ARN configured for {platform}")
@@ -62,6 +81,7 @@ class SNSService:
 
     def subscribe_to_topic(self, endpoint_arn: str) -> str:
         """Subscribes an endpoint to the main SNS topic."""
+        _warn_sync_sns_call("subscribe_to_topic")
         if not self.topic_arn:
             logger.warning("No SNS_TOPIC_ARN configured, skipping subscription")
             return ""
@@ -113,6 +133,7 @@ class SNSService:
         self, title: str, body: str, data: Optional[Dict[str, Any]] = None
     ):
         """Broadcasts a notification to all subscribers of the topic."""
+        _warn_sync_sns_call("publish_to_topic")
         if not self.topic_arn:
             logger.error("Attempted to publish to topic but SNS_TOPIC_ARN is missing")
             return None
@@ -138,6 +159,7 @@ class SNSService:
         data: Optional[Dict[str, Any]] = None,
     ):
         """Sends a direct notification to a specific device endpoint."""
+        _warn_sync_sns_call("publish_to_endpoint")
         try:
             payload = self._generate_payload(title, body, data)
             response = self.sns.publish(
@@ -160,6 +182,7 @@ class SNSService:
 
     def delete_platform_endpoint(self, endpoint_arn: str):
         """Deletes a platform endpoint from AWS SNS."""
+        _warn_sync_sns_call("delete_platform_endpoint")
         try:
             self.sns.delete_endpoint(EndpointArn=endpoint_arn)
             logger.info(f"Deleted SNS endpoint: {endpoint_arn}")

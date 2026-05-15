@@ -386,7 +386,11 @@ class CognitoService:
             logger.error(
                 f"Cognito refresh_token ClientError: {error_code} - {error_message}"
             )
-            logger.error(f"Full error response: {e.response}")
+            # Full response can carry user identifiers and Cognito-internal
+            # request IDs — keep at DEBUG so it doesn't leak into prod
+            # CloudWatch by default. Operators can raise log level when
+            # diagnosing a specific incident.
+            logger.debug(f"Full error response: {e.response}")
 
             # Specific error mappings for refresh token flow
             if error_code == "NotAuthorizedException":
