@@ -308,6 +308,14 @@ class OpenAIService(IMirrorChatRepository):
                 f"{len(openai_messages)} messages using {self.model}"
             )
 
+            # Acquire the semaphore ONLY around the initial create() call,
+            # not the entire stream iteration. A streaming response can run
+            # for several seconds while chunks trickle in; holding the
+            # semaphore slot for that whole duration would collapse the
+            # effective concurrency cap from N to ~N/(stream_duration_s).
+            # Releasing it before iteration starts means the cap protects
+            # the OpenAI-call-initiation rate, which is what OpenAI rate
+            # limits actually measure against.
             async with _get_semaphore():
                 # AsyncOpenAI returns an async-iterable stream when stream=True
                 stream = await self.async_client.chat.completions.create(
@@ -318,9 +326,9 @@ class OpenAIService(IMirrorChatRepository):
                     stream=True,
                 )
 
-                async for chunk in stream:
-                    if chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
             logger.debug("Streaming AI response completed successfully")
 
