@@ -148,6 +148,19 @@ class FinalizeMediaRequest(BaseModel):
     content_type: Optional[str] = None  # caller hint, overridden by S3 HEAD
 
 
+class AttachPosterRequest(BaseModel):
+    """Client tells the backend: "I've uploaded a poster frame for the
+    video at echo {echo_id}; commit it as the thumbnail."
+
+    The poster is a JPEG extracted client-side (via
+    react-native-compressor.createVideoThumbnail) from the same video
+    file the client just successfully uploaded. The backend verifies
+    via HeadObject and writes ``poster_url`` to the echo row.
+    """
+
+    key: str  # S3 object key of the uploaded poster JPEG
+
+
 class MultipartInitiateRequest(BaseModel):
     """Start an S3 multipart upload for a >50 MB file."""
 
@@ -364,6 +377,7 @@ async def finalize_media_upload(
             "status": echo.status.value,
             "content": echo.content,
             "media_url": echo.media_url,
+            "poster_url": echo.poster_url,
             "recipient_id": echo.recipient_id,
             "recipient": echo.recipient,
             "release_date": echo.release_date,
@@ -373,6 +387,51 @@ async def finalize_media_upload(
             "updated_at": echo.updated_at,
         },
         "message": "Echo media finalized",
+    }
+
+
+@router.post(
+    "/echoes/{echo_id}/attach-poster",
+    response_model=Dict[str, Any],
+)
+async def attach_poster_route(
+    echo_id: str,
+    payload: AttachPosterRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Attach a client-extracted poster frame to a video echo.
+
+    The client uses ``react-native-compressor.createVideoThumbnail`` to
+    extract a JPEG at t=1s during the save flow, uploads it via the
+    standard single-PUT presigned URL, then calls this endpoint with
+    the resulting S3 key. The backend HEADs the object to confirm and
+    atomically writes ``poster_url`` to the echo row.
+
+    Not @idempotent — poster attach is naturally idempotent (the
+    second call just overwrites with the same URL).
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echo = await echo_service.attach_poster(
+            echo_id=echo_id,
+            user_id=user_id,
+            key=payload.key,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "data": {
+            "echo_id": echo.echo_id,
+            "poster_url": echo.poster_url,
+        },
+        "message": "Echo poster attached",
     }
 
 
@@ -514,6 +573,7 @@ async def complete_multipart_upload(
             "status": echo.status.value,
             "content": echo.content,
             "media_url": echo.media_url,
+            "poster_url": echo.poster_url,
             "recipient_id": echo.recipient_id,
             "recipient": echo.recipient,
             "release_date": echo.release_date,
@@ -602,6 +662,10 @@ async def list_user_echoes(
                 "release_date": e.release_date,
                 "lock_date": e.lock_date,
                 "letter_to_recipient": e.letter_to_recipient,
+                # Pre-signed poster URL for video thumbnails in list
+                # cards. Cheap to include — list-level sign is already
+                # done in get_user_echoes via _sign_poster_urls_for_echoes.
+                "poster_url": e.poster_url,
                 "created_at": e.created_at,
             }
             for e in echoes
@@ -678,6 +742,9 @@ async def list_received_echoes(
                 # otherwise would have surfaced once the bucket public-access
                 # block was tightened in the upload-Tier-A PR.
                 "content": e.content,
+                # Pre-signed poster URL for video thumbnails in inbox
+                # cards. Same parallel-sign helper as the vault list.
+                "poster_url": e.poster_url,
                 "scheduled_at": e.release_date,
                 "created_at": e.created_at,
             }
@@ -711,6 +778,7 @@ async def get_echo(
             "status": echo.status.value,
             "content": echo.content,
             "media_url": echo.media_url,
+            "poster_url": echo.poster_url,
             "recipient_id": echo.recipient_id,
             "recipient": echo.recipient,
             # release_date / lock_date / letter_to_recipient are needed by
@@ -758,6 +826,7 @@ async def update_echo(
                 "status": echo.status.value,
                 "content": echo.content,
                 "media_url": echo.media_url,
+                "poster_url": echo.poster_url,
                 "recipient_id": echo.recipient_id,
                 "recipient": echo.recipient,
                 "release_date": echo.release_date,

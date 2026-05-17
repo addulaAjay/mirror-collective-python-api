@@ -68,6 +68,11 @@ class Echo:
 
     # Media storage (S3 URL for audio/video, inline for text)
     media_url: Optional[str] = None
+    # Optional video poster frame — JPEG extracted client-side at upload
+    # time. Used as the thumbnail in list views so video cards don't
+    # render as a black rectangle until the player initializes. Set by
+    # POST /echoes/{id}/attach-poster after the video upload succeeds.
+    poster_url: Optional[str] = None
     content: Optional[str] = None  # For text type only
 
     # Status and delivery
