@@ -18,3 +18,13 @@ PyYAML==6.0.2
 apscheduler==3.10.4
 PyJWT==2.8.0
 aiohttp>=3.8.0
+# Apple App Store Server SDK — provides SignedDataVerifier for x5c chain
+# verification of signedTransactionInfo JWS payloads returned by Apple's
+# transactions API. Required for payment integrity; the previous code
+# decoded JWS without signature verification, which would let an
+# infrastructure-level MITM inject forged transactions.
+app-store-server-library>=3.0.0,<4.0.0
+# cryptography is a transitive dep of app-store-server-library but
+# pinning here makes the x5c chain validation behavior predictable
+# across deploys.
+cryptography>=42.0.0

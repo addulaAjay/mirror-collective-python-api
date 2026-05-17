@@ -105,10 +105,28 @@ class TestExtractTransactionId:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def _bypass_jws_verification(monkeypatch):
+    """Make the JWS verifier transparently fall back to unverified decode.
+
+    Real verification needs an Apple-signed JWS with a chain rooted at
+    Apple Root CA G3 — impossible to produce in unit tests without
+    Apple's private keys. The verification path itself is tested
+    separately in TestAppleJWSVerification (with mocks of the SDK).
+    Other Apple-flow tests just need the decoded payload to flow
+    through ``_validate_apple_modern``.
+    """
+
+    def _bypass(jws, *, sandbox):
+        return rv_module._decode_jws_payload(jws)
+
+    monkeypatch.setattr(rv_module, "_verify_apple_jws", _bypass)
+
+
 @pytest.mark.asyncio
 class TestAppleModernPath:
     async def test_returns_parsed_transaction_on_success(
-        self, apple_creds_env, monkeypatch
+        self, apple_creds_env, _bypass_jws_verification, monkeypatch
     ):
         validator = ReceiptValidator()
         signed_tx = _sign_jws(
@@ -140,7 +158,7 @@ class TestAppleModernPath:
         assert result["data"]["auto_renew_status"] is True
 
     async def test_falls_back_to_sandbox_when_production_404s(
-        self, apple_creds_env, monkeypatch
+        self, apple_creds_env, _bypass_jws_verification, monkeypatch
     ):
         validator = ReceiptValidator()
         signed_tx = _sign_jws({"transactionId": "tx-2", "productId": "com.mc.yearly"})
@@ -208,6 +226,127 @@ class TestAppleModernPath:
         # Caller sees a clear error, not a silent valid=True.
         assert result["valid"] is False
         assert "503" in str(result["error"]) or "production" in str(result["error"])
+
+
+# --------------------------------------------------------------------------- #
+# Apple JWS signature verification (App Store Server Library integration)
+# --------------------------------------------------------------------------- #
+
+
+class TestAppleJWSVerification:
+    """Cover the new SignedDataVerifier-backed JWS verification path.
+
+    Real verification needs Apple-signed JWS payloads (impossible to
+    produce in unit tests without Apple's keys). We exercise our wrapper
+    via the SDK's failure path (unsigned/foreign-signed JWS → SDK raises
+    VerificationException → our wrapper raises JWSVerificationError).
+    Integration with a real Apple-signed JWS belongs in an end-to-end
+    test against Apple's sandbox API, not here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_verifier_cache(self, monkeypatch):
+        """Clear the lru_cache so env-var changes per test take effect."""
+        rv_module._reset_apple_verifier_cache()
+        yield
+        rv_module._reset_apple_verifier_cache()
+
+    def test_empty_jws_is_rejected(self, apple_creds_env):
+        """Empty/None/non-string JWS must raise — never silently pass."""
+        from src.app.services.receipt_validator import (
+            JWSVerificationError,
+            _verify_apple_jws,
+        )
+
+        with pytest.raises(JWSVerificationError):
+            _verify_apple_jws("", sandbox=False)
+        with pytest.raises(JWSVerificationError):
+            _verify_apple_jws(None, sandbox=False)  # type: ignore[arg-type]
+
+    def test_jws_signed_with_non_apple_key_is_rejected(
+        self, apple_creds_env, monkeypatch
+    ):
+        """A JWS signed with our test HS256 key (not Apple) must be rejected.
+
+        The SDK's SignedDataVerifier walks the x5c chain back to Apple
+        Root CA G3. An HS256 token has no x5c at all → VerificationException
+        → JWSVerificationError.
+        """
+        from src.app.services.receipt_validator import (
+            JWSVerificationError,
+            _verify_apple_jws,
+        )
+
+        # An HS256-signed JWT that LOOKS like a transaction payload but
+        # isn't signed by Apple.
+        forged = _sign_jws(
+            {
+                "transactionId": "forged-tx-123",
+                "productId": "com.attacker.premium",
+            }
+        )
+
+        # APPLE_APP_STORE_APP_APPLE_ID is required for production
+        # verification; set a non-zero placeholder so we're testing the
+        # signature path, not a missing-config short-circuit.
+        monkeypatch.setenv("APPLE_APP_STORE_APP_APPLE_ID", "1234567890")
+
+        with pytest.raises(JWSVerificationError):
+            _verify_apple_jws(forged, sandbox=False)
+
+    def test_missing_bundle_id_env_raises(self, monkeypatch):
+        """Without APPLE_APP_STORE_BUNDLE_ID, verifier construction must
+        raise — never silently fall through."""
+        from src.app.services.receipt_validator import _verify_apple_jws
+
+        monkeypatch.delenv("APPLE_APP_STORE_BUNDLE_ID", raising=False)
+
+        with pytest.raises(Exception) as exc_info:
+            _verify_apple_jws("any-jws-content", sandbox=False)
+        # Either the explicit RuntimeError from our factory or the
+        # JWSVerificationError that wraps it — both acceptable signals.
+        assert (
+            "BUNDLE_ID" in str(exc_info.value)
+            or "verification" in str(exc_info.value).lower()
+        )
+
+    @pytest.mark.asyncio
+    async def test_validate_apple_modern_returns_error_on_verification_failure(
+        self, apple_creds_env, monkeypatch
+    ):
+        """End-to-end: a JWS that fails verification produces
+        valid=False with a clear error — never valid=True.
+
+        This is the entitlement-fraud regression test: even if Apple's
+        API responds 200 with a tampered payload, we reject.
+        """
+        validator = ReceiptValidator()
+
+        forged_jws = _sign_jws(
+            {
+                "transactionId": "forged-tx-456",
+                "productId": "com.attacker.premium",
+            }
+        )
+
+        async def fake_get(transaction_id, token, *, sandbox):
+            # Apple "returned 200" but the payload is forged.
+            return {"signedTransactionInfo": forged_jws}
+
+        monkeypatch.setattr(rv_module, "_apple_get_transaction", fake_get)
+        # Real verifier in play (no _bypass_jws_verification fixture).
+        monkeypatch.setenv("APPLE_APP_STORE_APP_APPLE_ID", "1234567890")
+        rv_module._reset_apple_verifier_cache()
+
+        result = await validator.validate_apple_receipt("tx-forged")
+
+        assert (
+            result["valid"] is False
+        ), "Forged JWS produced valid=True — entitlement fraud risk!"
+        assert (
+            "verification failed" in (result["error"] or "").lower()
+            or "verification" in (result["error"] or "").lower()
+        )
 
 
 # --------------------------------------------------------------------------- #

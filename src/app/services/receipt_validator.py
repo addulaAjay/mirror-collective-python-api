@@ -40,13 +40,30 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import asdict, is_dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import aiohttp
 import jwt
 
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Apple Root CA G3 — bundled as a project asset so JWS signature verification
+# doesn't need a runtime network fetch. The PEM file is the publicly-published
+# Apple Root CA G3 cert from https://www.apple.com/certificateauthority/
+# AppleRootCA-G3.cer, converted from DER to PEM. SHA256 fingerprint:
+#   63:34:3A:BF:B8:9A:6A:03:EB:B5:7E:9B:3F:5F:A7:BE:7C:4F:5C:75
+#   6F:30:17:B3:A8:C4:88:C3:65:3E:91:79
+# --------------------------------------------------------------------------- #
+_APPLE_ROOT_CA_G3_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "resources"
+    / "apple_root_certificates"
+    / "AppleRootCA-G3.pem"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -213,45 +230,19 @@ def _build_apple_jwt(creds: Dict[str, str]) -> str:
 
 
 def _decode_jws_payload(jws: str) -> Dict:
-    r"""Decode a JWS-signed transaction/renewal payload from Apple.
+    """Decode a JWS payload WITHOUT signature verification.
 
-    ===========================================================================
-    TODO(security-CRITICAL): JWS signature is NOT verified here.
+    Used only for client-side ID extraction (`_extract_transaction_id`) —
+    we read the `transactionId` field from a receipt-shaped string the
+    mobile client sent, then call Apple's API to fetch the authoritative
+    transaction record. A forged JWS here would yield a bogus
+    transactionId, Apple's API would 404, and the validation rejects.
+    Signature verification is therefore not required on this path.
 
-    Apple's signedTransactionInfo is a JWS signed with a leaf cert chained
-    to Apple's CA root. Today we trust the TLS connection to
-    api.storekit.itunes.apple.com — but TLS authenticates the channel, NOT
-    the payload content. Any infrastructure compromise (caching proxy,
-    MITM at the boundary, replay) could inject a crafted JWS that claims
-    any subscription is valid -> free premium entitlements.
-
-    Required fix (separate PR):
-      1. Add ``app-store-server-library>=3.0.0,<4.0.0`` to requirements
-         (the SDK that handles x5c chain verification + Apple root cert
-         pinning + environment detection in one call).
-      2. Replace this function body with::
-
-           from appstoreserverlibrary.signed_data_verifier import (
-               SignedDataVerifier,
-           )
-           verifier = SignedDataVerifier(
-               root_certificates=[apple_root_g3_bytes],
-               enable_online_checks=False,
-               bundle_id=os.getenv("APPLE_APP_STORE_BUNDLE_ID"),
-               app_apple_id=int(os.getenv("APPLE_APP_ID", "0")),
-               environment=Environment.PRODUCTION,
-           )
-           return verifier.verify_and_decode_signed_transaction(jws)
-
-      3. Ship Apple's Root CA G3 PEM as a project asset (or fetch from
-         apple.com/certificateauthority at module load).
-      4. Add a test that an unsigned/tampered JWS is rejected.
-
-    Until then this path is BLOCKED for production use of paid
-    subscriptions — set ``LEGACY_APPLE_VERIFYRECEIPT_ENABLED=true`` and
-    let the deprecated /verifyReceipt endpoint validate (Apple still
-    serves that, with full signature verification on their side).
-    ===========================================================================
+    For verifying Apple's RESPONSE payloads (signedTransactionInfo from
+    /inApp/v1/transactions/...), use ``_verify_apple_jws`` instead —
+    that path IS security-critical and DOES verify the x5c chain back
+    to Apple Root CA G3.
     """
     if not jws or not isinstance(jws, str):
         return {}
@@ -260,6 +251,179 @@ def _decode_jws_payload(jws: str) -> Dict:
     except jwt.PyJWTError as e:
         logger.error(f"Failed to decode Apple JWS payload: {e}")
         return {}
+
+
+# --------------------------------------------------------------------------- #
+# Apple JWS signature verification (App Store Server Library)
+# --------------------------------------------------------------------------- #
+
+
+class JWSVerificationError(Exception):
+    """Raised when Apple's signedTransactionInfo fails signature verification.
+
+    Distinct from `AppleTransactionError` (network/HTTP failure) and from
+    "transaction not found" (None). A `JWSVerificationError` is a security
+    signal — the JWS was either tampered, signed with a non-Apple key, or
+    has an invalid certificate chain. The caller must NEVER grant
+    entitlements on this path.
+    """
+
+
+def _load_apple_root_ca_g3() -> bytes:
+    """Load Apple Root CA G3 bytes from the bundled PEM asset.
+
+    Cached implicitly via lru_cache on the calling factory.
+    """
+    if not _APPLE_ROOT_CA_G3_PATH.is_file():
+        raise FileNotFoundError(
+            f"Apple Root CA G3 PEM not found at {_APPLE_ROOT_CA_G3_PATH}. "
+            "JWS verification cannot proceed."
+        )
+    return _APPLE_ROOT_CA_G3_PATH.read_bytes()
+
+
+@lru_cache(maxsize=2)
+def _get_apple_signed_data_verifier(*, sandbox: bool) -> Any:
+    """Return a SignedDataVerifier for the production or sandbox environment.
+
+    Cached at module scope so the x5c chain + root cert parsing happens
+    exactly once per environment per Lambda container. The SDK is
+    intentionally imported lazily — modules outside the Apple validation
+    path shouldn't pay for the dep at cold start.
+    """
+    from appstoreserverlibrary.models.Environment import Environment
+    from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
+
+    bundle_id = os.getenv("APPLE_APP_STORE_BUNDLE_ID", "")
+    if not bundle_id:
+        raise RuntimeError(
+            "APPLE_APP_STORE_BUNDLE_ID env var is required for JWS verification."
+        )
+    # app_apple_id is REQUIRED for production verification. We accept 0 for
+    # sandbox (the SDK tolerates it there); production deploys MUST set
+    # APPLE_APP_STORE_APP_APPLE_ID to the numeric App ID from App Store
+    # Connect (Apple's internal identifier, not the bundle ID).
+    app_apple_id = int(os.getenv("APPLE_APP_STORE_APP_APPLE_ID", "0") or "0")
+    env = Environment.SANDBOX if sandbox else Environment.PRODUCTION
+
+    return SignedDataVerifier(
+        root_certificates=[_load_apple_root_ca_g3()],
+        enable_online_checks=False,
+        bundle_id=bundle_id,
+        app_apple_id=app_apple_id,
+        environment=env,
+    )
+
+
+def _reset_apple_verifier_cache() -> None:
+    """Test-only: clear the verifier cache so env-var changes take effect."""
+    _get_apple_signed_data_verifier.cache_clear()
+
+
+def _verify_apple_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
+    """Verify a signedTransactionInfo JWS from Apple and decode the payload.
+
+    Verification covers:
+      - x5c certificate chain back to Apple Root CA G3
+      - bundle_id matches APPLE_APP_STORE_BUNDLE_ID
+      - app_apple_id matches APPLE_APP_STORE_APP_APPLE_ID (prod only)
+      - environment claim matches the API endpoint we hit (prod vs sandbox)
+      - JWT signature is valid for the leaf cert's public key
+
+    Args:
+        jws: The signedTransactionInfo string returned by Apple's
+             /inApp/v1/transactions/{transactionId} endpoint.
+        sandbox: True if the JWS came from the sandbox API endpoint.
+
+    Returns:
+        Dict shape matching the previous unverified decode (so the caller
+        doesn't change): keys like transactionId, productId, expiresDate,
+        isTrialPeriod, autoRenewStatus, etc.
+
+    Raises:
+        JWSVerificationError: if the signature, chain, bundle_id, or
+            app_apple_id check fails. Caller must treat this as a hard
+            denial — never grant entitlements.
+    """
+    if not jws or not isinstance(jws, str):
+        raise JWSVerificationError("Empty or non-string JWS")
+
+    try:
+        from appstoreserverlibrary.signed_data_verifier import VerificationException
+    except ImportError as e:
+        raise JWSVerificationError(
+            "app-store-server-library not installed; JWS verification "
+            "cannot proceed."
+        ) from e
+
+    verifier = _get_apple_signed_data_verifier(sandbox=sandbox)
+    try:
+        payload = verifier.verify_and_decode_signed_transaction(jws)
+    except VerificationException as e:
+        # SDK raises VerificationException for any failure: bad signature,
+        # cert chain mismatch, bundle_id mismatch, app_id mismatch, expired
+        # cert, etc. Treat all uniformly as "do not trust this payload."
+        logger.warning(
+            f"Apple JWS signature verification failed (sandbox={sandbox}): {e}"
+        )
+        raise JWSVerificationError(f"Apple JWS verification failed: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        # Unexpected error during verification — defensively treat as a
+        # security failure rather than a soft error.
+        logger.error(
+            f"Unexpected error during Apple JWS verification "
+            f"(sandbox={sandbox}): {e}"
+        )
+        raise JWSVerificationError(f"JWS verification error: {e}") from e
+
+    # SDK returns a typed payload (JWSTransactionDecodedPayload, a dataclass).
+    # Convert to dict for caller compatibility.
+    return _payload_to_dict(payload)
+
+
+def _payload_to_dict(payload: Any) -> Dict[str, Any]:
+    """Convert the SDK's typed payload into the dict shape the caller expects.
+
+    The SDK returns a dataclass with snake_case attributes. The caller
+    (``_validate_apple_modern``) currently reads camelCase keys via
+    ``.get("transactionId")`` etc. We map both shapes for safety.
+    """
+    if payload is None:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    if is_dataclass(payload):
+        data = asdict(payload)
+    else:
+        # Try generic attribute scrape as a last resort.
+        data = {
+            k: getattr(payload, k)
+            for k in dir(payload)
+            if not k.startswith("_") and not callable(getattr(payload, k))
+        }
+    # Map snake_case → camelCase aliases so the existing caller code
+    # (which reads camelCase keys) keeps working.
+    snake_to_camel = {
+        "transaction_id": "transactionId",
+        "original_transaction_id": "originalTransactionId",
+        "product_id": "productId",
+        "purchase_date": "purchaseDate",
+        "original_purchase_date": "originalPurchaseDate",
+        "expires_date": "expiresDate",
+        "offer_type": "offerType",
+        "in_app_ownership_type": "inAppOwnershipType",
+        "is_trial_period": "isTrialPeriod",
+        "auto_renew_status": "autoRenewStatus",
+    }
+    for snake, camel in snake_to_camel.items():
+        if snake in data and camel not in data:
+            value = data[snake]
+            # SDK enum types serialize awkwardly; convert to .value when
+            # available so the result is JSON-friendly.
+            if hasattr(value, "value"):
+                value = value.value
+            data[camel] = value
+    return data
 
 
 def _extract_transaction_id(receipt_data: str) -> Optional[str]:
@@ -410,8 +574,10 @@ class ReceiptValidator:
         # on any 4xx/5xx other than 404; we let it propagate to the outer
         # except in validate_apple_receipt.
         body = await _apple_get_transaction(transaction_id, token, sandbox=False)
+        is_sandbox = False
         if body is None:
             body = await _apple_get_transaction(transaction_id, token, sandbox=True)
+            is_sandbox = True
 
         if body is None:
             return {
@@ -421,12 +587,27 @@ class ReceiptValidator:
             }
 
         signed_tx = body.get("signedTransactionInfo")
-        decoded = _decode_jws_payload(signed_tx) if signed_tx else {}
-        if not decoded:
+        if not signed_tx:
             return {
                 "valid": False,
                 "data": None,
-                "error": "Apple returned no decodable transaction payload",
+                "error": "Apple returned no signed transaction payload",
+            }
+
+        # CRITICAL: verify the JWS signature against Apple Root CA G3 before
+        # trusting any field in the payload. A JWSVerificationError here is
+        # a security signal — never grant entitlements.
+        try:
+            decoded = _verify_apple_jws(signed_tx, sandbox=is_sandbox)
+        except JWSVerificationError as e:
+            logger.warning(
+                f"Apple JWS verification failed for tx={transaction_id} "
+                f"(sandbox={is_sandbox}): {e}"
+            )
+            return {
+                "valid": False,
+                "data": None,
+                "error": f"Apple JWS signature verification failed: {e}",
             }
 
         return {
