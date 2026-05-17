@@ -96,12 +96,25 @@ class OpenAIService(IMirrorChatRepository):
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
 
-        self.client = OpenAI(api_key=api_key)
-        # High-performance model selection - gpt-4o for better quality
-        # and faster response
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        # timeout=20.0 keeps us well inside Lambda's 30s budget; the SDK
+        # default of 600s would let a hung OpenAI request time the Lambda
+        # out without the client ever cancelling. max_retries=1 means
+        # one retry on transient errors (network/5xx), instead of the SDK
+        # default of 2 which compounds inside the same Lambda invocation.
+        self.client = OpenAI(api_key=api_key, timeout=20.0, max_retries=1)
+        # gpt-4o-mini is the conversational default — the system prompt
+        # asks for short, conversational replies that the mini model
+        # handles well at ~5-10% of the cost of gpt-4o. Callers that need
+        # higher reasoning (e.g. a "deep reflection" mode) should pass a
+        # specific model via send_with_overrides instead of changing this
+        # default.
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
-        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
+        # 450 tokens ≈ 340 words — plenty for the 1-3 sentence replies the
+        # system prompt requests. The previous 1000 default let responses
+        # drift much longer than the conversational tone calls for and was
+        # the dominant per-call cost driver.
+        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "450"))
 
         logger.info(f"OpenAI service initialized with model: {self.model}")
 
