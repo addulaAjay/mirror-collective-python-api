@@ -6,9 +6,10 @@ Endpoints for managing Echoes, Recipients, and Guardians.
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, validator
 
+from ..core.idempotency import idempotent
 from ..core.security import get_current_user
 from ..services.echo_service import get_echo_service
 from ..services.email_service import email_service
@@ -211,14 +212,22 @@ class GuardianResponse(BaseModel):
 
 
 @router.post("/echoes", response_model=Dict[str, Any], status_code=201)
+@idempotent(route_id="create_echo")
 async def create_echo(
-    request: CreateEchoRequest,
+    payload: CreateEchoRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Create a new echo in the vault."""
+    """Create a new echo in the vault.
+
+    Idempotency: when the client sends an ``Idempotency-Key`` header,
+    duplicate requests with the same key from the same user return the
+    original response within 24 h. Lets clients safely retry after a
+    network timeout without producing duplicate vault rows.
+    """
     user_id = current_user["id"]
 
-    echo = await echo_service.create_echo(user_id, request.model_dump())
+    echo = await echo_service.create_echo(user_id, payload.model_dump())
 
     return {
         "success": True,
@@ -261,9 +270,11 @@ async def get_upload_url(
 
 
 @router.post("/echoes/{echo_id}/finalize-media", response_model=Dict[str, Any])
+@idempotent(route_id="finalize_media")
 async def finalize_media_upload(
     echo_id: str,
-    request: FinalizeMediaRequest,
+    payload: FinalizeMediaRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Verify a completed S3 PUT and atomically attach it to the echo.
@@ -275,6 +286,10 @@ async def finalize_media_upload(
 
     Returns the full updated echo (same shape as ``GET /echoes/{id}``)
     so clients can refresh their cached state without a follow-up read.
+
+    Idempotency: when the client sends an ``Idempotency-Key`` header,
+    duplicate finalize calls (e.g. after a network blip mid-response)
+    return the original response within 24 h.
     """
     from ..core.exceptions import NotFoundError, ValidationError
 
@@ -284,8 +299,8 @@ async def finalize_media_upload(
         echo = await echo_service.finalize_upload(
             echo_id=echo_id,
             user_id=user_id,
-            key=request.key,
-            content_type=request.content_type,
+            key=payload.key,
+            content_type=payload.content_type,
         )
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

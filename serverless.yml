@@ -38,6 +38,10 @@ provider:
     DYNAMODB_ECHOES_TABLE: ${self:service}-echoes-${self:provider.stage}
     DYNAMODB_RECIPIENTS_TABLE: ${self:service}-recipients-${self:provider.stage}
     DYNAMODB_GUARDIANS_TABLE: ${self:service}-guardians-${self:provider.stage}
+    # Stores cached responses keyed by client-supplied Idempotency-Key.
+    # Read on every write that supports idempotency; written with a 24 h
+    # TTL via the table's expires_at attribute.
+    DYNAMODB_IDEMPOTENCY_TABLE: ${self:service}-idempotency-${self:provider.stage}
     ECHO_MEDIA_BUCKET: mirror-collective-vault-storage-${self:provider.stage}
     # Route S3 PUTs through the s3-accelerate endpoint. Requires the bucket's
     # AccelerateConfiguration to be Enabled (see resources section). See
@@ -121,6 +125,8 @@ provider:
               - '/'
               - - Fn::GetAtt: [ EchoVaultGuardiansTable, Arn ]
                 - 'index/*'
+            # Idempotency cache — single-PK, no GSIs.
+            - Fn::GetAtt: [ IdempotencyTable, Arn ]
             # Subscription Tables
             - Fn::GetAtt: [ SubscriptionsTable, Arn ]
             - Fn::Join:
@@ -682,6 +688,27 @@ resources:
                 KeyType: HASH
             Projection:
               ProjectionType: ALL
+
+    IdempotencyTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_IDEMPOTENCY_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          # Composite PK: "<user_id>|<route>|<client_key>" keeps the
+          # per-user / per-route namespacing flat for a single HASH lookup.
+          - AttributeName: key_namespace
+            AttributeType: S
+        KeySchema:
+          - AttributeName: key_namespace
+            KeyType: HASH
+        # TTL on epoch-seconds attribute — DynamoDB deletes within 48h of
+        # the timestamp passing. Set to created_at + 24h by the writer.
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
 
     EchoVaultMediaBucket:
       Type: AWS::S3::Bucket
