@@ -247,6 +247,18 @@ functions:
       - httpApi:
           method: POST
           path: /verify-purchase
+      # Archetype Discovery Quiz — runs BEFORE signup as part of the
+      # onboarding flow, so the client has no Cognito JWT yet. The
+      # submission carries an optional ``anonymousId`` so the backend can
+      # link results to the user once they confirm their email. See
+      # ``src/services/api/quiz.ts`` on the mobile client — both endpoints
+      # are explicitly ``requiresAuth: false``.
+      - httpApi:
+          method: GET
+          path: /api/mirrorgpt/quiz/questions
+      - httpApi:
+          method: POST
+          path: /api/mirrorgpt/quiz/submit
       # ---- Authenticated catch-all ----
       # Every other route requires a valid Cognito JWT.
       - httpApi:
