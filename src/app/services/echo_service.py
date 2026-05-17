@@ -1551,6 +1551,349 @@ class EchoService:
         )
         return echo
 
+    # ========================================
+    # MULTIPART UPLOAD (>50 MB files)
+    # ========================================
+    #
+    # The single-PUT presigned URL path works for everything up to ~5 GB,
+    # but in practice files above ~50 MB on cellular hit two problems:
+    #
+    # 1. A single TCP connection failing somewhere mid-upload throws away
+    #    everything uploaded so far. With multipart, only the failed
+    #    chunk retries.
+    # 2. We can't upload parts in parallel, so wall-clock time is
+    #    bottlenecked by single-connection bandwidth even when the link
+    #    can carry more.
+    #
+    # The four methods below wrap S3's multipart-upload API:
+    #   - initiate_multipart_upload: creates the upload, returns upload_id.
+    #   - generate_multipart_part_urls: presigns one URL per part.
+    #   - complete_multipart_upload: assembles the parts + atomically
+    #     commits media_url (reuses finalize_upload's HEAD + DDB write).
+    #   - abort_multipart_upload: cleans up on client-side error.
+    #
+    # Abandoned uploads are also reaped by the bucket-level
+    # LifecycleConfiguration in serverless.yml (7-day TTL) so a misbehaving
+    # client can't run up storage charges by leaving partial uploads
+    # behind.
+
+    # 1-indexed; S3 hard cap is 10000.
+    MULTIPART_MAX_PART_NUMBER = 10_000
+    # Cap how many presigned URLs we hand out per call. The client's
+    # default 5 MB part size with parallelism=4 only needs a handful at
+    # a time; large batches just bloat the response. The client can
+    # always re-request more.
+    MULTIPART_PART_URL_BATCH_MAX = 1000
+
+    async def initiate_multipart_upload(
+        self,
+        echo_id: str,
+        user_id: str,
+        file_type: str,
+    ) -> Dict[str, Any]:
+        """Open an S3 multipart upload for the given echo.
+
+        Reuses the same key/metadata/tagging contract as the single-PUT
+        ``generate_upload_url`` so finalize semantics are uniform: the
+        bytes end up at the same canonical URL regardless of which
+        upload path produced them.
+
+        Raises:
+            NotFoundError: Echo doesn't exist or isn't owned by ``user_id``.
+            ValidationError: ``file_type`` isn't allowlisted, or the echo
+                already has media attached.
+        """
+        if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
+            raise ValidationError(
+                f"Unsupported media type '{file_type}'. "
+                f"Allowed: {sorted(ALLOWED_UPLOAD_MIME_TYPES)}"
+            )
+
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.user_id != user_id:
+            # NotFound, not Validation — avoid info leakage on echo
+            # existence to non-owners (same posture as finalize_upload).
+            logger.warning(
+                f"initiate_multipart owner reject: caller={user_id} "
+                f"owner={echo.user_id} echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.media_url:
+            raise ValidationError("Echo media has already been finalized")
+
+        # Determine extension — same logic as the single-PUT path.
+        audio_map = {
+            "audio/m4a": "m4a",
+            "audio/mp4": "m4a",
+            "audio/aac": "aac",
+            "audio/mpeg": "mp3",
+        }
+        image_map = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/heic": "heic",
+        }
+        if file_type in audio_map:
+            extension = audio_map[file_type]
+        elif file_type in image_map:
+            extension = image_map[file_type]
+        elif "video" in file_type:
+            extension = "mp4"
+        else:
+            extension = "mp4"
+
+        timestamp_iso = _current_timestamp()
+        timestamp_compact = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        key = f"echoes/{user_id}/{echo_id}_{timestamp_compact}.{extension}"
+
+        tagging = "&".join(
+            [
+                f"user_id={user_id}",
+                f"echo_id={echo_id}",
+                "upload_type=echo",
+            ]
+        )
+        metadata = {
+            "user_id": user_id,
+            "echo_id": echo_id,
+            "upload_type": "echo",
+            "signed_at": timestamp_iso,
+        }
+
+        try:
+            s3 = await self._get_s3_client()
+            response = await s3.create_multipart_upload(
+                Bucket=self.s3_bucket,
+                Key=key,
+                ContentType=file_type,
+                CacheControl=_PUT_CACHE_CONTROL,
+                Tagging=tagging,
+                Metadata=metadata,
+            )
+        except ClientError as e:
+            logger.error(f"S3 create_multipart_upload failed for {key}: {e}")
+            raise InternalServerError(f"Failed to initiate multipart upload: {str(e)}")
+
+        upload_id = response["UploadId"]
+        logger.info(
+            f"Initiated multipart upload echo={echo_id} key={key} "
+            f"upload_id={upload_id[:12]}..."
+        )
+        return {
+            "upload_id": upload_id,
+            "key": key,
+            "bucket": self.s3_bucket,
+        }
+
+    async def generate_multipart_part_urls(
+        self,
+        echo_id: str,
+        user_id: str,
+        upload_id: str,
+        key: str,
+        part_numbers: List[int],
+    ) -> List[Dict[str, Any]]:
+        """Issue presigned PUT URLs for the requested part numbers.
+
+        Done in parallel via asyncio.gather — presign is local HMAC, so
+        the wins are smaller than for IO-bound calls, but a 1000-part
+        batch still cuts ~30 ms of awaited overhead.
+
+        Raises:
+            NotFoundError: echo doesn't exist / not owned.
+            ValidationError: key doesn't belong to this echo, part_numbers
+                empty, out of range, or batch larger than allowed.
+        """
+        if not part_numbers:
+            raise ValidationError("part_numbers cannot be empty")
+        if len(part_numbers) > self.MULTIPART_PART_URL_BATCH_MAX:
+            raise ValidationError(
+                f"part_numbers batch exceeds {self.MULTIPART_PART_URL_BATCH_MAX}"
+            )
+        for n in part_numbers:
+            if not isinstance(n, int) or n < 1 or n > self.MULTIPART_MAX_PART_NUMBER:
+                raise ValidationError(
+                    f"part_number {n} out of range [1, {self.MULTIPART_MAX_PART_NUMBER}]"
+                )
+
+        # Same ownership + tenancy checks as finalize_upload. The
+        # multipart-upload-id provided by S3 isn't user-scoped on its own
+        # — without this guard a caller could supply someone else's
+        # upload_id and start uploading parts to it.
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.user_id != user_id:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            logger.warning(
+                f"multipart_part_urls tenancy reject: user={user_id} "
+                f"echo={echo_id} key={key!r}"
+            )
+            raise ValidationError("Object key does not belong to this echo")
+
+        try:
+            s3 = await self._get_s3_client()
+            urls = await asyncio.gather(
+                *[
+                    s3.generate_presigned_url(
+                        "upload_part",
+                        Params={
+                            "Bucket": self.s3_bucket,
+                            "Key": key,
+                            "UploadId": upload_id,
+                            "PartNumber": n,
+                        },
+                        ExpiresIn=self.presigned_url_expiry,
+                    )
+                    for n in part_numbers
+                ]
+            )
+        except ClientError as e:
+            logger.error(f"S3 presign upload_part failed for {key}: {e}")
+            raise InternalServerError(f"Failed to generate part URLs: {str(e)}")
+
+        return [{"part_number": n, "url": u} for n, u in zip(part_numbers, urls)]
+
+    async def complete_multipart_upload(
+        self,
+        echo_id: str,
+        user_id: str,
+        upload_id: str,
+        key: str,
+        parts: List[Dict[str, Any]],
+    ) -> Echo:
+        """Finalize a multipart upload and atomically commit ``media_url``.
+
+        ``parts`` is the list of ``{"part_number": int, "etag": str}``
+        dicts the client collected from the per-part PUT response
+        headers. S3 requires them sorted by PartNumber ascending; we
+        sort defensively so a misordered client doesn't 400 on the
+        CompleteMultipartUpload call.
+
+        After S3 assembles the object we delegate to ``finalize_upload``
+        which runs the same HEAD + DDB-commit path as the single-PUT
+        flow. That keeps the post-upload state machine uniform.
+
+        Raises:
+            NotFoundError: echo doesn't exist / not owned.
+            ValidationError: key doesn't belong, parts list empty,
+                malformed, or out of part-number range.
+            InternalServerError: S3 complete failed (e.g. parts size
+                under 5 MB except the last — usually a client bug).
+        """
+        if not parts:
+            raise ValidationError("parts cannot be empty")
+        # Defensive sort + validation in one pass.
+        normalized: List[Dict[str, Any]] = []
+        for p in parts:
+            n = p.get("part_number")
+            etag = p.get("etag")
+            if not isinstance(n, int) or n < 1 or n > self.MULTIPART_MAX_PART_NUMBER:
+                raise ValidationError(
+                    f"part_number {n} out of range [1, {self.MULTIPART_MAX_PART_NUMBER}]"
+                )
+            if not isinstance(etag, str) or not etag:
+                raise ValidationError(f"part {n} missing etag")
+            # S3 wants etags quoted; the client typically reports them
+            # already-quoted from the response header. Be tolerant.
+            quoted = etag if etag.startswith('"') else f'"{etag}"'
+            normalized.append({"PartNumber": n, "ETag": quoted})
+        normalized.sort(key=lambda p: p["PartNumber"])
+
+        # Tenancy + ownership.
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.user_id != user_id:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            logger.warning(
+                f"multipart_complete tenancy reject: user={user_id} "
+                f"echo={echo_id} key={key!r}"
+            )
+            raise ValidationError("Object key does not belong to this echo")
+
+        # Assemble the object on S3.
+        try:
+            s3 = await self._get_s3_client()
+            await s3.complete_multipart_upload(
+                Bucket=self.s3_bucket,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": normalized},
+            )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            logger.error(
+                f"S3 complete_multipart_upload failed for {key} " f"(code={code}): {e}"
+            )
+            # NoSuchUpload usually means the abort lifecycle rule already
+            # reaped the upload (client took longer than 7 days), or the
+            # client passed a stale upload_id from a previous attempt.
+            if code in ("NoSuchUpload",):
+                raise NotFoundError("Multipart upload session expired or was aborted")
+            raise InternalServerError(f"Failed to complete multipart upload: {code}")
+
+        # Reuse the single-PUT finalize path for HEAD + atomic commit.
+        # That helper does its own ownership + first-write check; both
+        # already passed above, but defense-in-depth + sharing the same
+        # success path is worth the redundant CPU.
+        return await self.finalize_upload(
+            echo_id=echo_id,
+            user_id=user_id,
+            key=key,
+        )
+
+    async def abort_multipart_upload(
+        self,
+        echo_id: str,
+        user_id: str,
+        upload_id: str,
+        key: str,
+    ) -> None:
+        """Best-effort abort of an in-progress multipart upload.
+
+        Used when the client gives up (user cancels, network is dead).
+        ``NoSuchUpload`` is treated as success — the upload may have been
+        reaped by the bucket lifecycle rule, or this is a duplicate abort
+        from a retry. Either way the desired end state (no upload session
+        consuming bytes) is met.
+        """
+        # Same tenancy/ownership posture as complete.
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.user_id != user_id:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            raise ValidationError("Object key does not belong to this echo")
+
+        try:
+            s3 = await self._get_s3_client()
+            await s3.abort_multipart_upload(
+                Bucket=self.s3_bucket,
+                Key=key,
+                UploadId=upload_id,
+            )
+            logger.info(
+                f"Aborted multipart upload echo={echo_id} key={key} "
+                f"upload_id={upload_id[:12]}..."
+            )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code == "NoSuchUpload":
+                logger.info(f"abort_multipart_upload: upload already gone for {key}")
+                return
+            logger.error(f"S3 abort_multipart_upload failed for {key}: {e}")
+            raise InternalServerError(f"Failed to abort upload: {code}")
+
     async def _sign_profile_url(self, url: Optional[str]) -> Optional[str]:
         """Generate presigned GET URL for a profile/avatar image stored in S3.
 
