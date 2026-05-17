@@ -429,7 +429,13 @@ async def list_received_echoes(
                     "name": e.user_id,  # TODO: enrich with Cognito display name
                     "email": "",
                 },
-                "media_url": e.media_url,
+                # NOTE: media_url is deliberately omitted from the inbox list
+                # response. The inbox card shows title/sender/category and
+                # navigates to a playback screen that fetches the detail
+                # endpoint (which signs media_url on demand). Eliminates the
+                # N wasted presigns per page and closes the regression that
+                # otherwise would have surfaced once the bucket public-access
+                # block was tightened in the upload-Tier-A PR.
                 "content": e.content,
                 "scheduled_at": e.release_date,
                 "created_at": e.created_at,

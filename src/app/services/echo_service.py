@@ -592,8 +592,11 @@ class EchoService:
                 if status and echo.status.value != status:
                     continue
 
-                # Sign media URL for access
-                echo = await self._sign_media_url(echo)
+                # NOTE: media_url is deliberately NOT signed in the vault
+                # list path — the route response omits it. The detail
+                # endpoint (GET /echoes/{id}) signs media_url on demand
+                # when the player actually needs the URL. Eliminates N
+                # wasted presigns per page.
                 echoes.append(echo)
 
             next_cursor = encode_cursor(response.get("LastEvaluatedKey"))
@@ -618,9 +621,15 @@ class EchoService:
         (classic N+1). For a 50-echo page with 30 unique recipients that
         was 30 sequential round-trips on a cold cache.
 
-        New code: collect the distinct recipient_ids, fan them out across
-        ``BatchGetItem`` calls of up to 100 keys each in parallel, then
-        do dict lookups in the per-echo loop.
+        Current code:
+        1. Distinct recipient_ids fanned out via BatchGetItem (chunks of 100).
+        2. Distinct profile_image_url presigns done once each via
+           ``_sign_profile_urls`` (dedupe + parallel). The old serial
+           ``await self._sign_profile_url`` inside the per-echo loop was
+           the dominant tail-latency contributor on a warm cache: each
+           ``generate_presigned_url`` call adds ~10-30 ms of awaiting on
+           the aioboto3 client. 30 unique recipients = ~600 ms serial vs.
+           ~30 ms parallel.
         """
         recipient_ids = [
             echo.recipient_id for echo in echoes if echo.recipient_id is not None
@@ -634,25 +643,37 @@ class EchoService:
 
         recipients_by_id = await self._batch_get_recipients(distinct_ids, owner_user_id)
 
+        # Defense-in-depth ownership filter — same as before.
+        recipients_by_id = {
+            rid: r for rid, r in recipients_by_id.items() if r.user_id == owner_user_id
+        }
+
+        # Dedupe + parallel-sign distinct profile URLs.
+        distinct_profile_urls = {
+            r.profile_image_url
+            for r in recipients_by_id.values()
+            if r.profile_image_url
+        }
+        signed_by_url = await self._sign_profile_urls(distinct_profile_urls)
+
         for echo in echoes:
             if not echo.recipient_id:
                 continue
             recipient = recipients_by_id.get(echo.recipient_id)
             if recipient is None:
                 continue
-            # Defense in depth: ownership check. ``_batch_get_recipients``
-            # already filters on user_id, but a stray non-owner row should
-            # not leak through here.
-            if recipient.user_id != owner_user_id:
-                continue
+            canonical_profile = recipient.profile_image_url
+            signed_profile = (
+                signed_by_url.get(canonical_profile, canonical_profile)
+                if canonical_profile
+                else None
+            )
             echo.recipient = {
                 "recipient_id": recipient.recipient_id,
                 "name": recipient.name,
                 "email": recipient.email,
                 "motif": recipient.motif,
-                "profile_image_url": await self._sign_profile_url(
-                    recipient.profile_image_url
-                ),
+                "profile_image_url": signed_profile,
             }
 
     async def _batch_get_recipients(
@@ -1552,8 +1573,41 @@ class EchoService:
             logger.error(f"Failed to sign profile URL: {e}")
             return url  # Return original on error; image will 403 but app won't crash
 
+    async def _sign_profile_urls(
+        self, urls: "set[str] | frozenset[str]"
+    ) -> Dict[str, str]:
+        """Sign a batch of distinct profile URLs in parallel.
+
+        Returns a dict mapping each input URL to its signed counterpart.
+        Use over per-row ``await self._sign_profile_url(...)`` whenever
+        the caller iterates over a list — collapses N serial round-trips
+        into one ``asyncio.gather`` window. Failed signs fall through to
+        the original URL (same contract as the singular helper).
+
+        Args:
+            urls: Distinct canonical URLs to sign. Pass a set so the
+                caller can't accidentally pay for duplicates.
+
+        Returns:
+            ``{canonical_url: signed_url}``. Inputs already-signed or
+            non-S3 are returned unchanged (matches singular helper).
+        """
+        url_list = [u for u in urls if u]
+        if not url_list:
+            return {}
+        signed = await asyncio.gather(*[self._sign_profile_url(u) for u in url_list])
+        return {orig: new for orig, new in zip(url_list, signed) if new is not None}
+
     async def _sign_media_url(self, echo: Echo) -> Echo:
-        """Generate presigned GET URL for secure media playback."""
+        """Generate presigned GET URL for secure media playback.
+
+        TTL is 6 h. The previous 1 h was too short for users who park an
+        echo open on screen, lock their phone, and come back: the player
+        re-requested the URL and got a 403 once the original expired.
+        6 h is also well under the 12 h Lambda IAM-role session cap, so
+        Cognito Identity / STS credentials never invalidate before the
+        URL does.
+        """
         if echo.media_url and "amazonaws.com" in echo.media_url:
             try:
                 # Extract key from URL
@@ -1564,7 +1618,7 @@ class EchoService:
                 presigned_url = await s3.generate_presigned_url(
                     "get_object",
                     Params={"Bucket": self.s3_bucket, "Key": key},
-                    ExpiresIn=3600,  # 1 hour
+                    ExpiresIn=21600,  # 6 h
                 )
                 echo.media_url = presigned_url
             except Exception as e:
@@ -1776,14 +1830,23 @@ class EchoService:
 
             response = await table.query(**query_kwargs)
 
-            recipients: List[Recipient] = []
-            for item in response.get("Items", []):
-                recipient = Recipient.from_dynamodb_item(item)
-                if recipient.deleted_at is None:
-                    recipient.profile_image_url = await self._sign_profile_url(
-                        recipient.profile_image_url
+            # Filter soft-deletes, then dedupe + parallel-sign profile URLs.
+            # Old code awaited self._sign_profile_url(...) inside the per-row
+            # loop — serial across the page.
+            recipients: List[Recipient] = [
+                Recipient.from_dynamodb_item(item)
+                for item in response.get("Items", [])
+                if item.get("deleted_at") is None
+            ]
+            distinct_urls = {
+                r.profile_image_url for r in recipients if r.profile_image_url
+            }
+            signed_by_url = await self._sign_profile_urls(distinct_urls)
+            for r in recipients:
+                if r.profile_image_url:
+                    r.profile_image_url = signed_by_url.get(
+                        r.profile_image_url, r.profile_image_url
                     )
-                    recipients.append(recipient)
 
             next_cursor = encode_cursor(response.get("LastEvaluatedKey"))
             return recipients, next_cursor
@@ -1916,14 +1979,21 @@ class EchoService:
 
             response = await table.query(**query_kwargs)
 
-            guardians: List[Guardian] = []
-            for item in response.get("Items", []):
-                guardian = Guardian.from_dynamodb_item(item)
-                if guardian.deleted_at is None:
-                    guardian.profile_image_url = await self._sign_profile_url(
-                        guardian.profile_image_url
+            # Dedupe + parallel-sign profile URLs — same shape as recipients.
+            guardians: List[Guardian] = [
+                Guardian.from_dynamodb_item(item)
+                for item in response.get("Items", [])
+                if item.get("deleted_at") is None
+            ]
+            distinct_urls = {
+                g.profile_image_url for g in guardians if g.profile_image_url
+            }
+            signed_by_url = await self._sign_profile_urls(distinct_urls)
+            for g in guardians:
+                if g.profile_image_url:
+                    g.profile_image_url = signed_by_url.get(
+                        g.profile_image_url, g.profile_image_url
                     )
-                    guardians.append(guardian)
 
             next_cursor = encode_cursor(response.get("LastEvaluatedKey"))
             return guardians, next_cursor
