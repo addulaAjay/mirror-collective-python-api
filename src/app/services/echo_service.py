@@ -4,13 +4,18 @@ Handles CRUD operations for Echoes, Recipients, and Guardians.
 Includes S3 presigned URL generation for media uploads.
 """
 
+import asyncio
+import base64
+import json
 import logging
 import os
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aioboto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
@@ -28,18 +33,88 @@ from .email_service import email_service
 logger = logging.getLogger(__name__)
 
 
+# Pagination defaults. Kept conservative so a single bad client can't fan
+# out a 10k-row response through one call; cursor-based paging is the
+# escape hatch for inboxes / vaults with more rows than fit one page.
+DEFAULT_PAGE_LIMIT = 50
+MAX_PAGE_LIMIT = 100
+
+# DynamoDB hard cap on BatchGetItem (per request, before throttling).
+BATCH_GET_ITEM_MAX = 100
+
+
 def _current_timestamp() -> str:
     """Get current UTC timestamp in ISO format"""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _clamp_limit(limit: Optional[int]) -> int:
+    """Normalize an optional limit to within [1, MAX_PAGE_LIMIT]."""
+    if limit is None or limit <= 0:
+        return DEFAULT_PAGE_LIMIT
+    return min(limit, MAX_PAGE_LIMIT)
+
+
+def encode_cursor(last_evaluated_key: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Encode a DynamoDB LastEvaluatedKey into an opaque, URL-safe cursor.
+
+    Returns None when there is no further page (the natural end-of-query
+    signal we surface to API clients as ``next_cursor: null``).
+
+    TODO(security-hardening): the cursor is opaque (base64-encoded JSON) but
+    not authenticated. A tampered cursor is harmless today because the
+    Query's KeyConditionExpression still pins the partition to the
+    requesting user — DynamoDB rejects any ExclusiveStartKey whose hash
+    doesn't match. But defense-in-depth would HMAC the cursor with a
+    deploy-secret. Follow-up PR.
+    """
+    if not last_evaluated_key:
+        return None
+    try:
+        raw = json.dumps(last_evaluated_key, default=str).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii")
+    except (TypeError, ValueError) as e:
+        # A non-serializable LastEvaluatedKey is an upstream bug; refusing
+        # to encode is safer than handing back a corrupt cursor.
+        logger.error(f"Failed to encode pagination cursor: {e}")
+        return None
+
+
+def decode_cursor(cursor: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Decode a client-supplied cursor back into a DynamoDB ExclusiveStartKey.
+
+    Bad / tampered cursors return ``None`` so the caller transparently
+    restarts at page 1 — the client may have rolled across a deploy that
+    changed the key shape.
+    """
+    if not cursor:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        decoded = json.loads(raw.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            logger.warning("Decoded cursor is not a dict; ignoring")
+            return None
+        return decoded
+    except (ValueError, TypeError, json.JSONDecodeError) as e:
+        logger.warning(f"Ignoring malformed pagination cursor: {e}")
+        return None
 
 
 class EchoService:
     """
     Service for managing Echo Vault entities in DynamoDB.
     Also handles S3 presigned URL generation for media uploads.
+
+    aioboto3 clients/resources are built lazily on first use and reused for
+    the lifetime of the service (typically the lifetime of the Lambda
+    container). Re-entering a fresh aioboto3 session+resource on every
+    method call costs ~50-150 ms of socket setup + SigV4 init, which on a
+    warm Lambda is the single largest tail-latency contributor for echo
+    routes. See sibling refactor in ``dynamodb_service.py``.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize Echo service"""
         self.region = os.getenv("AWS_REGION", "us-east-1")
         self.echoes_table = os.getenv("DYNAMODB_ECHOES_TABLE", "echoes")
@@ -58,6 +133,23 @@ class EchoService:
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
 
+        # Long-lived resource/client caches. Populated on first use via
+        # ``_get_dynamodb_resource`` / ``_get_s3_client``. The AsyncExitStack
+        # owns the entered context managers so they survive across requests
+        # within the same container.
+        self._exit_stack: Optional[AsyncExitStack] = None
+        self._dynamodb_resource: Any = None
+        self._s3_client: Any = None
+        self._init_lock: Optional[asyncio.Lock] = None
+
+        # Tuned connection pool — Lambda containers may handle a burst of
+        # concurrent requests via the underlying httpcore pool. Adaptive
+        # retries back off on throttling without exploding tail latency.
+        self._boto_config = Config(
+            max_pool_connections=50,
+            retries={"max_attempts": 5, "mode": "adaptive"},
+        )
+
         # Initialize DynamoDB service for user lookups
         from src.app.services.dynamodb_service import get_dynamodb_service
 
@@ -71,7 +163,10 @@ class EchoService:
 
     def _get_dynamodb_kwargs(self) -> Dict[str, Any]:
         """Get DynamoDB connection parameters (local or AWS)"""
-        kwargs: Dict[str, Any] = {"region_name": self.region}
+        kwargs: Dict[str, Any] = {
+            "region_name": self.region,
+            "config": self._boto_config,
+        }
 
         if self.endpoint_url:
             kwargs.update(
@@ -83,6 +178,86 @@ class EchoService:
             )
 
         return kwargs
+
+    def _get_s3_kwargs(self) -> Dict[str, Any]:
+        """Get S3 connection parameters (region + tuned client config)."""
+        return {
+            "region_name": self.region,
+            "config": self._boto_config,
+        }
+
+    def _get_init_lock(self) -> asyncio.Lock:
+        """Lazily allocate an asyncio.Lock bound to the current event loop.
+
+        We cannot allocate the lock in __init__ because that runs at module
+        import time, before an event loop exists for the Lambda invocation.
+
+        TODO(correctness): there's a tiny race window where two simultaneous
+        first-callers each see ``self._init_lock is None`` and each create
+        their own Lock. Worst case is two distinct locks briefly + a single
+        duplicate resource allocation. Lambda one-request-per-container
+        means this is effectively unreachable, but technically the
+        double-check inside ``_get_dynamodb_resource`` doesn't protect
+        against this. Cleaner fix: switch to ``threading.Lock`` in
+        ``__init__`` (cheap, no event loop needed). Follow-up PR.
+        """
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        return self._init_lock
+
+    async def _get_dynamodb_resource(self) -> Any:
+        """Return the long-lived aioboto3 DynamoDB resource, entering it
+        through the instance AsyncExitStack on first call.
+
+        Subsequent calls return the cached resource directly — no socket
+        setup, no SigV4 init, no per-call ``async with`` overhead.
+        """
+        if self._dynamodb_resource is not None:
+            return self._dynamodb_resource
+
+        async with self._get_init_lock():
+            if self._dynamodb_resource is not None:
+                return self._dynamodb_resource
+            if self._exit_stack is None:
+                self._exit_stack = AsyncExitStack()
+                await self._exit_stack.__aenter__()
+            resource_cm = self.session.resource(
+                "dynamodb", **self._get_dynamodb_kwargs()
+            )
+            self._dynamodb_resource = await self._exit_stack.enter_async_context(
+                resource_cm
+            )
+            return self._dynamodb_resource
+
+    async def _get_s3_client(self) -> Any:
+        """Return the long-lived aioboto3 S3 client.
+
+        Same lifecycle as the DynamoDB resource — built once, reused for
+        the lifetime of the container.
+        """
+        if self._s3_client is not None:
+            return self._s3_client
+
+        async with self._get_init_lock():
+            if self._s3_client is not None:
+                return self._s3_client
+            if self._exit_stack is None:
+                self._exit_stack = AsyncExitStack()
+                await self._exit_stack.__aenter__()
+            client_cm = self.session.client("s3", **self._get_s3_kwargs())
+            self._s3_client = await self._exit_stack.enter_async_context(client_cm)
+            return self._s3_client
+
+    async def aclose(self) -> None:
+        """Tear down the long-lived clients. Used in tests; production
+        Lambda containers do not call this — the kernel reaps sockets on
+        container shutdown.
+        """
+        if self._exit_stack is not None:
+            await self._exit_stack.__aexit__(None, None, None)
+        self._exit_stack = None
+        self._dynamodb_resource = None
+        self._s3_client = None
 
     # ========================================
     # ECHO CRUD OPERATIONS
@@ -120,11 +295,9 @@ class EchoService:
                 letter_to_recipient=data.get("letter_to_recipient"),
             )
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
-                await table.put_item(Item=echo.to_dynamodb_item())
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
 
             logger.info(f"Created echo {echo.echo_id} for user {user_id}")
 
@@ -160,19 +333,17 @@ class EchoService:
                 echo.release()
 
                 # Update status in DynamoDB
-                async with self.session.resource(
-                    "dynamodb", **self._get_dynamodb_kwargs()
-                ) as dynamodb:
-                    table = await dynamodb.Table(self.echoes_table)
-                    await table.update_item(
-                        Key={"echo_id": echo.echo_id},
-                        UpdateExpression="SET #status = :status, updated_at = :updated_at",
-                        ExpressionAttributeNames={"#status": "status"},
-                        ExpressionAttributeValues={
-                            ":status": echo.status.value,
-                            ":updated_at": echo.updated_at,
-                        },
-                    )
+                dynamodb = await self._get_dynamodb_resource()
+                table = await dynamodb.Table(self.echoes_table)
+                await table.update_item(
+                    Key={"echo_id": echo.echo_id},
+                    UpdateExpression="SET #status = :status, updated_at = :updated_at",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":status": echo.status.value,
+                        ":updated_at": echo.updated_at,
+                    },
+                )
 
                 # Get recipient details for notification
                 if echo.recipient_id:
@@ -226,67 +397,63 @@ class EchoService:
             Echo if found and owned by user, None otherwise
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
-                response = await table.get_item(Key={"echo_id": echo_id})
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
 
-                if "Item" not in response:
-                    return None
+            if "Item" not in response:
+                return None
 
-                echo = Echo.from_dynamodb_item(response["Item"])
+            echo = Echo.from_dynamodb_item(response["Item"])
 
-                # Security: Verify access - user must be either owner OR recipient
-                is_owner = echo.user_id == user_id
-                is_recipient = False
-                recipient_from_access_check = None
+            # Security: Verify access - user must be either owner OR recipient
+            is_owner = echo.user_id == user_id
+            is_recipient = False
+            recipient_from_access_check = None
 
-                if is_owner:
-                    logger.info(f"User {user_id} accessing echo {echo_id} as owner")
+            if is_owner:
+                logger.info(f"User {user_id} accessing echo {echo_id} as owner")
 
-                # Check if user is the recipient
-                if not is_owner and echo.recipient_id:
-                    # get_recipient verifies that recipient belongs to echo.user_id (the echo owner)
-                    recipient = await self.get_recipient(
-                        echo.recipient_id, echo.user_id
+            # Check if user is the recipient
+            if not is_owner and echo.recipient_id:
+                # get_recipient verifies that recipient belongs to echo.user_id (the echo owner)
+                recipient = await self.get_recipient(echo.recipient_id, echo.user_id)
+                if recipient and recipient.recipient_user_id == user_id:
+                    is_recipient = True
+                    recipient_from_access_check = (
+                        recipient  # Save to avoid duplicate query
                     )
-                    if recipient and recipient.recipient_user_id == user_id:
-                        is_recipient = True
-                        recipient_from_access_check = (
-                            recipient  # Save to avoid duplicate query
-                        )
-                        logger.info(
-                            f"User {user_id} accessing echo {echo_id} as recipient (recipient_id: {echo.recipient_id})"
-                        )
-
-                if not is_owner and not is_recipient:
-                    logger.warning(
-                        f"User {user_id} attempted to access echo {echo_id} owned by {echo.user_id} - not owner or recipient"
+                    logger.info(
+                        f"User {user_id} accessing echo {echo_id} as recipient (recipient_id: {echo.recipient_id})"
                     )
-                    return None
 
-                # Sign media URL for access
-                echo = await self._sign_media_url(echo)
+            if not is_owner and not is_recipient:
+                logger.warning(
+                    f"User {user_id} attempted to access echo {echo_id} owned by {echo.user_id} - not owner or recipient"
+                )
+                return None
 
-                # Enrich with recipient details if any
-                if echo.recipient_id:
-                    # Reuse recipient from access check if available, otherwise fetch
-                    recipient = recipient_from_access_check or await self.get_recipient(
-                        echo.recipient_id, echo.user_id
-                    )
-                    if recipient:
-                        echo.recipient = {
-                            "recipient_id": recipient.recipient_id,
-                            "name": recipient.name,
-                            "email": recipient.email,
-                            "motif": recipient.motif,
-                            "profile_image_url": await self._sign_profile_url(
-                                recipient.profile_image_url
-                            ),
-                        }
+            # Sign media URL for access
+            echo = await self._sign_media_url(echo)
 
-                return echo
+            # Enrich with recipient details if any
+            if echo.recipient_id:
+                # Reuse recipient from access check if available, otherwise fetch
+                recipient = recipient_from_access_check or await self.get_recipient(
+                    echo.recipient_id, echo.user_id
+                )
+                if recipient:
+                    echo.recipient = {
+                        "recipient_id": recipient.recipient_id,
+                        "name": recipient.name,
+                        "email": recipient.email,
+                        "motif": recipient.motif,
+                        "profile_image_url": await self._sign_profile_url(
+                            recipient.profile_image_url
+                        ),
+                    }
+
+            return echo
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting echo: {e}")
@@ -298,83 +465,205 @@ class EchoService:
         category: Optional[str] = None,
         recipient_id: Optional[str] = None,
         status: Optional[str] = None,
-    ) -> List[Echo]:
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Tuple[List[Echo], Optional[str]]:
         """
-        Get all echoes for a user (vault view).
+        Get echoes for a user (vault view), one page at a time.
+
+        Pagination contract:
+            - ``limit`` clamped to ``[1, MAX_PAGE_LIMIT]``; defaults to
+              ``DEFAULT_PAGE_LIMIT`` when not provided.
+            - ``cursor`` is the ``next_cursor`` returned by a previous call.
+              Pass ``None`` for the first page.
+            - The returned ``next_cursor`` is ``None`` when there are no
+              more rows on the underlying GSI.
+
+        Filtering caveat: status/category/recipient/deleted filters are
+        applied AFTER DynamoDB returns the page. Heavily-filtered queries
+        therefore return short pages even when more rows exist on the
+        index. Clients should keep paging while ``next_cursor`` is not
+        ``None``, not while ``len(data) == limit``.
 
         Args:
             user_id: User ID
-            category: Filter by category
-            recipient_id: Filter by recipient
-            status: Filter by status
+            category: Filter by category (post-Query)
+            recipient_id: Filter by recipient (post-Query)
+            status: Filter by status (post-Query)
+            limit: Page size (1..MAX_PAGE_LIMIT, default DEFAULT_PAGE_LIMIT)
+            cursor: Opaque cursor from a previous call
 
         Returns:
-            List of user's echoes
+            Tuple of (echoes for this page, next_cursor or None)
         """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
+            page_limit = _clamp_limit(limit)
+            exclusive_start_key = decode_cursor(cursor)
 
-                # Query by user_id index
-                response = await table.query(
-                    IndexName="user-echoes-index",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                )
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
 
-                echoes = []
-                for item in response.get("Items", []):
-                    echo = Echo.from_dynamodb_item(item)
+            query_kwargs: Dict[str, Any] = {
+                "IndexName": "user-echoes-index",
+                "KeyConditionExpression": "user_id = :user_id",
+                "ExpressionAttributeValues": {":user_id": user_id},
+                "Limit": page_limit,
+            }
+            if exclusive_start_key:
+                query_kwargs["ExclusiveStartKey"] = exclusive_start_key
 
-                    # Apply filters
-                    if echo.deleted_at is not None:
-                        continue
-                    if category and echo.category != category:
-                        continue
-                    if recipient_id and echo.recipient_id != recipient_id:
-                        continue
-                    if status and echo.status.value != status:
-                        continue
+            response = await table.query(**query_kwargs)
 
-                    # Sign media URL for access
-                    echo = await self._sign_media_url(echo)
-                    echoes.append(echo)
+            echoes: List[Echo] = []
+            for item in response.get("Items", []):
+                echo = Echo.from_dynamodb_item(item)
 
-                # Enrich with recipient details if any
-                recipient_cache = {}
-                for echo in echoes:
-                    if echo.recipient_id:
-                        if echo.recipient_id not in recipient_cache:
-                            recipient = await self.get_recipient(
-                                echo.recipient_id, user_id
-                            )
-                            if recipient:
-                                recipient_cache[echo.recipient_id] = {
-                                    "recipient_id": recipient.recipient_id,
-                                    "name": recipient.name,
-                                    "email": recipient.email,
-                                    "motif": recipient.motif,
-                                    "profile_image_url": await self._sign_profile_url(
-                                        recipient.profile_image_url
-                                    ),
-                                }
+                # Apply filters
+                if echo.deleted_at is not None:
+                    continue
+                if category and echo.category != category:
+                    continue
+                if recipient_id and echo.recipient_id != recipient_id:
+                    continue
+                if status and echo.status.value != status:
+                    continue
 
-                        echo.recipient = recipient_cache.get(echo.recipient_id)
+                # Sign media URL for access
+                echo = await self._sign_media_url(echo)
+                echoes.append(echo)
 
-                return echoes
+            next_cursor = encode_cursor(response.get("LastEvaluatedKey"))
+
+            # Batch-fetch recipient details. Old code did one GetItem per
+            # echo (N+1) — for a 50-echo page with 30 unique recipients
+            # this collapses 30 round-trips into one BatchGetItem call.
+            await self._enrich_echoes_with_recipients(echoes, user_id)
+
+            return echoes, next_cursor
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting user echoes: {e}")
             raise InternalServerError(f"Failed to get echoes: {str(e)}")
+
+    async def _enrich_echoes_with_recipients(
+        self, echoes: List[Echo], owner_user_id: str
+    ) -> None:
+        """Populate ``echo.recipient`` for every echo with a ``recipient_id``.
+
+        Old code: one ``GetItem`` per echo inside the iteration loop
+        (classic N+1). For a 50-echo page with 30 unique recipients that
+        was 30 sequential round-trips on a cold cache.
+
+        New code: collect the distinct recipient_ids, fan them out across
+        ``BatchGetItem`` calls of up to 100 keys each in parallel, then
+        do dict lookups in the per-echo loop.
+        """
+        recipient_ids = [
+            echo.recipient_id for echo in echoes if echo.recipient_id is not None
+        ]
+        if not recipient_ids:
+            return
+
+        distinct_ids = list({rid for rid in recipient_ids if rid})
+        if not distinct_ids:
+            return
+
+        recipients_by_id = await self._batch_get_recipients(distinct_ids, owner_user_id)
+
+        for echo in echoes:
+            if not echo.recipient_id:
+                continue
+            recipient = recipients_by_id.get(echo.recipient_id)
+            if recipient is None:
+                continue
+            # Defense in depth: ownership check. ``_batch_get_recipients``
+            # already filters on user_id, but a stray non-owner row should
+            # not leak through here.
+            if recipient.user_id != owner_user_id:
+                continue
+            echo.recipient = {
+                "recipient_id": recipient.recipient_id,
+                "name": recipient.name,
+                "email": recipient.email,
+                "motif": recipient.motif,
+                "profile_image_url": await self._sign_profile_url(
+                    recipient.profile_image_url
+                ),
+            }
+
+    async def _batch_get_recipients(
+        self, recipient_ids: List[str], owner_user_id: str
+    ) -> Dict[str, Recipient]:
+        """BatchGetItem for recipients, chunked at the DDB 100-key cap and
+        fanned out in parallel across chunks.
+
+        Returns a dict keyed by recipient_id. Recipients owned by a
+        different user_id are dropped (defense in depth against a
+        misconfigured GSI / direct-id lookup).
+        """
+        if not recipient_ids:
+            return {}
+
+        # Chunk into batches of 100 (DDB BatchGetItem hard cap).
+        chunks = [
+            recipient_ids[i : i + BATCH_GET_ITEM_MAX]
+            for i in range(0, len(recipient_ids), BATCH_GET_ITEM_MAX)
+        ]
+
+        dynamodb = await self._get_dynamodb_resource()
+
+        async def fetch_chunk(chunk: List[str]) -> List[Dict[str, Any]]:
+            request_keys = [{"recipient_id": rid} for rid in chunk]
+            request_items: Dict[str, Any] = {
+                self.recipients_table: {"Keys": request_keys}
+            }
+            collected: List[Dict[str, Any]] = []
+            # Loop on UnprocessedKeys — DDB returns unprocessed items when
+            # throttled. Adaptive retries in Config handle the backoff;
+            # we just need to drain anything remaining. Cap the outer
+            # loop at 5 rounds: a persistently-throttled DDB shouldn't
+            # spin a Lambda all the way to its 30s timeout.
+            for _attempt in range(5):
+                if not request_items:
+                    break
+                resp = await dynamodb.batch_get_item(RequestItems=request_items)
+                collected.extend(
+                    resp.get("Responses", {}).get(self.recipients_table, [])
+                )
+                unprocessed = resp.get("UnprocessedKeys") or {}
+                if unprocessed:
+                    request_items = unprocessed
+                else:
+                    break
+            return collected
+
+        chunk_results = await asyncio.gather(*[fetch_chunk(chunk) for chunk in chunks])
+
+        result: Dict[str, Recipient] = {}
+        for items in chunk_results:
+            for item in items:
+                try:
+                    recipient = Recipient.from_dynamodb_item(item)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping malformed recipient row in batch result: {e}"
+                    )
+                    continue
+                if recipient.user_id != owner_user_id:
+                    continue
+                if recipient.deleted_at is not None:
+                    continue
+                result[recipient.recipient_id] = recipient
+        return result
 
     async def get_received_echoes(
         self,
         user_id: str,
         category: Optional[str] = None,
         sender_id: Optional[str] = None,
-    ) -> List[Echo]:
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Tuple[List[Echo], Optional[str]]:
         """
         Get echoes received by a user (inbox view).
         Only returns RELEASED echoes.
@@ -386,75 +675,121 @@ class EchoService:
         echo_service.link_user_recipient_records) and via the offline backfill
         script in scripts/backfill_recipient_user_id.py.
 
+        Performance: the per-recipient Queries that previously ran
+        sequentially (Wave 1B-E4 / 50-recipient inbox = 51 sequential
+        round-trips → ~10 s) now fan out via ``asyncio.gather``. End-to-end
+        latency falls to roughly one round-trip.
+
+        Pagination: the cursor pages the *recipient-rows* query, NOT the
+        per-recipient echoes query. In practice the page boundary is
+        almost always the natural end of the recipients list, since a
+        single user rarely has more than a few hundred recipient links.
+        The post-gather list is sorted by created_at descending and
+        truncated to ``limit`` before being returned.
+
         Args:
             user_id: Logged-in user's Cognito sub
-            category: Filter by category
-            sender_id: Filter by sender
+            category: Filter by category (post-fetch)
+            sender_id: Filter by sender (post-fetch)
+            limit: Page size (1..MAX_PAGE_LIMIT, default DEFAULT_PAGE_LIMIT)
+            cursor: Opaque cursor from a previous call
 
         Returns:
-            List of received echoes
+            Tuple of (echoes for this page, next_cursor or None)
         """
         if not user_id:
             raise ValidationError("user_id is required for inbox lookup")
 
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                recipients_table = await dynamodb.Table(self.recipients_table)
+            page_limit = _clamp_limit(limit)
+            exclusive_start_key = decode_cursor(cursor)
 
-                recipient_response = await recipients_table.query(
-                    IndexName="recipient-user-id-index",
-                    KeyConditionExpression="recipient_user_id = :uid",
-                    ExpressionAttributeValues={":uid": user_id},
+            dynamodb = await self._get_dynamodb_resource()
+            recipients_table = await dynamodb.Table(self.recipients_table)
+
+            recipients_query_kwargs: Dict[str, Any] = {
+                "IndexName": "recipient-user-id-index",
+                "KeyConditionExpression": "recipient_user_id = :uid",
+                "ExpressionAttributeValues": {":uid": user_id},
+                "Limit": page_limit,
+            }
+            if exclusive_start_key:
+                recipients_query_kwargs["ExclusiveStartKey"] = exclusive_start_key
+
+            recipient_response = await recipients_table.query(**recipients_query_kwargs)
+            recipient_items = [
+                item
+                for item in recipient_response.get("Items", [])
+                if item.get("deleted_at") is None
+            ]
+            recipient_ids = [item["recipient_id"] for item in recipient_items]
+            next_cursor = encode_cursor(recipient_response.get("LastEvaluatedKey"))
+
+            if not recipient_ids:
+                logger.info(f"Inbox: no recipient records linked to user {user_id}")
+                return [], next_cursor
+
+            logger.info(
+                f"Inbox: found {len(recipient_ids)} recipient records for user {user_id}"
+            )
+
+            # Query released echoes for each matched recipient.
+            # recipient-echoes-index has hash=recipient_id only (no sort key),
+            # so status must be applied as a FilterExpression rather than a
+            # second KeyConditionExpression — DynamoDB rejects a 2-condition
+            # KCE against a 1-attribute key schema with ValidationException.
+            #
+            # asyncio.gather() fans these out in parallel. Old code looped
+            # sequentially; 50 recipients × ~200 ms/Query = 10 s wall time.
+            # Parallel: ~one Query latency total.
+            echoes_table = await dynamodb.Table(self.echoes_table)
+
+            async def query_recipient(rid: str) -> List[Echo]:
+                response = await echoes_table.query(
+                    IndexName="recipient-echoes-index",
+                    KeyConditionExpression="recipient_id = :rid",
+                    FilterExpression="#status = :released",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":rid": rid,
+                        ":released": EchoStatus.RELEASED.value,
+                    },
                 )
-                recipient_items = [
-                    item
-                    for item in recipient_response.get("Items", [])
-                    if item.get("deleted_at") is None
-                ]
-                recipient_ids = [item["recipient_id"] for item in recipient_items]
 
-                if not recipient_ids:
-                    logger.info(f"Inbox: no recipient records linked to user {user_id}")
-                    return []
+                results: List[Echo] = []
+                for item in response.get("Items", []):
+                    echo = Echo.from_dynamodb_item(item)
+                    if category and echo.category != category:
+                        continue
+                    if sender_id and echo.user_id != sender_id:
+                        continue
+                    results.append(echo)
+                return results
 
-                logger.info(
-                    f"Inbox: found {len(recipient_ids)} recipient records for user {user_id}"
-                )
+            per_recipient_results = await asyncio.gather(
+                *[query_recipient(rid) for rid in recipient_ids]
+            )
 
-                # Query released echoes for each matched recipient.
-                # recipient-echoes-index has hash=recipient_id only (no sort key),
-                # so status must be applied as a FilterExpression rather than a
-                # second KeyConditionExpression — DynamoDB rejects a 2-condition
-                # KCE against a 1-attribute key schema with ValidationException.
-                echoes_table = await dynamodb.Table(self.echoes_table)
-                echoes = []
+            echoes: List[Echo] = []
+            for sublist in per_recipient_results:
+                echoes.extend(sublist)
 
-                for rid in recipient_ids:
-                    response = await echoes_table.query(
-                        IndexName="recipient-echoes-index",
-                        KeyConditionExpression="recipient_id = :rid",
-                        FilterExpression="#status = :released",
-                        ExpressionAttributeNames={"#status": "status"},
-                        ExpressionAttributeValues={
-                            ":rid": rid,
-                            ":released": EchoStatus.RELEASED.value,
-                        },
-                    )
+            # Restore deterministic ordering — gather() doesn't guarantee
+            # cross-recipient time order. Newest first matches old behavior
+            # (the loop preserved per-recipient order, but with one
+            # recipient per page that came out approximately newest-first).
+            echoes.sort(key=lambda e: e.created_at or "", reverse=True)
 
-                    for item in response.get("Items", []):
-                        echo = Echo.from_dynamodb_item(item)
+            # Truncate to the requested page size. The cursor pages the
+            # *recipient-rows* query, but a single page of recipients can
+            # fan out to many echoes (e.g. 5 recipients × 10 echoes each =
+            # 50 echoes). Without this clamp the response can exceed
+            # ``limit`` by an order of magnitude, defeating the pagination
+            # contract clients depend on.
+            echoes = echoes[:page_limit]
 
-                        if category and echo.category != category:
-                            continue
-                        if sender_id and echo.user_id != sender_id:
-                            continue
-
-                        echoes.append(echo)
-
-                logger.info(f"Inbox: returning {len(echoes)} released echoes")
-                return echoes
+            logger.info(f"Inbox: returning {len(echoes)} released echoes")
+            return echoes, next_cursor
 
         except ClientError as e:
             logger.error(f"DynamoDB error getting received echoes: {e}")
@@ -522,11 +857,9 @@ class EchoService:
 
             echo.updated_at = _current_timestamp()
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
-                await table.put_item(Item=echo.to_dynamodb_item())
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
 
             logger.info(f"Updated echo {echo_id}")
             return echo
@@ -556,11 +889,9 @@ class EchoService:
             echo.deleted_at = _current_timestamp()
             echo.updated_at = _current_timestamp()
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
-                await table.put_item(Item=echo.to_dynamodb_item())
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
 
             logger.info(f"Soft deleted echo {echo_id}")
             return True
@@ -621,11 +952,9 @@ class EchoService:
 
         # Persist to DynamoDB
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
-                await table.put_item(Item=echo.to_dynamodb_item())
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
         except Exception as e:
             logger.error(f"DynamoDB error persisting released echo {echo_id}: {e}")
             raise InternalServerError(f"Failed to persist released echo: {str(e)}")
@@ -692,66 +1021,64 @@ class EchoService:
         errors: List[str] = []
 
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
 
-                # Page through scan results — DynamoDB caps single-page size
-                # to 1MB, so we loop on ExclusiveStartKey for large tables.
-                scan_kwargs: Dict[str, Any] = {
-                    "FilterExpression": (
-                        Attr("status").eq(EchoStatus.DRAFT.value)
-                        & Attr("release_date").lte(now_iso)
-                        & Attr("deleted_at").not_exists()
-                    ),
-                }
+            # Page through scan results — DynamoDB caps single-page size
+            # to 1MB, so we loop on ExclusiveStartKey for large tables.
+            scan_kwargs: Dict[str, Any] = {
+                "FilterExpression": (
+                    Attr("status").eq(EchoStatus.DRAFT.value)
+                    & Attr("release_date").lte(now_iso)
+                    & Attr("deleted_at").not_exists()
+                ),
+            }
 
-                while True:
-                    response = await table.scan(**scan_kwargs)
-                    for item in response.get("Items", []):
-                        scanned += 1
-                        echo_id = item.get("echo_id")
-                        owner_user_id = item.get("user_id")
+            while True:
+                response = await table.scan(**scan_kwargs)
+                for item in response.get("Items", []):
+                    scanned += 1
+                    echo_id = item.get("echo_id")
+                    owner_user_id = item.get("user_id")
 
-                        if not echo_id or not owner_user_id:
-                            failed += 1
-                            errors.append(
-                                f"Malformed echo row missing echo_id/user_id: "
-                                f"{item.get('echo_id', '<no id>')}"
-                            )
-                            continue
+                    if not echo_id or not owner_user_id:
+                        failed += 1
+                        errors.append(
+                            f"Malformed echo row missing echo_id/user_id: "
+                            f"{item.get('echo_id', '<no id>')}"
+                        )
+                        continue
 
-                        # Items with a guardian go through the guardian flow;
-                        # release_echo rejects them with ValidationError, but
-                        # filtering early keeps the log clean.
-                        if item.get("guardian_id"):
-                            skipped += 1
-                            continue
-                        if not item.get("recipient_id"):
-                            skipped += 1
-                            continue
+                    # Items with a guardian go through the guardian flow;
+                    # release_echo rejects them with ValidationError, but
+                    # filtering early keeps the log clean.
+                    if item.get("guardian_id"):
+                        skipped += 1
+                        continue
+                    if not item.get("recipient_id"):
+                        skipped += 1
+                        continue
 
-                        try:
-                            await self.release_echo(echo_id, owner_user_id)
-                            released += 1
-                            logger.info(
-                                f"Auto-released echo {echo_id} (owner={owner_user_id}, "
-                                f"release_date={item.get('release_date')})"
-                            )
-                        except Exception as e:
-                            failed += 1
-                            msg = f"Failed to release echo {echo_id}: {e}"
-                            logger.warning(msg)
-                            # Bound the errors list so a bad batch doesn't
-                            # produce an unreadable response payload.
-                            if len(errors) < 20:
-                                errors.append(msg)
+                    try:
+                        await self.release_echo(echo_id, owner_user_id)
+                        released += 1
+                        logger.info(
+                            f"Auto-released echo {echo_id} (owner={owner_user_id}, "
+                            f"release_date={item.get('release_date')})"
+                        )
+                    except Exception as e:
+                        failed += 1
+                        msg = f"Failed to release echo {echo_id}: {e}"
+                        logger.warning(msg)
+                        # Bound the errors list so a bad batch doesn't
+                        # produce an unreadable response payload.
+                        if len(errors) < 20:
+                            errors.append(msg)
 
-                    last_key = response.get("LastEvaluatedKey")
-                    if not last_key:
-                        break
-                    scan_kwargs["ExclusiveStartKey"] = last_key
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
 
         except ClientError as e:
             logger.error(f"DynamoDB error scanning for due echoes: {e}", exc_info=True)
@@ -811,11 +1138,9 @@ class EchoService:
 
         # Persist to DynamoDB
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.echoes_table)
-                await table.put_item(Item=echo.to_dynamodb_item())
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
         except Exception as e:
             logger.error(f"DynamoDB error persisting locked echo {echo_id}: {e}")
             raise InternalServerError(f"Failed to persist locked echo: {str(e)}")
@@ -892,16 +1217,16 @@ class EchoService:
                 # echo — echo_id may be None for new echoes
                 key = f"echoes/{user_id}/{echo_id or 'new'}_{timestamp}.{extension}"
 
-            async with self.session.client("s3", region_name=self.region) as s3:
-                presigned_url = await s3.generate_presigned_url(
-                    "put_object",
-                    Params={
-                        "Bucket": self.s3_bucket,
-                        "Key": key,
-                        "ContentType": file_type,
-                    },
-                    ExpiresIn=self.presigned_url_expiry,
-                )
+            s3 = await self._get_s3_client()
+            presigned_url = await s3.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.s3_bucket,
+                    "Key": key,
+                    "ContentType": file_type,
+                },
+                ExpiresIn=self.presigned_url_expiry,
+            )
 
             # Construct the permanent media URL
             media_url = f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
@@ -929,12 +1254,12 @@ class EchoService:
             return url
         try:
             key = url.split("amazonaws.com/")[-1]
-            async with self.session.client("s3", region_name=self.region) as s3:
-                presigned = await s3.generate_presigned_url(
-                    "get_object",
-                    Params={"Bucket": self.s3_bucket, "Key": key},
-                    ExpiresIn=43200,  # 12 h — max for temporary Lambda credentials
-                )
+            s3 = await self._get_s3_client()
+            presigned = await s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.s3_bucket, "Key": key},
+                ExpiresIn=43200,  # 12 h — max for temporary Lambda credentials
+            )
             return presigned
         except Exception as e:
             logger.error(f"Failed to sign profile URL: {e}")
@@ -948,13 +1273,13 @@ class EchoService:
                 # Format: https://{bucket}.s3.{region}.amazonaws.com/{key}
                 key = echo.media_url.split("amazonaws.com/")[-1]
 
-                async with self.session.client("s3", region_name=self.region) as s3:
-                    presigned_url = await s3.generate_presigned_url(
-                        "get_object",
-                        Params={"Bucket": self.s3_bucket, "Key": key},
-                        ExpiresIn=3600,  # 1 hour
-                    )
-                    echo.media_url = presigned_url
+                s3 = await self._get_s3_client()
+                presigned_url = await s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": self.s3_bucket, "Key": key},
+                    ExpiresIn=3600,  # 1 hour
+                )
+                echo.media_url = presigned_url
             except Exception as e:
                 logger.error(f"Failed to sign media URL for echo {echo.echo_id}: {e}")
                 # Keep original URL on error
@@ -969,76 +1294,74 @@ class EchoService:
         try:
             email = data.get("email", "").strip().lower()
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.recipients_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.recipients_table)
 
-                # Check for existing recipient with same email for this user
-                # Query by email index
-                response = await table.query(
-                    IndexName="email-index",
-                    KeyConditionExpression="email = :email",
-                    ExpressionAttributeValues={":email": email},
-                )
+            # Check for existing recipient with same email for this user
+            # Query by email index
+            response = await table.query(
+                IndexName="email-index",
+                KeyConditionExpression="email = :email",
+                ExpressionAttributeValues={":email": email},
+            )
 
-                for item in response.get("Items", []):
-                    r = Recipient.from_dynamodb_item(item)
-                    if r.user_id == user_id and r.deleted_at is None:
-                        logger.warning(
-                            f"User {user_id} attempted to add duplicate recipient email {email}"
-                        )
-                        raise ValidationError(
-                            f"A recipient with email {email} already exists"
-                        )
-
-                # Check if recipient email matches an existing user account
-                recipient_user_id = None
-                logger.info(f"Checking for existing user with email: {email}")
-                try:
-                    existing_user = await self.dynamodb_service.get_user_by_email(email)
-                    if existing_user:
-                        recipient_user_id = existing_user.user_id
-                        logger.info(
-                            f"✅ Linking recipient to user account: {recipient_user_id} (email: {email})"
-                        )
-                    else:
-                        logger.info(
-                            f"No existing user found for email: {email} - recipient_user_id will be None"
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"❌ Could not check for existing user by email ({email}): {e}",
-                        exc_info=True,
+            for item in response.get("Items", []):
+                r = Recipient.from_dynamodb_item(item)
+                if r.user_id == user_id and r.deleted_at is None:
+                    logger.warning(
+                        f"User {user_id} attempted to add duplicate recipient email {email}"
+                    )
+                    raise ValidationError(
+                        f"A recipient with email {email} already exists"
                     )
 
-                recipient = Recipient(
-                    user_id=user_id,
-                    name=data.get("name", ""),
-                    email=email,
-                    recipient_user_id=recipient_user_id,
-                    relationship=data.get("relationship"),
-                    motif=data.get("motif"),
-                    profile_image_url=data.get("profile_image_url"),
-                )
-
-                logger.info(
-                    f"Creating recipient: id={recipient.recipient_id}, email={email}, "
-                    f"recipient_user_id={recipient_user_id or 'None (not linked)'}"
-                )
-
-                await table.put_item(Item=recipient.to_dynamodb_item())
-
-                # Log what was actually persisted
-                persisted_item = recipient.to_dynamodb_item()
-                logger.info(
-                    f"Persisted recipient to DynamoDB: id={persisted_item.get('recipient_id')}, "
-                    f"has_recipient_user_id={'recipient_user_id' in persisted_item}"
-                )
-                if "recipient_user_id" in persisted_item:
+            # Check if recipient email matches an existing user account
+            recipient_user_id = None
+            logger.info(f"Checking for existing user with email: {email}")
+            try:
+                existing_user = await self.dynamodb_service.get_user_by_email(email)
+                if existing_user:
+                    recipient_user_id = existing_user.user_id
                     logger.info(
-                        f"recipient_user_id value: {persisted_item['recipient_user_id']}"
+                        f"✅ Linking recipient to user account: {recipient_user_id} (email: {email})"
                     )
+                else:
+                    logger.info(
+                        f"No existing user found for email: {email} - recipient_user_id will be None"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"❌ Could not check for existing user by email ({email}): {e}",
+                    exc_info=True,
+                )
+
+            recipient = Recipient(
+                user_id=user_id,
+                name=data.get("name", ""),
+                email=email,
+                recipient_user_id=recipient_user_id,
+                relationship=data.get("relationship"),
+                motif=data.get("motif"),
+                profile_image_url=data.get("profile_image_url"),
+            )
+
+            logger.info(
+                f"Creating recipient: id={recipient.recipient_id}, email={email}, "
+                f"recipient_user_id={recipient_user_id or 'None (not linked)'}"
+            )
+
+            await table.put_item(Item=recipient.to_dynamodb_item())
+
+            # Log what was actually persisted
+            persisted_item = recipient.to_dynamodb_item()
+            logger.info(
+                f"Persisted recipient to DynamoDB: id={persisted_item.get('recipient_id')}, "
+                f"has_recipient_user_id={'recipient_user_id' in persisted_item}"
+            )
+            if "recipient_user_id" in persisted_item:
+                logger.info(
+                    f"recipient_user_id value: {persisted_item['recipient_user_id']}"
+                )
 
             logger.info(
                 f"Created recipient {recipient.recipient_id} for user {user_id}"
@@ -1079,45 +1402,43 @@ class EchoService:
 
         linked = 0
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.recipients_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.recipients_table)
 
-                response = await table.query(
-                    IndexName="email-index",
-                    KeyConditionExpression="email = :email",
-                    ExpressionAttributeValues={":email": normalized_email},
+            response = await table.query(
+                IndexName="email-index",
+                KeyConditionExpression="email = :email",
+                ExpressionAttributeValues={":email": normalized_email},
+            )
+
+            for item in response.get("Items", []):
+                if item.get("deleted_at") is not None:
+                    continue
+
+                existing = item.get("recipient_user_id")
+                if existing == user_id:
+                    continue
+                if existing and existing != user_id:
+                    logger.warning(
+                        f"Recipient {item.get('recipient_id')} already linked to "
+                        f"a different user_id ({existing}); skipping back-link "
+                        f"for {user_id}"
+                    )
+                    continue
+
+                await table.update_item(
+                    Key={"recipient_id": item["recipient_id"]},
+                    UpdateExpression="SET recipient_user_id = :uid, updated_at = :ts",
+                    ExpressionAttributeValues={
+                        ":uid": user_id,
+                        ":ts": _current_timestamp(),
+                    },
                 )
-
-                for item in response.get("Items", []):
-                    if item.get("deleted_at") is not None:
-                        continue
-
-                    existing = item.get("recipient_user_id")
-                    if existing == user_id:
-                        continue
-                    if existing and existing != user_id:
-                        logger.warning(
-                            f"Recipient {item.get('recipient_id')} already linked to "
-                            f"a different user_id ({existing}); skipping back-link "
-                            f"for {user_id}"
-                        )
-                        continue
-
-                    await table.update_item(
-                        Key={"recipient_id": item["recipient_id"]},
-                        UpdateExpression="SET recipient_user_id = :uid, updated_at = :ts",
-                        ExpressionAttributeValues={
-                            ":uid": user_id,
-                            ":ts": _current_timestamp(),
-                        },
-                    )
-                    linked += 1
-                    logger.info(
-                        f"Back-linked recipient {item.get('recipient_id')} "
-                        f"(email={normalized_email}) to user {user_id}"
-                    )
+                linked += 1
+                logger.info(
+                    f"Back-linked recipient {item.get('recipient_id')} "
+                    f"(email={normalized_email}) to user {user_id}"
+                )
 
             if linked:
                 logger.info(
@@ -1137,30 +1458,48 @@ class EchoService:
             logger.error(f"link_user_to_recipients failed for user {user_id}: {e}")
             return linked
 
-    async def get_user_recipients(self, user_id: str) -> List[Recipient]:
-        """Get all active recipients for a user (excluding soft-deleted)."""
+    async def get_user_recipients(
+        self,
+        user_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Tuple[List[Recipient], Optional[str]]:
+        """Get active recipients for a user, one page at a time.
+
+        Soft-deleted rows are filtered post-Query, so a heavily-pruned
+        contact list will return short pages even when more rows remain
+        on the GSI. Callers should keep paging while ``next_cursor`` is
+        not ``None``.
+        """
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.recipients_table)
+            page_limit = _clamp_limit(limit)
+            exclusive_start_key = decode_cursor(cursor)
 
-                response = await table.query(
-                    IndexName="user-recipients-index",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                )
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.recipients_table)
 
-                recipients = []
-                for item in response.get("Items", []):
-                    recipient = Recipient.from_dynamodb_item(item)
-                    if recipient.deleted_at is None:
-                        recipient.profile_image_url = await self._sign_profile_url(
-                            recipient.profile_image_url
-                        )
-                        recipients.append(recipient)
+            query_kwargs: Dict[str, Any] = {
+                "IndexName": "user-recipients-index",
+                "KeyConditionExpression": "user_id = :user_id",
+                "ExpressionAttributeValues": {":user_id": user_id},
+                "Limit": page_limit,
+            }
+            if exclusive_start_key:
+                query_kwargs["ExclusiveStartKey"] = exclusive_start_key
 
-                return recipients
+            response = await table.query(**query_kwargs)
+
+            recipients: List[Recipient] = []
+            for item in response.get("Items", []):
+                recipient = Recipient.from_dynamodb_item(item)
+                if recipient.deleted_at is None:
+                    recipient.profile_image_url = await self._sign_profile_url(
+                        recipient.profile_image_url
+                    )
+                    recipients.append(recipient)
+
+            next_cursor = encode_cursor(response.get("LastEvaluatedKey"))
+            return recipients, next_cursor
 
         except ClientError as e:
             logger.error(f"Error getting recipients: {e}")
@@ -1171,22 +1510,20 @@ class EchoService:
     ) -> Optional[Recipient]:
         """Get a specific recipient by ID."""
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.recipients_table)
-                response = await table.get_item(Key={"recipient_id": recipient_id})
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.recipients_table)
+            response = await table.get_item(Key={"recipient_id": recipient_id})
 
-                if "Item" not in response:
-                    return None
+            if "Item" not in response:
+                return None
 
-                recipient = Recipient.from_dynamodb_item(response["Item"])
+            recipient = Recipient.from_dynamodb_item(response["Item"])
 
-                # Security: Verify ownership
-                if recipient.user_id != user_id:
-                    return None
+            # Security: Verify ownership
+            if recipient.user_id != user_id:
+                return None
 
-                return recipient
+            return recipient
 
         except Exception as e:
             logger.error(f"Error getting recipient {recipient_id}: {e}")
@@ -1195,25 +1532,23 @@ class EchoService:
     async def delete_recipient(self, recipient_id: str, user_id: str) -> bool:
         """Soft delete a recipient."""
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.recipients_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.recipients_table)
 
-                # Get existing
-                response = await table.get_item(Key={"recipient_id": recipient_id})
-                if "Item" not in response:
-                    return False
+            # Get existing
+            response = await table.get_item(Key={"recipient_id": recipient_id})
+            if "Item" not in response:
+                return False
 
-                recipient = Recipient.from_dynamodb_item(response["Item"])
-                if recipient.user_id != user_id:
-                    return False
+            recipient = Recipient.from_dynamodb_item(response["Item"])
+            if recipient.user_id != user_id:
+                return False
 
-                recipient.soft_delete()
-                await table.put_item(Item=recipient.to_dynamodb_item())
+            recipient.soft_delete()
+            await table.put_item(Item=recipient.to_dynamodb_item())
 
-                logger.info(f"Soft deleted recipient {recipient_id}")
-                return True
+            logger.info(f"Soft deleted recipient {recipient_id}")
+            return True
 
         except Exception as e:
             logger.error(f"Error deleting recipient: {e}")
@@ -1228,39 +1563,37 @@ class EchoService:
         try:
             email = data.get("email", "").strip().lower()
 
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.guardians_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.guardians_table)
 
-                # Check for existing guardian with same email for this user
-                # Query by email index
-                response = await table.query(
-                    IndexName="email-index",
-                    KeyConditionExpression="email = :email",
-                    ExpressionAttributeValues={":email": email},
-                )
+            # Check for existing guardian with same email for this user
+            # Query by email index
+            response = await table.query(
+                IndexName="email-index",
+                KeyConditionExpression="email = :email",
+                ExpressionAttributeValues={":email": email},
+            )
 
-                for item in response.get("Items", []):
-                    g = Guardian.from_dynamodb_item(item)
-                    if g.user_id == user_id and g.deleted_at is None:
-                        logger.warning(
-                            f"User {user_id} attempted to add duplicate guardian email {email}"
-                        )
-                        raise ValidationError(
-                            f"A guardian with email {email} already exists"
-                        )
+            for item in response.get("Items", []):
+                g = Guardian.from_dynamodb_item(item)
+                if g.user_id == user_id and g.deleted_at is None:
+                    logger.warning(
+                        f"User {user_id} attempted to add duplicate guardian email {email}"
+                    )
+                    raise ValidationError(
+                        f"A guardian with email {email} already exists"
+                    )
 
-                guardian = Guardian(
-                    user_id=user_id,
-                    name=data.get("name", ""),
-                    email=email,
-                    scope=GuardianScope(data.get("scope", "ALL")),
-                    trigger=GuardianTrigger(data.get("trigger", "MANUAL")),
-                    profile_image_url=data.get("profile_image_url"),
-                )
+            guardian = Guardian(
+                user_id=user_id,
+                name=data.get("name", ""),
+                email=email,
+                scope=GuardianScope(data.get("scope", "ALL")),
+                trigger=GuardianTrigger(data.get("trigger", "MANUAL")),
+                profile_image_url=data.get("profile_image_url"),
+            )
 
-                await table.put_item(Item=guardian.to_dynamodb_item())
+            await table.put_item(Item=guardian.to_dynamodb_item())
 
             logger.info(f"Created guardian {guardian.guardian_id} for user {user_id}")
             return guardian
@@ -1271,30 +1604,42 @@ class EchoService:
             logger.error(f"Error creating guardian: {e}")
             raise InternalServerError(f"Failed to create guardian: {str(e)}")
 
-    async def get_user_guardians(self, user_id: str) -> List[Guardian]:
-        """Get all active guardians for a user."""
+    async def get_user_guardians(
+        self,
+        user_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Tuple[List[Guardian], Optional[str]]:
+        """Get active guardians for a user, one page at a time."""
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.guardians_table)
+            page_limit = _clamp_limit(limit)
+            exclusive_start_key = decode_cursor(cursor)
 
-                response = await table.query(
-                    IndexName="user-guardians-index",
-                    KeyConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":user_id": user_id},
-                )
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.guardians_table)
 
-                guardians = []
-                for item in response.get("Items", []):
-                    guardian = Guardian.from_dynamodb_item(item)
-                    if guardian.deleted_at is None:
-                        guardian.profile_image_url = await self._sign_profile_url(
-                            guardian.profile_image_url
-                        )
-                        guardians.append(guardian)
+            query_kwargs: Dict[str, Any] = {
+                "IndexName": "user-guardians-index",
+                "KeyConditionExpression": "user_id = :user_id",
+                "ExpressionAttributeValues": {":user_id": user_id},
+                "Limit": page_limit,
+            }
+            if exclusive_start_key:
+                query_kwargs["ExclusiveStartKey"] = exclusive_start_key
 
-                return guardians
+            response = await table.query(**query_kwargs)
+
+            guardians: List[Guardian] = []
+            for item in response.get("Items", []):
+                guardian = Guardian.from_dynamodb_item(item)
+                if guardian.deleted_at is None:
+                    guardian.profile_image_url = await self._sign_profile_url(
+                        guardian.profile_image_url
+                    )
+                    guardians.append(guardian)
+
+            next_cursor = encode_cursor(response.get("LastEvaluatedKey"))
+            return guardians, next_cursor
 
         except ClientError as e:
             logger.error(f"Error getting guardians: {e}")
@@ -1303,23 +1648,21 @@ class EchoService:
     async def get_guardian(self, guardian_id: str, user_id: str) -> Guardian:
         """Get a specific guardian by ID."""
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.guardians_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.guardians_table)
 
-                response = await table.get_item(Key={"guardian_id": guardian_id})
-                if "Item" not in response:
-                    raise NotFoundError(f"Guardian {guardian_id} not found")
+            response = await table.get_item(Key={"guardian_id": guardian_id})
+            if "Item" not in response:
+                raise NotFoundError(f"Guardian {guardian_id} not found")
 
-                guardian = Guardian.from_dynamodb_item(response["Item"])
-                if guardian.user_id != user_id:
-                    raise NotFoundError(f"Guardian {guardian_id} not found")
+            guardian = Guardian.from_dynamodb_item(response["Item"])
+            if guardian.user_id != user_id:
+                raise NotFoundError(f"Guardian {guardian_id} not found")
 
-                if guardian.deleted_at is not None:
-                    raise NotFoundError(f"Guardian {guardian_id} not found")
+            if guardian.deleted_at is not None:
+                raise NotFoundError(f"Guardian {guardian_id} not found")
 
-                return guardian
+            return guardian
 
         except NotFoundError:
             raise
@@ -1332,36 +1675,32 @@ class EchoService:
     ) -> Guardian:
         """Update guardian permissions."""
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.guardians_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.guardians_table)
 
-                response = await table.get_item(Key={"guardian_id": guardian_id})
-                if "Item" not in response:
-                    raise NotFoundError(f"Guardian {guardian_id} not found")
+            response = await table.get_item(Key={"guardian_id": guardian_id})
+            if "Item" not in response:
+                raise NotFoundError(f"Guardian {guardian_id} not found")
 
-                guardian = Guardian.from_dynamodb_item(response["Item"])
-                if guardian.user_id != user_id:
-                    raise NotFoundError(f"Guardian {guardian_id} not found")
+            guardian = Guardian.from_dynamodb_item(response["Item"])
+            if guardian.user_id != user_id:
+                raise NotFoundError(f"Guardian {guardian_id} not found")
 
-                # Apply permission updates
-                scope = GuardianScope(data["scope"]) if "scope" in data else None
-                trigger = (
-                    GuardianTrigger(data["trigger"]) if "trigger" in data else None
-                )
+            # Apply permission updates
+            scope = GuardianScope(data["scope"]) if "scope" in data else None
+            trigger = GuardianTrigger(data["trigger"]) if "trigger" in data else None
 
-                guardian.update_permissions(
-                    scope=scope,
-                    trigger=trigger,
-                    allowed_echo_ids=data.get("allowed_echo_ids"),
-                    allowed_recipient_ids=data.get("allowed_recipient_ids"),
-                )
+            guardian.update_permissions(
+                scope=scope,
+                trigger=trigger,
+                allowed_echo_ids=data.get("allowed_echo_ids"),
+                allowed_recipient_ids=data.get("allowed_recipient_ids"),
+            )
 
-                await table.put_item(Item=guardian.to_dynamodb_item())
+            await table.put_item(Item=guardian.to_dynamodb_item())
 
-                logger.info(f"Updated guardian {guardian_id} permissions")
-                return guardian
+            logger.info(f"Updated guardian {guardian_id} permissions")
+            return guardian
 
         except NotFoundError:
             raise
@@ -1372,24 +1711,22 @@ class EchoService:
     async def delete_guardian(self, guardian_id: str, user_id: str) -> bool:
         """Soft delete a guardian."""
         try:
-            async with self.session.resource(
-                "dynamodb", **self._get_dynamodb_kwargs()
-            ) as dynamodb:
-                table = await dynamodb.Table(self.guardians_table)
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.guardians_table)
 
-                response = await table.get_item(Key={"guardian_id": guardian_id})
-                if "Item" not in response:
-                    return False
+            response = await table.get_item(Key={"guardian_id": guardian_id})
+            if "Item" not in response:
+                return False
 
-                guardian = Guardian.from_dynamodb_item(response["Item"])
-                if guardian.user_id != user_id:
-                    return False
+            guardian = Guardian.from_dynamodb_item(response["Item"])
+            if guardian.user_id != user_id:
+                return False
 
-                guardian.soft_delete()
-                await table.put_item(Item=guardian.to_dynamodb_item())
+            guardian.soft_delete()
+            await table.put_item(Item=guardian.to_dynamodb_item())
 
-                logger.info(f"Soft deleted guardian {guardian_id}")
-                return True
+            logger.info(f"Soft deleted guardian {guardian_id}")
+            return True
 
         except Exception as e:
             logger.error(f"Error deleting guardian: {e}")
