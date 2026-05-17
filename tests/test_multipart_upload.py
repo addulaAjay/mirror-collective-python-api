@@ -423,3 +423,112 @@ async def test_abort_rejects_recipient_caller():
                 upload_id="UPLOAD",
                 key="echoes/recipient-u/echo-1_x.mp4",
             )
+
+
+# ----------------------------------------------------------------------
+# Review-followup hardening
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_duplicate_part_numbers():
+    """Two parts with the same part_number would silently let S3 take the
+    last ETag, dropping bytes from the assembled object. Reject loudly.
+    """
+    svc = EchoService()
+    with pytest.raises(ValidationError, match="duplicate part_number"):
+        await svc.complete_multipart_upload(
+            echo_id="echo-1",
+            user_id="u-1",
+            upload_id="UPLOAD",
+            key="echoes/u-1/echo-1_x.mp4",
+            parts=[
+                {"part_number": 1, "etag": "a"},
+                {"part_number": 1, "etag": "b"},  # duplicate
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_oversize_parts_list():
+    """A malicious client could POST 500k dicts and OOM the Lambda."""
+    svc = EchoService()
+    huge = [
+        {"part_number": i, "etag": f"e-{i}"}
+        for i in range(1, svc.MULTIPART_MAX_PART_NUMBER + 2)
+    ]
+    with pytest.raises(ValidationError, match="exceeds"):
+        await svc.complete_multipart_upload(
+            echo_id="echo-1",
+            user_id="u-1",
+            upload_id="UPLOAD",
+            key="echoes/u-1/echo-1_x.mp4",
+            parts=huge,
+        )
+
+
+@pytest.mark.asyncio
+async def test_complete_passes_skip_media_url_check_to_finalize():
+    """After S3 CompleteMultipartUpload succeeds, finalize_upload must
+    NOT 400 if echo.media_url was somehow already set by a racing
+    concurrent retry. The skip_media_url_check flag closes that TOCTOU
+    window.
+    """
+    svc = EchoService()
+    echo = _make_echo()
+    fake_s3 = AsyncMock()
+    fake_s3.complete_multipart_upload = AsyncMock(return_value={})
+    finalized = _make_echo(media_url="https://b/.../echo-1.mp4")
+
+    captured_kwargs = {}
+
+    async def fake_finalize(**kwargs):
+        captured_kwargs.update(kwargs)
+        return finalized
+
+    with patch.object(svc, "get_echo", new=AsyncMock(return_value=echo)):
+        with patch.object(svc, "_get_s3_client", new=AsyncMock(return_value=fake_s3)):
+            with patch.object(svc, "finalize_upload", side_effect=fake_finalize):
+                await svc.complete_multipart_upload(
+                    echo_id="echo-1",
+                    user_id="u-1",
+                    upload_id="UPLOAD",
+                    key="echoes/u-1/echo-1_x.mp4",
+                    parts=[{"part_number": 1, "etag": "e"}],
+                )
+
+    assert captured_kwargs.get("skip_media_url_check") is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_upload_honors_skip_media_url_check_flag():
+    """If skip_media_url_check=True, an existing echo.media_url no longer
+    raises — the caller (multipart complete) takes responsibility for
+    asserting the write is desired.
+    """
+    svc = EchoService()
+    svc.s3_bucket = "mc-bucket"
+    echo = _make_echo(media_url="https://b/.../already.mp4")
+    fake_s3 = AsyncMock()
+    fake_s3.head_object = AsyncMock(
+        return_value={"ContentLength": 1, "ContentType": "video/mp4", "ETag": '"e"'}
+    )
+    resource = AsyncMock()
+    table = AsyncMock()
+    table.put_item = AsyncMock()
+    resource.Table = AsyncMock(return_value=table)
+    with patch.object(svc, "get_echo", new=AsyncMock(return_value=echo)):
+        with patch.object(svc, "_get_s3_client", new=AsyncMock(return_value=fake_s3)):
+            with patch.object(
+                svc, "_get_dynamodb_resource", new=AsyncMock(return_value=resource)
+            ):
+                # Without the flag this would raise ValidationError.
+                result = await svc.finalize_upload(
+                    echo_id="echo-1",
+                    user_id="u-1",
+                    key="echoes/u-1/echo-1_x.mp4",
+                    skip_media_url_check=True,
+                )
+    assert result.media_url == (
+        "https://mc-bucket.s3.us-east-1.amazonaws.com/echoes/u-1/echo-1_x.mp4"
+    )
