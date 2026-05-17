@@ -619,6 +619,11 @@ class EchoService:
             # this collapses 30 round-trips into one BatchGetItem call.
             await self._enrich_echoes_with_recipients(echoes, user_id)
 
+            # Sign poster URLs in parallel so the vault list can render
+            # video thumbnails directly from the response (without a
+            # follow-up detail-fetch).
+            await self._sign_poster_urls_for_echoes(echoes)
+
             return echoes, next_cursor
 
         except ClientError as e:
@@ -885,6 +890,10 @@ class EchoService:
             # ``limit`` by an order of magnitude, defeating the pagination
             # contract clients depend on.
             echoes = echoes[:page_limit]
+
+            # Sign poster URLs for the page so inbox cards render video
+            # thumbnails directly. Same pattern as get_user_echoes.
+            await self._sign_poster_urls_for_echoes(echoes)
 
             logger.info(f"Inbox: returning {len(echoes)} released echoes")
             return echoes, next_cursor
@@ -1981,6 +1990,40 @@ class EchoService:
         signed = await asyncio.gather(*[self._sign_profile_url(u) for u in url_list])
         return {orig: new for orig, new in zip(url_list, signed) if new is not None}
 
+    async def _sign_poster_urls_for_echoes(self, echoes: List[Echo]) -> None:
+        """Sign every echo's poster_url in parallel (in-place mutation).
+
+        Unlike ``_sign_media_url`` which signs BOTH media_url and
+        poster_url for an echo, this helper signs ONLY poster_url. It's
+        the right tool for list endpoints — the vault list intentionally
+        omits media_url to save presign cost (clients fetch detail-by-id
+        when they need the playable URL), but does want to render the
+        poster thumbnail directly from the list response.
+
+        Uses the same 6h presign TTL as ``_sign_media_url``.
+        """
+        targets = [
+            e for e in echoes if e.poster_url and "amazonaws.com" in e.poster_url
+        ]
+        if not targets:
+            return
+
+        async def sign_one(echo: Echo) -> None:
+            if not echo.poster_url:
+                return
+            try:
+                key = echo.poster_url.split("amazonaws.com/")[-1]
+                s3 = await self._get_s3_client()
+                echo.poster_url = await s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": self.s3_bucket, "Key": key},
+                    ExpiresIn=21600,
+                )
+            except Exception as e:
+                logger.error(f"Failed to sign poster URL for echo {echo.echo_id}: {e}")
+
+        await asyncio.gather(*[sign_one(e) for e in targets])
+
     async def _sign_media_url(self, echo: Echo) -> Echo:
         """Generate presigned GET URL for secure media playback.
 
@@ -2007,6 +2050,101 @@ class EchoService:
             except Exception as e:
                 logger.error(f"Failed to sign media URL for echo {echo.echo_id}: {e}")
                 # Keep original URL on error
+
+        # Poster URL gets the same treatment when present. We sign both
+        # in one helper because every caller that wants one wants the
+        # other — the poster is functionally part of the same media
+        # asset, just at a smaller frame.
+        if echo.poster_url and "amazonaws.com" in echo.poster_url:
+            try:
+                key = echo.poster_url.split("amazonaws.com/")[-1]
+                s3 = await self._get_s3_client()
+                echo.poster_url = await s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": self.s3_bucket, "Key": key},
+                    ExpiresIn=21600,
+                )
+            except Exception as e:
+                logger.error(f"Failed to sign poster URL for echo {echo.echo_id}: {e}")
+        return echo
+
+    async def attach_poster(
+        self,
+        echo_id: str,
+        user_id: str,
+        key: str,
+    ) -> Echo:
+        """Verify a poster-image S3 PUT and atomically attach it to the echo.
+
+        Mirrors ``finalize_upload`` but for the optional video-poster
+        slot. Differences:
+
+        - The echo must already have ``media_url`` set (the poster
+          attaches to an existing media; calling this before the video
+          is finalized would orphan the poster).
+        - Re-attaching is allowed — clients that retry after a network
+          blip just overwrite. (The original media has first-write
+          semantics, but the poster is a derived asset; replacing it
+          is a no-op user-visibly.)
+        - Server-side ``HeadObject`` still confirms the object landed
+          and the key prefix still has to belong to this echo, so the
+          poster can't be forged.
+        """
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        # Owner-only (same posture as finalize_upload). Recipients see
+        # NotFound rather than Forbidden — keeps echo existence private.
+        if echo.user_id != user_id:
+            logger.warning(
+                f"attach_poster owner reject: caller={user_id} "
+                f"owner={echo.user_id} echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if not echo.media_url:
+            raise ValidationError(
+                "Echo has no media to attach a poster to — finalize media first"
+            )
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            logger.warning(
+                f"attach_poster tenancy reject: user={user_id} echo={echo_id} "
+                f"key={key!r}"
+            )
+            raise ValidationError("Object key does not belong to this echo")
+
+        try:
+            s3 = await self._get_s3_client()
+            await s3.head_object(Bucket=self.s3_bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                raise NotFoundError(
+                    f"No uploaded poster at s3://{self.s3_bucket}/{key}"
+                )
+            if code in ("403", "AccessDenied", "Forbidden"):
+                logger.error(
+                    f"attach_poster HEAD access denied for {key} "
+                    f"(likely IAM/KMS gap): {e}"
+                )
+                raise InternalServerError("Failed to verify uploaded poster")
+            logger.error(f"attach_poster HEAD failed for {key}: {e}")
+            raise InternalServerError("Failed to verify uploaded poster")
+
+        echo.poster_url = (
+            f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
+        )
+        echo.updated_at = _current_timestamp()
+
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed during attach_poster: {e}")
+            raise InternalServerError(f"Failed to commit poster: {str(e)}")
+
+        logger.info(f"Attached poster to echo {echo_id}: key={key!r}")
         return echo
 
     # ========================================
