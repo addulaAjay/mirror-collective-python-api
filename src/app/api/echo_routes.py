@@ -4,7 +4,7 @@ Endpoints for managing Echoes, Recipients, and Guardians.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, validator
@@ -124,7 +124,27 @@ class UploadUrlRequest(BaseModel):
     # 'echo' → echoes/{user_id}/ path
     # 'profile' → profiles/{user_id}/ path (recipient / guardian photo)
     # 'user_profile' → user_profiles/{user_id}/ path (own avatar)
-    upload_type: Optional[str] = "echo"
+    # Pydantic Literal validates at request time so malformed values get
+    # a 422 before they reach the service — and prevents tag-string
+    # injection in the presigned PUT's Tagging parameter.
+    upload_type: Optional[Literal["echo", "profile", "user_profile"]] = "echo"
+
+
+class FinalizeMediaRequest(BaseModel):
+    """Client tells the backend: "I've finished PUT-ing to s3://.../{key}.
+    Please verify it landed and atomically attach it to this echo."
+
+    The backend will:
+    - HEAD the object to confirm it exists.
+    - Validate the key prefix matches the caller's namespace.
+    - Persist the canonical (non-presigned) media_url to DDB.
+
+    Closes the race between client PUT-success and client PATCH-commit,
+    and removes the client's ability to forge a media_url server-side.
+    """
+
+    key: str  # S3 object key the client just uploaded to
+    content_type: Optional[str] = None  # caller hint, overridden by S3 HEAD
 
 
 class CreateRecipientRequest(BaseModel):
@@ -219,19 +239,78 @@ async def get_upload_url(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Get presigned URL for direct media upload to S3."""
+    from ..core.exceptions import ValidationError
+
     user_id = current_user["id"]
 
-    result = await echo_service.generate_upload_url(
-        user_id=user_id,
-        file_type=request.file_type,
-        echo_id=request.echo_id,
-        upload_type=request.upload_type or "echo",
-    )
+    try:
+        result = await echo_service.generate_upload_url(
+            user_id=user_id,
+            file_type=request.file_type,
+            echo_id=request.echo_id,
+            upload_type=request.upload_type or "echo",
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return {
         "success": True,
         "data": result,
         "message": "Upload URL generated",
+    }
+
+
+@router.post("/echoes/{echo_id}/finalize-media", response_model=Dict[str, Any])
+async def finalize_media_upload(
+    echo_id: str,
+    request: FinalizeMediaRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Verify a completed S3 PUT and atomically attach it to the echo.
+
+    Replaces the old client-driven ``PATCH /echoes/:id`` with `media_url`
+    payload pattern. The backend HEADs the S3 object server-side so the
+    client cannot forge a URL, and the write is atomic — if HEAD fails
+    we don't commit, so we never leave the echo row half-attached.
+
+    Returns the full updated echo (same shape as ``GET /echoes/{id}``)
+    so clients can refresh their cached state without a follow-up read.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echo = await echo_service.finalize_upload(
+            echo_id=echo_id,
+            user_id=user_id,
+            key=request.key,
+            content_type=request.content_type,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "data": {
+            "echo_id": echo.echo_id,
+            "title": echo.title,
+            "category": echo.category,
+            "echo_type": echo.echo_type.value,
+            "status": echo.status.value,
+            "content": echo.content,
+            "media_url": echo.media_url,
+            "recipient_id": echo.recipient_id,
+            "recipient": echo.recipient,
+            "release_date": echo.release_date,
+            "lock_date": echo.lock_date,
+            "letter_to_recipient": echo.letter_to_recipient,
+            "created_at": echo.created_at,
+            "updated_at": echo.updated_at,
+        },
+        "message": "Echo media finalized",
     }
 
 
