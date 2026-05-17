@@ -861,8 +861,10 @@ async def delete_echo(
 
 
 @router.patch("/echoes/{echo_id}/release", response_model=Dict[str, Any])
+@idempotent(route_id="release_echo")
 async def release_echo(
     echo_id: str,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """
@@ -875,6 +877,12 @@ async def release_echo(
 
     On success the echo status transitions to RELEASED and the recipient
     receives a notification email.
+
+    Idempotent: the recipient-notification email is a user-visible
+    side effect, so a 429-driven retry hitting this twice without
+    dedup would surface as a duplicate email. The @idempotent wrapper
+    caches the original response under the client's Idempotency-Key
+    for 24 h and returns it verbatim on retries.
     """
     from ..core.exceptions import NotFoundError, ValidationError
 
@@ -990,15 +998,23 @@ async def list_recipients(
 
 
 @router.post("/recipients", response_model=Dict[str, Any], status_code=201)
+@idempotent(route_id="create_recipient")
 async def create_recipient(
-    request: CreateRecipientRequest,
+    payload: CreateRecipientRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Add a new recipient. Triggers invitation email."""
+    """Add a new recipient. Triggers invitation email.
+
+    Idempotent: the invitation email is a user-visible side effect.
+    A 429-driven retry without dedup would produce a duplicate
+    invitation. @idempotent caches the response so retries within
+    the 24h window are no-ops on the server side.
+    """
     user_id = current_user["id"]
     user_name = current_user.get("name", current_user.get("email", "Someone"))
 
-    recipient = await echo_service.create_recipient(user_id, request.model_dump())
+    recipient = await echo_service.create_recipient(user_id, payload.model_dump())
 
     # Send invitation email (fire-and-forget, don't block on failure)
     try:
@@ -1090,15 +1106,21 @@ async def list_guardians(
 
 
 @router.post("/guardians", response_model=Dict[str, Any], status_code=201)
+@idempotent(route_id="create_guardian")
 async def create_guardian(
-    request: CreateGuardianRequest,
+    payload: CreateGuardianRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Add a new guardian. Triggers invitation email."""
+    """Add a new guardian. Triggers invitation email.
+
+    Idempotent for the same reason as create_recipient — the
+    guardian-invite email shouldn't double-send on retry.
+    """
     user_id = current_user["id"]
     user_name = current_user.get("name", current_user.get("email", "Someone"))
 
-    guardian = await echo_service.create_guardian(user_id, request.model_dump())
+    guardian = await echo_service.create_guardian(user_id, payload.model_dump())
 
     # Send invitation email (fire-and-forget, don't block on failure)
     try:
