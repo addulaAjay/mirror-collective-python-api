@@ -13,12 +13,29 @@ import pytest
 
 
 def test_ses_client_config_has_max_pool_connections():
-    """The module-level _SES_CLIENT_CONFIG must be tuned."""
+    """The module-level _SES_CLIENT_CONFIG must be tuned.
+
+    Robust to botocore's Config normalization: depending on whether the
+    Config has been merged with another (which happens when other tests
+    in the suite construct boto3 clients), the ``retries`` dict may
+    surface ``max_attempts`` (the value we set), ``total_max_attempts``
+    (max_attempts + 1, what botocore actually uses internally), or both.
+    We accept either as long as the mode is adaptive and the attempts
+    value is what we configured.
+    """
     from src.app.services.email_service import _SES_CLIENT_CONFIG
 
     # botocore.Config sets attributes via __setattr__; they're not in type stubs.
     assert _SES_CLIENT_CONFIG.max_pool_connections == 50  # type: ignore[attr-defined]
-    assert _SES_CLIENT_CONFIG.retries == {"max_attempts": 5, "mode": "adaptive"}  # type: ignore[attr-defined]
+    retries = _SES_CLIENT_CONFIG.retries  # type: ignore[attr-defined]
+    assert retries.get("mode") == "adaptive"
+    # Either form is acceptable; pick whichever botocore exposed.
+    max_attempts = retries.get("max_attempts")
+    total_max_attempts = retries.get("total_max_attempts")
+    assert max_attempts == 5 or total_max_attempts == 6, (
+        f"Expected max_attempts=5 or total_max_attempts=6, got "
+        f"max_attempts={max_attempts!r}, total_max_attempts={total_max_attempts!r}"
+    )
 
 
 @pytest.mark.asyncio

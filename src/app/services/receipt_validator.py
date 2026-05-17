@@ -392,7 +392,10 @@ def _payload_to_dict(payload: Any) -> Dict[str, Any]:
         return {}
     if isinstance(payload, dict):
         return payload
-    if is_dataclass(payload):
+    # ``is_dataclass`` returns True for both class objects and instances;
+    # ``asdict`` only accepts instances. Guard against the class-object case
+    # (mypy's type narrowing also requires this).
+    if is_dataclass(payload) and not isinstance(payload, type):
         data = asdict(payload)
     else:
         # Try generic attribute scrape as a last resort.
