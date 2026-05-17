@@ -72,6 +72,19 @@ def _looks_like_presigned_url(url: Optional[str]) -> bool:
     return bool(_PRESIGNED_URL_MARKERS.search(url))
 
 
+def _short(s: str, n: int = 12) -> str:
+    """Truncate a long identifier for log lines without assuming length.
+
+    S3 upload IDs are typically ~100+ chars but a test double or future
+    code path could return something shorter; ``s[:12] + "..."`` on a
+    short string is misleading. This helper returns the input unchanged
+    when it's already short enough.
+    """
+    if len(s) <= n:
+        return s
+    return f"{s[:n]}..."
+
+
 # Cache directives we stamp on every PUT presign. Echo media keys embed a
 # timestamp + echo_id so the bytes are effectively immutable; the long
 # max-age + immutable lets browsers and CloudFront (Tier 3) cache without
@@ -1425,6 +1438,8 @@ class EchoService:
         user_id: str,
         key: str,
         content_type: Optional[str] = None,
+        *,
+        skip_media_url_check: bool = False,
     ) -> Echo:
         """Confirm a client-side S3 PUT and atomically commit ``media_url``.
 
@@ -1481,7 +1496,13 @@ class EchoService:
         # second PUT to a different key and overwrite the canonical URL.
         # If we ever support intentional re-upload, that goes through an
         # explicit `replace_media` route with separate auditing.
-        if echo.media_url:
+        #
+        # The multipart-complete path passes skip_media_url_check=True
+        # because S3's CompleteMultipartUpload already succeeded by the
+        # time we reach here. Re-checking would let a concurrent retry
+        # race (or any non-cached @idempotent re-entry) produce a 400
+        # even though the user-facing outcome is success.
+        if echo.media_url and not skip_media_url_check:
             raise ValidationError("Echo media has already been finalized")
 
         # Tenancy check — the key must live directly under this echo's
@@ -1679,8 +1700,8 @@ class EchoService:
 
         upload_id = response["UploadId"]
         logger.info(
-            f"Initiated multipart upload echo={echo_id} key={key} "
-            f"upload_id={upload_id[:12]}..."
+            f"Initiated multipart upload echo={echo_id} key={key!r} "
+            f"upload_id={_short(upload_id)}"
         )
         return {
             "upload_id": upload_id,
@@ -1788,8 +1809,19 @@ class EchoService:
         """
         if not parts:
             raise ValidationError("parts cannot be empty")
-        # Defensive sort + validation in one pass.
+        # Hard cap on the parts array length. Without this a malicious
+        # client could POST 500,000 dicts and exhaust Lambda memory
+        # before reaching any other validation.
+        if len(parts) > self.MULTIPART_MAX_PART_NUMBER:
+            raise ValidationError(
+                f"parts list exceeds {self.MULTIPART_MAX_PART_NUMBER}"
+            )
+        # Defensive sort + dedup + validation in one pass. Duplicates
+        # would silently overwrite each other in S3 — the second ETag
+        # wins, missing parts produce a corrupt assembled object. We
+        # reject loudly instead.
         normalized: List[Dict[str, Any]] = []
+        seen_part_numbers: set[int] = set()
         for p in parts:
             n = p.get("part_number")
             etag = p.get("etag")
@@ -1797,6 +1829,9 @@ class EchoService:
                 raise ValidationError(
                     f"part_number {n} out of range [1, {self.MULTIPART_MAX_PART_NUMBER}]"
                 )
+            if n in seen_part_numbers:
+                raise ValidationError(f"duplicate part_number {n}")
+            seen_part_numbers.add(n)
             if not isinstance(etag, str) or not etag:
                 raise ValidationError(f"part {n} missing etag")
             # S3 wants etags quoted; the client typically reports them
@@ -1841,13 +1876,18 @@ class EchoService:
             raise InternalServerError(f"Failed to complete multipart upload: {code}")
 
         # Reuse the single-PUT finalize path for HEAD + atomic commit.
-        # That helper does its own ownership + first-write check; both
-        # already passed above, but defense-in-depth + sharing the same
-        # success path is worth the redundant CPU.
+        # We've already done the ownership + tenancy checks above, but
+        # finalize_upload re-runs them as defense-in-depth (cheap; one
+        # DDB GetItem). The crucial difference: pass
+        # skip_media_url_check=True because S3's CompleteMultipartUpload
+        # has already succeeded — a strict first-write check here would
+        # 400 on any concurrent retry that races past @idempotent's
+        # cache, even though the user-facing outcome is success.
         return await self.finalize_upload(
             echo_id=echo_id,
             user_id=user_id,
             key=key,
+            skip_media_url_check=True,
         )
 
     async def abort_multipart_upload(
@@ -1883,8 +1923,8 @@ class EchoService:
                 UploadId=upload_id,
             )
             logger.info(
-                f"Aborted multipart upload echo={echo_id} key={key} "
-                f"upload_id={upload_id[:12]}..."
+                f"Aborted multipart upload echo={echo_id} key={key!r} "
+                f"upload_id={_short(upload_id)}"
             )
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")

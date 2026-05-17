@@ -157,6 +157,17 @@ provider:
             - s3:PutObjectTagging      # for Tagging param in presigned PUT
             - s3:GetObject             # also covers HeadObject in finalize
             - s3:ListBucket
+            # Multipart upload routes — without these the Lambda receives
+            # AccessDenied on every multipart call (initiate / part-urls /
+            # complete / abort). The signer-role needs these even though
+            # the actual UploadPart calls happen from the client against
+            # presigned URLs, because the SigV4 signature is computed
+            # using the role's permissions.
+            - s3:CreateMultipartUpload
+            - s3:UploadPart
+            - s3:CompleteMultipartUpload
+            - s3:AbortMultipartUpload
+            - s3:ListMultipartUploadParts
           Resource:
             - arn:aws:s3:::${self:provider.environment.ECHO_MEDIA_BUCKET}
             - arn:aws:s3:::${self:provider.environment.ECHO_MEDIA_BUCKET}/*
