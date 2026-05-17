@@ -2,6 +2,7 @@
 AWS Cognito service for user authentication and management
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -11,6 +12,7 @@ from functools import lru_cache
 from typing import Any, Dict, NoReturn, Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import (
@@ -45,7 +47,18 @@ class CognitoService:
         self.user_pool_id: str = user_pool_id
         self.client_id: str = client_id
 
-        self.client = boto3.client("cognito-idp", region_name=self.region)
+        # Tune boto3 client for high-concurrency FastAPI/Lambda:
+        # - max_pool_connections=50 prevents saturating the default 10-connection
+        #   pool under burst auth load (login spikes, token refresh waves).
+        # - retries=adaptive backs off intelligently on Cognito throttling.
+        self.client = boto3.client(
+            "cognito-idp",
+            region_name=self.region,
+            config=Config(
+                max_pool_connections=50,
+                retries={"max_attempts": 5, "mode": "adaptive"},
+            ),
+        )
 
         logger.info(f"Initialized CognitoService for pool {self.user_pool_id}")
 
@@ -151,7 +164,7 @@ class CognitoService:
                 if secret_hash:
                     params["SecretHash"] = secret_hash
 
-            response = self.client.sign_up(**params)
+            response = await asyncio.to_thread(self.client.sign_up, **params)
 
             logger.info(f"User registered successfully: {email}")
 
@@ -182,7 +195,9 @@ class CognitoService:
                 if secret_hash:
                     params["AuthParameters"]["SECRET_HASH"] = secret_hash
 
-            response = self.client.admin_initiate_auth(**params)
+            response = await asyncio.to_thread(
+                self.client.admin_initiate_auth, **params
+            )
 
             if not response.get("AuthenticationResult"):
                 raise AuthenticationError("Authentication failed - no tokens returned")
@@ -221,7 +236,7 @@ class CognitoService:
                 if secret_hash:
                     params["SecretHash"] = secret_hash
 
-            response = self.client.forgot_password(**params)
+            response = await asyncio.to_thread(self.client.forgot_password, **params)
 
             logger.info(f"Password reset initiated for: {email}")
 
@@ -250,7 +265,9 @@ class CognitoService:
                 if secret_hash:
                     params["SecretHash"] = secret_hash
 
-            response = self.client.confirm_forgot_password(**params)
+            response = await asyncio.to_thread(
+                self.client.confirm_forgot_password, **params
+            )
 
             logger.info(f"Password reset confirmed for: {email}")
 
@@ -280,7 +297,7 @@ class CognitoService:
                 if secret_hash:
                     params["SecretHash"] = secret_hash
 
-            response = self.client.confirm_sign_up(**params)
+            response = await asyncio.to_thread(self.client.confirm_sign_up, **params)
 
             logger.info(f"Email confirmed for: {email}")
 
@@ -302,7 +319,9 @@ class CognitoService:
                 if secret_hash:
                     params["SecretHash"] = secret_hash
 
-            response = self.client.resend_confirmation_code(**params)
+            response = await asyncio.to_thread(
+                self.client.resend_confirmation_code, **params
+            )
 
             logger.info(f"Confirmation code resent for: {email}")
 
@@ -337,7 +356,7 @@ class CognitoService:
             )
             logger.debug(msg)
 
-            response = self.client.initiate_auth(**params)
+            response = await asyncio.to_thread(self.client.initiate_auth, **params)
             logger.info("Successfully called initiate_auth for refresh token")
 
             if not response.get("AuthenticationResult"):
@@ -367,7 +386,11 @@ class CognitoService:
             logger.error(
                 f"Cognito refresh_token ClientError: {error_code} - {error_message}"
             )
-            logger.error(f"Full error response: {e.response}")
+            # Full response can carry user identifiers and Cognito-internal
+            # request IDs — keep at DEBUG so it doesn't leak into prod
+            # CloudWatch by default. Operators can raise log level when
+            # diagnosing a specific incident.
+            logger.debug(f"Full error response: {e.response}")
 
             # Specific error mappings for refresh token flow
             if error_code == "NotAuthorizedException":
@@ -388,7 +411,9 @@ class CognitoService:
     async def get_user(self, access_token: str) -> Dict[str, Any]:
         """Get user details using access token"""
         try:
-            response = self.client.get_user(AccessToken=access_token)
+            response = await asyncio.to_thread(
+                self.client.get_user, AccessToken=access_token
+            )
 
             # Convert user attributes to a more usable format
             user_attributes = {}
@@ -411,7 +436,9 @@ class CognitoService:
     async def delete_user(self, access_token: str) -> Dict[str, Any]:
         """Delete user account using access token"""
         try:
-            response = self.client.delete_user(AccessToken=access_token)
+            response = await asyncio.to_thread(
+                self.client.delete_user, AccessToken=access_token
+            )
 
             logger.info("User account deleted successfully")
 
@@ -426,8 +453,10 @@ class CognitoService:
     async def admin_delete_user(self, email: str) -> Dict[str, Any]:
         """Delete user account using admin privileges"""
         try:
-            response = self.client.admin_delete_user(
-                UserPoolId=self.user_pool_id, Username=email
+            response = await asyncio.to_thread(
+                self.client.admin_delete_user,
+                UserPoolId=self.user_pool_id,
+                Username=email,
             )
 
             logger.info(f"User account deleted successfully: {email}")
@@ -446,8 +475,10 @@ class CognitoService:
         """Soft delete user by disabling account instead of deleting"""
         try:
             # Disable the user account
-            response = self.client.admin_disable_user(
-                UserPoolId=self.user_pool_id, Username=username
+            response = await asyncio.to_thread(
+                self.client.admin_disable_user,
+                UserPoolId=self.user_pool_id,
+                Username=username,
             )
 
             logger.info(f"User account soft deleted (disabled): {username}")
@@ -456,7 +487,8 @@ class CognitoService:
             import time
 
             try:
-                self.client.admin_update_user_attributes(
+                await asyncio.to_thread(
+                    self.client.admin_update_user_attributes,
                     UserPoolId=self.user_pool_id,
                     Username=username,
                     UserAttributes=[
@@ -480,8 +512,10 @@ class CognitoService:
     async def get_user_by_email(self, email: str) -> Dict[str, Any]:
         """Get user details using admin privileges"""
         try:
-            response = self.client.admin_get_user(
-                UserPoolId=self.user_pool_id, Username=email
+            response = await asyncio.to_thread(
+                self.client.admin_get_user,
+                UserPoolId=self.user_pool_id,
+                Username=email,
             )
 
             # Convert user attributes to a more usable format
@@ -507,7 +541,9 @@ class CognitoService:
     async def global_sign_out(self, access_token: str) -> Dict[str, Any]:
         """Sign out user from all devices"""
         try:
-            response = self.client.global_sign_out(AccessToken=access_token)
+            response = await asyncio.to_thread(
+                self.client.global_sign_out, AccessToken=access_token
+            )
 
             logger.info("User signed out globally")
 
@@ -522,8 +558,10 @@ class CognitoService:
     async def admin_user_global_sign_out(self, username: str) -> Dict[str, Any]:
         """Admin-level global sign out for a user (signs out from all devices)"""
         try:
-            response = self.client.admin_user_global_sign_out(
-                UserPoolId=self.user_pool_id, Username=username
+            response = await asyncio.to_thread(
+                self.client.admin_user_global_sign_out,
+                UserPoolId=self.user_pool_id,
+                Username=username,
             )
 
             logger.info(f"User signed out globally by admin: {username}")

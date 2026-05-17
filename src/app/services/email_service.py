@@ -11,9 +11,20 @@ import os
 from typing import Optional
 
 import aioboto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
+
+
+# Shared botocore Config for SES clients. We open a fresh aioboto3 client per
+# send (cheap with aioboto3), but every client honours these tuned defaults so
+# burst email traffic doesn't saturate the default 10-connection pool or fall
+# off the cliff during SES throttling events.
+_SES_CLIENT_CONFIG = Config(
+    max_pool_connections=50,
+    retries={"max_attempts": 5, "mode": "adaptive"},
+)
 
 
 class EmailService:
@@ -609,7 +620,9 @@ This is an automated message from {self.app_name}.
             True if sent successfully
         """
         try:
-            async with self.session.client("ses", region_name=self.region) as ses:
+            async with self.session.client(
+                "ses", region_name=self.region, config=_SES_CLIENT_CONFIG
+            ) as ses:
                 response = await ses.send_email(
                     Source=self.sender_email,
                     Destination={

@@ -1,18 +1,47 @@
 # app/services/sns_service.py
+import asyncio
 import json
 import logging
 import os
+import warnings
 from typing import Any, Dict, Optional
 
 import boto3
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
 
+def _warn_sync_sns_call(method_name: str) -> None:
+    """Emit a DeprecationWarning when an SNS sync method is called.
+
+    The sync wrappers blocking-call boto3 from inside async contexts —
+    silently stalling the event loop. Each has an `*_async` counterpart
+    that wraps the same call in `asyncio.to_thread`. This warning makes
+    accidental sync use visible in CI / dev logs without breaking
+    production behavior.
+    """
+    warnings.warn(
+        f"SNSService.{method_name} is sync and blocks the event loop. "
+        f"Call SNSService.{method_name}_async() from async contexts.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 class SNSService:
     def __init__(self):
+        # Tune boto3 client for high-concurrency FastAPI/Lambda:
+        # - max_pool_connections=50 prevents pool exhaustion under push bursts
+        #   (e.g. broadcast topic publish + per-device direct publishes).
+        # - retries=adaptive backs off intelligently on SNS throttling.
         self.sns = boto3.client(
-            "sns", region_name=os.getenv("AWS_SNS_REGION", "us-east-1")
+            "sns",
+            region_name=os.getenv("AWS_SNS_REGION", "us-east-1"),
+            config=Config(
+                max_pool_connections=50,
+                retries={"max_attempts": 5, "mode": "adaptive"},
+            ),
         )
         self.topic_arn = os.getenv("SNS_TOPIC_ARN")
         # Support both platform-specific and generic ARNs
@@ -33,6 +62,7 @@ class SNSService:
         """
         Creates a platform endpoint in AWS SNS.
         """
+        _warn_sync_sns_call("create_platform_endpoint")
         platform_arn = self._get_platform_arn(platform)
         if not platform_arn:
             logger.error(f"No Platform Application ARN configured for {platform}")
@@ -51,6 +81,7 @@ class SNSService:
 
     def subscribe_to_topic(self, endpoint_arn: str) -> str:
         """Subscribes an endpoint to the main SNS topic."""
+        _warn_sync_sns_call("subscribe_to_topic")
         if not self.topic_arn:
             logger.warning("No SNS_TOPIC_ARN configured, skipping subscription")
             return ""
@@ -102,6 +133,7 @@ class SNSService:
         self, title: str, body: str, data: Optional[Dict[str, Any]] = None
     ):
         """Broadcasts a notification to all subscribers of the topic."""
+        _warn_sync_sns_call("publish_to_topic")
         if not self.topic_arn:
             logger.error("Attempted to publish to topic but SNS_TOPIC_ARN is missing")
             return None
@@ -127,6 +159,7 @@ class SNSService:
         data: Optional[Dict[str, Any]] = None,
     ):
         """Sends a direct notification to a specific device endpoint."""
+        _warn_sync_sns_call("publish_to_endpoint")
         try:
             payload = self._generate_payload(title, body, data)
             response = self.sns.publish(
@@ -149,6 +182,7 @@ class SNSService:
 
     def delete_platform_endpoint(self, endpoint_arn: str):
         """Deletes a platform endpoint from AWS SNS."""
+        _warn_sync_sns_call("delete_platform_endpoint")
         try:
             self.sns.delete_endpoint(EndpointArn=endpoint_arn)
             logger.info(f"Deleted SNS endpoint: {endpoint_arn}")
@@ -156,3 +190,48 @@ class SNSService:
         except Exception as e:
             logger.error(f"Failed to delete SNS endpoint {endpoint_arn}: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Async variants
+    # ------------------------------------------------------------------
+    # The sync methods above remain in place because they're called from a
+    # background APScheduler thread (see services/scheduler.py) where the
+    # event loop is not running. The async variants below delegate to the
+    # sync implementations via asyncio.to_thread so async callers (FastAPI
+    # routes) can opt-in to non-blocking SNS calls without spawning their
+    # own threads. Once all callers migrate, the sync wrappers can become
+    # thin proxies or be removed.
+
+    async def create_platform_endpoint_async(
+        self, token: str, platform: str, user_id: str
+    ) -> str:
+        """Async variant of create_platform_endpoint (offloads to threadpool)."""
+        return await asyncio.to_thread(
+            self.create_platform_endpoint, token, platform, user_id
+        )
+
+    async def subscribe_to_topic_async(self, endpoint_arn: str) -> str:
+        """Async variant of subscribe_to_topic (offloads to threadpool)."""
+        return await asyncio.to_thread(self.subscribe_to_topic, endpoint_arn)
+
+    async def publish_to_topic_async(
+        self, title: str, body: str, data: Optional[Dict[str, Any]] = None
+    ):
+        """Async variant of publish_to_topic (offloads to threadpool)."""
+        return await asyncio.to_thread(self.publish_to_topic, title, body, data)
+
+    async def publish_to_endpoint_async(
+        self,
+        endpoint_arn: str,
+        title: str,
+        body: str,
+        data: Optional[Dict[str, Any]] = None,
+    ):
+        """Async variant of publish_to_endpoint (offloads to threadpool)."""
+        return await asyncio.to_thread(
+            self.publish_to_endpoint, endpoint_arn, title, body, data
+        )
+
+    async def delete_platform_endpoint_async(self, endpoint_arn: str):
+        """Async variant of delete_platform_endpoint (offloads to threadpool)."""
+        return await asyncio.to_thread(self.delete_platform_endpoint, endpoint_arn)
