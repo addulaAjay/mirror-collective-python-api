@@ -69,6 +69,12 @@ provider:
             - dynamodb:Query
             - dynamodb:Scan
             - dynamodb:GetItem
+            # BatchGetItem is used by EchoService to collapse per-row
+            # recipient enrichment lookups into a single round-trip
+            # (see services/echo_service.py:_batch_get_recipients).
+            # Without this grant the lambda hits AccessDenied on every
+            # GET /api/echoes and returns 500.
+            - dynamodb:BatchGetItem
             - dynamodb:PutItem
             - dynamodb:UpdateItem
             - dynamodb:DeleteItem
