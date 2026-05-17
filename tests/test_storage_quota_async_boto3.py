@@ -16,9 +16,16 @@ import pytest
 
 
 @pytest.fixture
-def quota_service_with_mock_s3():
-    """Build a StorageQuotaService with a MagicMock S3 client."""
-    os.environ.setdefault("ECHO_MEDIA_BUCKET", "test-bucket")
+def quota_service_with_mock_s3(monkeypatch):
+    """Build a StorageQuotaService with a MagicMock S3 client.
+
+    Uses ``monkeypatch.setenv`` instead of ``os.environ.setdefault`` because
+    setdefault is a no-op when ECHO_MEDIA_BUCKET is already set by the
+    project's ``.env`` or by another test fixture — and StorageQuotaService
+    reads the env var at __init__ time, baking the wrong value into
+    ``service.bucket``.
+    """
+    monkeypatch.setenv("ECHO_MEDIA_BUCKET", "test-bucket")
     mock_s3 = MagicMock()
     with patch("boto3.client", return_value=mock_s3):
         from src.app.services.storage_quota_service import StorageQuotaService
