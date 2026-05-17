@@ -148,6 +148,53 @@ class FinalizeMediaRequest(BaseModel):
     content_type: Optional[str] = None  # caller hint, overridden by S3 HEAD
 
 
+class MultipartInitiateRequest(BaseModel):
+    """Start an S3 multipart upload for a >50 MB file."""
+
+    file_type: str  # MIME type — validated against the allowlist
+
+
+class MultipartPartUrlsRequest(BaseModel):
+    """Ask for presigned PUT URLs for a batch of part numbers.
+
+    The client typically asks in batches of 4-8 (matching its upload
+    concurrency) so the backend response stays small.
+    """
+
+    upload_id: str
+    key: str
+    # 1-indexed part numbers. S3 hard cap is 10,000; service-side
+    # validation rejects out-of-range values. Service also caps batch size.
+    part_numbers: List[int]
+
+
+class CompletedPart(BaseModel):
+    """An uploaded part as reported by the client.
+
+    ETag comes from S3's per-part PUT response header. The service
+    accepts both quoted (S3's wire format) and unquoted forms — the
+    quoting is canonicalized before the CompleteMultipartUpload call.
+    """
+
+    part_number: int
+    etag: str
+
+
+class MultipartCompleteRequest(BaseModel):
+    """Finalize the multipart upload + commit media_url to the echo row."""
+
+    upload_id: str
+    key: str
+    parts: List[CompletedPart]
+
+
+class MultipartAbortRequest(BaseModel):
+    """Best-effort cancel of an in-progress multipart upload."""
+
+    upload_id: str
+    key: str
+
+
 class CreateRecipientRequest(BaseModel):
     name: str
     email: EmailStr
@@ -327,6 +374,185 @@ async def finalize_media_upload(
         },
         "message": "Echo media finalized",
     }
+
+
+# ========================================
+# MULTIPART UPLOAD ROUTES (>50 MB files)
+# ========================================
+#
+# Four-step ceremony around S3's MultipartUpload API. Compared to the
+# single-PUT presign in /echoes/upload-url:
+#
+#   - resilient: a failed part retries individually instead of throwing
+#     the whole upload away.
+#   - parallel: the client uploads N parts at once, capped only by its
+#     own concurrency setting (typically 4).
+#
+# The route surface mirrors S3's: initiate → part-urls → complete.
+# abort is the cleanup path for client-side give-ups. The backend's
+# bucket-lifecycle rule reaps abandoned uploads after 7 days as a
+# defense-in-depth backstop.
+
+
+@router.post("/echoes/{echo_id}/multipart/initiate", response_model=Dict[str, Any])
+@idempotent(route_id="multipart_initiate")
+async def initiate_multipart_upload(
+    echo_id: str,
+    payload: MultipartInitiateRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Open a multipart upload session for this echo.
+
+    Returns ``{upload_id, key, bucket}``. The client uses ``upload_id``
+    on every subsequent multipart call.
+
+    Idempotent: clients that retry through the BaseApiService 429 loop
+    will get the same upload_id back rather than opening duplicate
+    upload sessions (which would each tie up storage until reaped by
+    the lifecycle rule).
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+    try:
+        result = await echo_service.initiate_multipart_upload(
+            echo_id=echo_id,
+            user_id=user_id,
+            file_type=payload.file_type,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "data": result,
+        "message": "Multipart upload initiated",
+    }
+
+
+@router.post("/echoes/{echo_id}/multipart/part-urls", response_model=Dict[str, Any])
+async def get_multipart_part_urls(
+    echo_id: str,
+    payload: MultipartPartUrlsRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Generate presigned PUT URLs for a batch of part numbers.
+
+    NOT decorated with @idempotent — these are URL-generation calls and
+    caching them would hand back stale signatures after the original
+    presign expired. Clients can safely call this again to refresh URLs.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+    try:
+        urls = await echo_service.generate_multipart_part_urls(
+            echo_id=echo_id,
+            user_id=user_id,
+            upload_id=payload.upload_id,
+            key=payload.key,
+            part_numbers=payload.part_numbers,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "data": {"part_urls": urls},
+        "message": "Part URLs generated",
+    }
+
+
+@router.post("/echoes/{echo_id}/multipart/complete", response_model=Dict[str, Any])
+@idempotent(route_id="multipart_complete")
+async def complete_multipart_upload(
+    echo_id: str,
+    payload: MultipartCompleteRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Assemble the parts in S3 and commit media_url atomically.
+
+    Returns the full updated echo (same shape as GET /echoes/{id}).
+
+    Idempotent: a network blip between S3 complete and the response
+    can leave the client retrying. Caching the response lets the
+    retry return the same echo state without a second S3 complete
+    (which would 404 — the upload session is already gone).
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+    parts_dicts = [
+        {"part_number": p.part_number, "etag": p.etag} for p in payload.parts
+    ]
+    try:
+        echo = await echo_service.complete_multipart_upload(
+            echo_id=echo_id,
+            user_id=user_id,
+            upload_id=payload.upload_id,
+            key=payload.key,
+            parts=parts_dicts,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "data": {
+            "echo_id": echo.echo_id,
+            "title": echo.title,
+            "category": echo.category,
+            "echo_type": echo.echo_type.value,
+            "status": echo.status.value,
+            "content": echo.content,
+            "media_url": echo.media_url,
+            "recipient_id": echo.recipient_id,
+            "recipient": echo.recipient,
+            "release_date": echo.release_date,
+            "lock_date": echo.lock_date,
+            "letter_to_recipient": echo.letter_to_recipient,
+            "created_at": echo.created_at,
+            "updated_at": echo.updated_at,
+        },
+        "message": "Multipart upload completed",
+    }
+
+
+@router.post("/echoes/{echo_id}/multipart/abort", response_model=Dict[str, Any])
+async def abort_multipart_upload(
+    echo_id: str,
+    payload: MultipartAbortRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Cancel an in-progress multipart upload.
+
+    Idempotent by nature (NoSuchUpload is treated as success at the
+    service layer), so no @idempotent decorator needed.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+    try:
+        await echo_service.abort_multipart_upload(
+            echo_id=echo_id,
+            user_id=user_id,
+            upload_id=payload.upload_id,
+            key=payload.key,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"success": True, "message": "Multipart upload aborted"}
 
 
 @router.get("/echoes", response_model=Dict[str, Any])

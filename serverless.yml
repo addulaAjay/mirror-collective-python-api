@@ -732,6 +732,21 @@ resources:
           BlockPublicPolicy: true
           IgnorePublicAcls: true
           RestrictPublicBuckets: true
+        # Reap abandoned multipart uploads. The client SHOULD call
+        # POST /echoes/{id}/multipart/abort when the user cancels, but
+        # we can't trust that — a backgrounded app may never get the
+        # chance. Without this rule, partial uploads sit in S3
+        # consuming storage until manually cleaned up.
+        # 7 days is comfortably longer than any real upload window
+        # (largest current allowed file size + worst-case cellular
+        # ≪ 24 h) but short enough to keep the orphan storage bill
+        # bounded.
+        LifecycleConfiguration:
+          Rules:
+            - Id: AbortIncompleteMultipartUpload
+              Status: Enabled
+              AbortIncompleteMultipartUpload:
+                DaysAfterInitiation: 7
         CorsConfiguration:
           CorsRules:
             - AllowedHeaders: ['*']
