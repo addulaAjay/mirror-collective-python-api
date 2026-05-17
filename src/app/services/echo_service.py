@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import os
+import re
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -31,6 +32,51 @@ from ..models.echo import (
 from .email_service import email_service
 
 logger = logging.getLogger(__name__)
+
+
+# MIME types we'll generate presigned PUT URLs for. The S3 PUT will reject
+# anything else via Content-Type mismatch, but rejecting at the API layer
+# also keeps malformed Content-Type strings from leaking into our object
+# keyspace and stops casual enumeration of bucket layout.
+ALLOWED_UPLOAD_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/heic",
+        "audio/m4a",
+        "audio/mp4",
+        "audio/mpeg",
+        "audio/aac",
+        "video/mp4",
+        "video/quicktime",
+        "video/x-m4v",
+    }
+)
+
+# Pattern that flags a presigned S3 URL. We refuse to write any of these
+# query-string parameters back into DynamoDB via update_echo, because
+# presigned URLs are short-lived and would corrupt the canonical media_url.
+# See PR description for the bug this closes.
+_PRESIGNED_URL_MARKERS = re.compile(
+    r"[?&](?:X-Amz-(?:Signature|Algorithm|Credential|Date|Expires|SignedHeaders)|"
+    r"AWSAccessKeyId|Signature)=",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_presigned_url(url: Optional[str]) -> bool:
+    """True if the URL carries SigV2/SigV4 presign query-string markers."""
+    if not url:
+        return False
+    return bool(_PRESIGNED_URL_MARKERS.search(url))
+
+
+# Cache directives we stamp on every PUT presign. Echo media keys embed a
+# timestamp + echo_id so the bytes are effectively immutable; the long
+# max-age + immutable lets browsers and CloudFront (Tier 3) cache without
+# revalidation. Tagging carries cost-allocation + lifecycle hints.
+_PUT_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
 # Pagination defaults. Kept conservative so a single bad client can't fan
@@ -180,10 +226,28 @@ class EchoService:
         return kwargs
 
     def _get_s3_kwargs(self) -> Dict[str, Any]:
-        """Get S3 connection parameters (region + tuned client config)."""
+        """Get S3 connection parameters (region + tuned client config).
+
+        When ``S3_ACCELERATE_ENABLED`` is truthy in the environment we wire
+        the botocore client to use the ``s3-accelerate`` endpoint, which
+        routes uploads through the nearest CloudFront edge. The bucket
+        must also have ``AccelerateConfiguration: Enabled`` (set in
+        serverless.yml) for this to take effect; the client config alone
+        is harmless but a no-op against a non-accelerated bucket.
+        """
+        use_accelerate = os.getenv("S3_ACCELERATE_ENABLED", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        accel_config = self._boto_config
+        if use_accelerate:
+            accel_config = self._boto_config.merge(
+                Config(s3={"use_accelerate_endpoint": True})
+            )
         return {
             "region_name": self.region,
-            "config": self._boto_config,
+            "config": accel_config,
         }
 
     def _get_init_lock(self) -> asyncio.Lock:
@@ -836,7 +900,23 @@ class EchoService:
             if "content" in data:
                 echo.content = data["content"]
             if "media_url" in data:
-                echo.media_url = data["media_url"]
+                # Reject presigned-URL writebacks. `_sign_media_url` mutates
+                # echo.media_url in place when returning data to clients, so
+                # naive client code can round-trip the presigned URL right
+                # back into update_echo. Persisting that would put a
+                # short-lived URL into the canonical row and break future
+                # read paths once it expires (and corrupt the presign loop
+                # which extracts the key by splitting on 'amazonaws.com/').
+                candidate = data["media_url"]
+                if _looks_like_presigned_url(candidate):
+                    logger.warning(
+                        f"update_echo refused presigned media_url for {echo_id}"
+                    )
+                    raise ValidationError(
+                        "media_url must be the canonical S3 URL, not a "
+                        "presigned URL. Use POST /echoes/{id}/finalize-media."
+                    )
+                echo.media_url = candidate
                 logger.info(
                     f"Attached media to echo {echo_id} (status={echo.status.value})"
                 )
@@ -864,7 +944,7 @@ class EchoService:
             logger.info(f"Updated echo {echo_id}")
             return echo
 
-        except (NotFoundError, InternalServerError):
+        except (NotFoundError, InternalServerError, ValidationError):
             raise
         except Exception as e:
             logger.error(f"Error updating echo: {e}")
@@ -1179,9 +1259,20 @@ class EchoService:
         """
         Generate S3 presigned URL for direct upload.
 
+        The signed PUT pre-commits the following object headers/metadata, so
+        the upload itself stamps them atomically (no second roundtrip needed):
+
+        - ``Content-Type``                — passed through from ``file_type``.
+        - ``Cache-Control``                — long-lived immutable; safe because
+          our keys embed a timestamp so the bytes never change in place.
+        - ``Tagging`` — ``user_id``, ``echo_id`` (when applicable), and
+          ``upload_type`` for cost-allocation + lifecycle policies.
+        - ``Metadata`` — same three values, plus a ``signed_at`` ISO
+          timestamp so finalize-time auditing can spot stale presigns.
+
         Args:
             user_id: User ID
-            file_type: MIME type (e.g., "audio/mp4", "video/mp4", "image/jpeg")
+            file_type: MIME type. Must be in ``ALLOWED_UPLOAD_MIME_TYPES``.
             echo_id: Optional echo ID (required for upload_type='echo')
             upload_type: 'echo' | 'profile' | 'user_profile'
                 - 'echo': echoes/{user_id}/{echo_id}_{ts}.ext
@@ -1190,45 +1281,109 @@ class EchoService:
 
         Returns:
             Dict with 'upload_url', 'media_url', 'key', 'bucket', 'expires_in'
+
+        Raises:
+            ValidationError: ``file_type`` is not on the upload allowlist.
         """
+        if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
+            raise ValidationError(
+                f"Unsupported media type '{file_type}'. "
+                f"Allowed: {sorted(ALLOWED_UPLOAD_MIME_TYPES)}"
+            )
+
+        # Defensive: upload_type controls the key prefix AND is interpolated
+        # into the S3 Tagging string. An attacker-supplied value containing
+        # '&' or '=' would produce a malformed tag string, and an unknown
+        # value could land objects in unexpected prefixes. The route layer
+        # uses pydantic Literal too, but service-level enforcement keeps
+        # other callers honest.
+        if upload_type not in {"echo", "profile", "user_profile"}:
+            raise ValidationError(
+                f"Unsupported upload_type '{upload_type}'. "
+                "Allowed: ['echo', 'profile', 'user_profile']"
+            )
+
         try:
-            # Determine file extension from MIME type
-            extension = "mp4"  # default for video
-            if "audio" in file_type:
-                extension = "m4a"
+            # Determine file extension from MIME type. Audio + image have
+            # multiple legitimate types, so use explicit maps; video is
+            # uniformly stored as .mp4 (camera roll exports).
+            audio_map = {
+                "audio/m4a": "m4a",
+                "audio/mp4": "m4a",
+                "audio/aac": "aac",
+                "audio/mpeg": "mp3",
+            }
+            image_map = {
+                "image/jpeg": "jpg",
+                "image/png": "png",
+                "image/webp": "webp",
+                "image/heic": "heic",
+            }
+            if file_type in audio_map:
+                extension = audio_map[file_type]
+            elif file_type in image_map:
+                extension = image_map[file_type]
             elif "video" in file_type:
                 extension = "mp4"
-            elif "image" in file_type:
-                ext_map = {
-                    "image/jpeg": "jpg",
-                    "image/png": "png",
-                    "image/webp": "webp",
-                    "image/heic": "heic",
-                }
-                extension = ext_map.get(file_type, "jpg")
+            else:
+                # Should never hit — allowlist check above already filtered
+                # everything that isn't audio/image/video. Default to mp4
+                # purely as defense.
+                extension = "mp4"
 
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            timestamp_iso = _current_timestamp()
+            timestamp_compact = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
             if upload_type == "profile":
-                key = f"profiles/{user_id}/{timestamp}.{extension}"
+                key = f"profiles/{user_id}/{timestamp_compact}.{extension}"
             elif upload_type == "user_profile":
-                key = f"user_profiles/{user_id}/{timestamp}.{extension}"
+                key = f"user_profiles/{user_id}/{timestamp_compact}.{extension}"
             else:
                 # echo — echo_id may be None for new echoes
-                key = f"echoes/{user_id}/{echo_id or 'new'}_{timestamp}.{extension}"
+                key = (
+                    f"echoes/{user_id}/{echo_id or 'new'}_"
+                    f"{timestamp_compact}.{extension}"
+                )
+
+            # Build S3 PUT Tagging string: form-encoded "k1=v1&k2=v2".
+            tag_parts = [
+                f"user_id={user_id}",
+                f"upload_type={upload_type}",
+            ]
+            if echo_id:
+                tag_parts.append(f"echo_id={echo_id}")
+            tagging = "&".join(tag_parts)
+
+            # Metadata is custom S3 user-defined metadata (x-amz-meta-*).
+            # Keep keys lowercase + ASCII; values must be ASCII too.
+            metadata = {
+                "user_id": user_id,
+                "upload_type": upload_type,
+                "signed_at": timestamp_iso,
+            }
+            if echo_id:
+                metadata["echo_id"] = echo_id
+
+            put_params: Dict[str, Any] = {
+                "Bucket": self.s3_bucket,
+                "Key": key,
+                "ContentType": file_type,
+                "CacheControl": _PUT_CACHE_CONTROL,
+                "Tagging": tagging,
+                "Metadata": metadata,
+            }
 
             s3 = await self._get_s3_client()
             presigned_url = await s3.generate_presigned_url(
                 "put_object",
-                Params={
-                    "Bucket": self.s3_bucket,
-                    "Key": key,
-                    "ContentType": file_type,
-                },
+                Params=put_params,
                 ExpiresIn=self.presigned_url_expiry,
             )
 
-            # Construct the permanent media URL
+            # Construct the permanent media URL. Note: even with Transfer
+            # Acceleration enabled we hand back the *non-accelerated*
+            # canonical URL because that's what we want stored in DDB.
+            # The accelerated endpoint is only used for the PUT.
             media_url = f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
 
             return {
@@ -1242,6 +1397,138 @@ class EchoService:
         except ClientError as e:
             logger.error(f"S3 error generating presigned URL: {e}")
             raise InternalServerError(f"Failed to generate upload URL: {str(e)}")
+
+    async def finalize_upload(
+        self,
+        echo_id: str,
+        user_id: str,
+        key: str,
+        content_type: Optional[str] = None,
+    ) -> Echo:
+        """Confirm a client-side S3 PUT and atomically commit ``media_url``.
+
+        Closes a race today: the client streams to S3 then calls
+        ``PATCH /echoes/:id`` with ``media_url``. If the app backgrounds
+        between the PUT and the PATCH the echo row is left without media.
+        Worse, the PATCH trusts whatever URL the client sends — there is
+        no server-side proof the object actually exists.
+
+        This method does both checks server-side:
+
+        1. Verify ``key`` lives under the caller's namespace
+           (``echoes/{user_id}/{echo_id}_*``,
+           ``profiles/{user_id}/*``, or ``user_profiles/{user_id}/*``).
+           Anything else is a tenancy escape attempt — rejected.
+        2. Issue ``HeadObject`` to confirm the upload landed. Captures
+           ``ContentLength`` + ``ContentType`` + ``ETag`` from S3 itself,
+           ignoring whatever the client claims.
+        3. Atomically commit the canonical media_url + content_type to
+           the echo row.
+
+        Args:
+            echo_id: Echo to attach media to.
+            user_id: Caller's user_id (ownership check on the echo).
+            key: S3 object key the client just PUT to.
+            content_type: Optional caller hint for ``echo_type`` resolution
+                when ``HeadObject`` doesn't carry one. The persisted value
+                is always S3's.
+
+        Returns:
+            The updated Echo with ``media_url`` set.
+
+        Raises:
+            NotFoundError: Echo or S3 object does not exist.
+            ValidationError: Key doesn't belong to ``user_id``.
+        """
+        echo = await self.get_echo(echo_id, user_id)
+        if not echo:
+            raise NotFoundError(f"Echo {echo_id} not found")
+
+        # get_echo grants access to BOTH owner and recipient. Only the
+        # owner may finalize media — otherwise a recipient could overwrite
+        # the owner's attached media with anything in their own namespace.
+        # Treat ownership failure as NotFound to avoid info leakage.
+        if echo.user_id != user_id:
+            logger.warning(
+                f"finalize_upload owner reject: caller={user_id} owner={echo.user_id} "
+                f"echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+
+        # First-write semantics: an echo's media is set exactly once. Allowing
+        # re-finalize would let a caller race a successful finalize with a
+        # second PUT to a different key and overwrite the canonical URL.
+        # If we ever support intentional re-upload, that goes through an
+        # explicit `replace_media` route with separate auditing.
+        if echo.media_url:
+            raise ValidationError("Echo media has already been finalized")
+
+        # Tenancy check — the key must live directly under this echo's
+        # namespace. The 'new_' fallback that generate_upload_url emits
+        # when echo_id is None is intentionally NOT allowed here, because
+        # such a key carries no binding to a specific echo and could be
+        # bound to any echo the caller owns.
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            logger.warning(
+                f"finalize_upload tenancy reject: user={user_id} echo={echo_id} "
+                f"key={key!r}"
+            )
+            raise ValidationError("Object key does not belong to this echo")
+
+        # HeadObject — proof of life + truth source for size/type.
+        try:
+            s3 = await self._get_s3_client()
+            head = await s3.head_object(Bucket=self.s3_bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                raise NotFoundError(
+                    f"No uploaded object at s3://{self.s3_bucket}/{key}"
+                )
+            # 403 / AccessDenied typically means the object exists but the
+            # Lambda role can't read it (KMS gap, mis-scoped bucket policy,
+            # cross-region issue). Log the real error for on-call; surface
+            # a generic message to the client so we don't confirm existence.
+            if code in ("403", "AccessDenied", "Forbidden"):
+                logger.error(
+                    f"HeadObject access denied for {key} (likely IAM/KMS gap): {e}"
+                )
+                raise InternalServerError("Failed to verify uploaded object")
+            logger.error(f"HeadObject failed for {key}: {e}")
+            raise InternalServerError("Failed to verify uploaded object")
+
+        s3_content_type = head.get("ContentType") or content_type
+        s3_size = int(head.get("ContentLength") or 0)
+        s3_etag = head.get("ETag", "").strip('"')
+
+        # Canonical media_url — same shape generate_upload_url returns.
+        media_url = f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
+
+        echo.media_url = media_url
+        if s3_content_type:
+            try:
+                if s3_content_type.startswith("audio/"):
+                    echo.echo_type = EchoType.AUDIO
+                elif s3_content_type.startswith("video/"):
+                    echo.echo_type = EchoType.VIDEO
+            except (ValueError, KeyError):
+                pass  # Keep existing type on parse error
+        echo.updated_at = _current_timestamp()
+
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed during finalize: {e}")
+            raise InternalServerError(f"Failed to commit finalized echo: {str(e)}")
+
+        logger.info(
+            f"Finalized echo {echo_id}: key={key} size={s3_size} "
+            f"etag={s3_etag} content_type={s3_content_type}"
+        )
+        return echo
 
     async def _sign_profile_url(self, url: Optional[str]) -> Optional[str]:
         """Generate presigned GET URL for a profile/avatar image stored in S3.
