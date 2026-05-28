@@ -20,6 +20,15 @@ provider:
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     # SNS/SES Notifications
     SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN, ''}
+    # Platform Application ARNs for direct device push (APNs / FCM).
+    # The SNS service falls back to logging an error and returning a
+    # configuration HTTP 500 when these are unset, which is the symptom
+    # iOS clients see as "platform ios is not configured" on
+    # /api/register-device. Create the platform applications in the
+    # AWS Console (SNS → Mobile → Push notifications) and set the ARNs
+    # via the corresponding GitHub Secrets (see ci.yml).
+    SNS_IOS_APP_ARN: ${env:SNS_IOS_APP_ARN, ''}
+    SNS_ANDROID_APP_ARN: ${env:SNS_ANDROID_APP_ARN, ''}
     SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'noreply@mirrorcollective.com'}
     APP_NAME: "Mirror Collective"
     APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
