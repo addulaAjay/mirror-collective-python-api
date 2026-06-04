@@ -252,3 +252,43 @@ async def test_build_email_media_fields_empty():
     service, _, _ = _wire_service(_echo_row())
     fields = await service.build_email_media_fields(Echo())
     assert fields == {"attachment_count": 0}
+
+
+# --------------------------------------------------------------------------- #
+# File (pdf) attachments
+# --------------------------------------------------------------------------- #
+def test_pdf_allowed_and_extension_mapping():
+    from src.app.services.echo_service import (
+        ALLOWED_UPLOAD_MIME_TYPES,
+        _upload_extension_for,
+    )
+
+    assert "application/pdf" in ALLOWED_UPLOAD_MIME_TYPES
+    assert _upload_extension_for("application/pdf") == "pdf"
+    # Existing mappings preserved by the refactor.
+    assert _upload_extension_for("image/png") == "png"
+    assert _upload_extension_for("audio/mp4") == "m4a"
+    assert _upload_extension_for("video/quicktime") == "mp4"
+
+
+@pytest.mark.asyncio
+async def test_add_attachment_pdf_classified_as_file():
+    service, _, _ = _wire_service(
+        _echo_row(),
+        head={"ContentType": "application/pdf", "ContentLength": 50, "ETag": '"e"'},
+    )
+    echo = await service.add_attachment(
+        echo_id="echo-1",
+        user_id="user-1",
+        key="echoes/user-1/echo-1_doc.pdf",
+        filename="Greeting Card.pdf",
+    )
+    att = echo.attachments[0]
+    assert att.type == AttachmentType.FILE
+    assert att.filename == "Greeting Card.pdf"
+    assert att.mime_type == "application/pdf"
+    # A file is not primary A/V media — legacy media_url stays empty.
+    assert echo.media_url is None
+    # Files still count toward the email's "See N attachments" row.
+    fields = await service.build_email_media_fields(echo)
+    assert fields["attachment_count"] == 1

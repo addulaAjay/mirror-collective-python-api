@@ -53,8 +53,36 @@ ALLOWED_UPLOAD_MIME_TYPES: frozenset[str] = frozenset(
         "video/mp4",
         "video/quicktime",
         "video/x-m4v",
+        # Document attachments — the "File" option in the Create-an-Echo
+        # upload sheet (Figma 7544:2839 allows .pdf alongside .png/.jpg/.mp4).
+        "application/pdf",
     }
 )
+
+# Canonical file extension per upload MIME type. Single source of truth for the
+# single-PUT and multipart key builders. Video falls back to mp4 (camera-roll
+# exports); anything off the allowlist never reaches here (rejected earlier).
+_UPLOAD_EXT_BY_MIME: dict[str, str] = {
+    "audio/m4a": "m4a",
+    "audio/mp4": "m4a",
+    "audio/aac": "aac",
+    "audio/mpeg": "mp3",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "application/pdf": "pdf",
+}
+
+
+def _upload_extension_for(file_type: str) -> str:
+    """Map an upload MIME type to its stored file extension."""
+    if file_type in _UPLOAD_EXT_BY_MIME:
+        return _UPLOAD_EXT_BY_MIME[file_type]
+    if "video" in file_type:
+        return "mp4"
+    return "bin"
+
 
 # Pattern that flags a presigned S3 URL. We refuse to write any of these
 # query-string parameters back into DynamoDB via update_echo, because
@@ -1357,32 +1385,9 @@ class EchoService:
             )
 
         try:
-            # Determine file extension from MIME type. Audio + image have
-            # multiple legitimate types, so use explicit maps; video is
-            # uniformly stored as .mp4 (camera roll exports).
-            audio_map = {
-                "audio/m4a": "m4a",
-                "audio/mp4": "m4a",
-                "audio/aac": "aac",
-                "audio/mpeg": "mp3",
-            }
-            image_map = {
-                "image/jpeg": "jpg",
-                "image/png": "png",
-                "image/webp": "webp",
-                "image/heic": "heic",
-            }
-            if file_type in audio_map:
-                extension = audio_map[file_type]
-            elif file_type in image_map:
-                extension = image_map[file_type]
-            elif "video" in file_type:
-                extension = "mp4"
-            else:
-                # Should never hit — allowlist check above already filtered
-                # everything that isn't audio/image/video. Default to mp4
-                # purely as defense.
-                extension = "mp4"
+            # Single source of truth for MIME → extension (audio/image/pdf
+            # explicit, video → mp4). See _upload_extension_for.
+            extension = _upload_extension_for(file_type)
 
             timestamp_iso = _current_timestamp()
             timestamp_compact = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -1663,27 +1668,8 @@ class EchoService:
         if echo.media_url:
             raise ValidationError("Echo media has already been finalized")
 
-        # Determine extension — same logic as the single-PUT path.
-        audio_map = {
-            "audio/m4a": "m4a",
-            "audio/mp4": "m4a",
-            "audio/aac": "aac",
-            "audio/mpeg": "mp3",
-        }
-        image_map = {
-            "image/jpeg": "jpg",
-            "image/png": "png",
-            "image/webp": "webp",
-            "image/heic": "heic",
-        }
-        if file_type in audio_map:
-            extension = audio_map[file_type]
-        elif file_type in image_map:
-            extension = image_map[file_type]
-        elif "video" in file_type:
-            extension = "mp4"
-        else:
-            extension = "mp4"
+        # Same MIME → extension logic as the single-PUT path.
+        extension = _upload_extension_for(file_type)
 
         timestamp_iso = _current_timestamp()
         timestamp_compact = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
