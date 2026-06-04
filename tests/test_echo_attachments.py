@@ -292,3 +292,80 @@ async def test_add_attachment_pdf_classified_as_file():
     # Files still count toward the email's "See N attachments" row.
     fields = await service.build_email_media_fields(echo)
     assert fields["attachment_count"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# remove_attachment (edit a draft)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_remove_attachment_recomputes_legacy_fields():
+    atts = [
+        Attachment(
+            attachment_id="v1",
+            type=AttachmentType.VIDEO,
+            media_url="https://b/echoes/user-1/echo-1_v.mp4",
+        ),
+        Attachment(
+            attachment_id="i1",
+            type=AttachmentType.IMAGE,
+            media_url="https://b/echoes/user-1/echo-1_i.jpg",
+        ),
+    ]
+    row = _echo_row(
+        attachments=atts,
+        media_url="https://b/echoes/user-1/echo-1_v.mp4",
+        echo_type=EchoType.VIDEO,
+    )
+    service, table, _ = _wire_service(row)
+
+    echo = await service.remove_attachment("echo-1", "user-1", "v1")
+
+    assert [a.attachment_id for a in echo.attachments] == ["i1"]
+    # The only A/V was removed → media_url cleared, type back to TEXT, poster
+    # recomputed from the remaining image.
+    assert echo.media_url is None
+    assert echo.echo_type == EchoType.TEXT
+    assert echo.poster_url.endswith("echo-1_i.jpg")
+    persisted = table.put_item.call_args.kwargs["Item"]
+    assert len(persisted["attachments"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_attachment_draft_only():
+    from src.app.core.exceptions import ValidationError
+
+    row = _echo_row(
+        status=EchoStatus.RELEASED,
+        attachments=[
+            Attachment(attachment_id="a1", type=AttachmentType.FILE, media_url="x")
+        ],
+    )
+    service, _, _ = _wire_service(row)
+    with pytest.raises(ValidationError):
+        await service.remove_attachment("echo-1", "user-1", "a1")
+
+
+@pytest.mark.asyncio
+async def test_remove_attachment_owner_and_missing_rejected():
+    from src.app.core.exceptions import NotFoundError
+
+    svc1, _, _ = _wire_service(
+        _echo_row(
+            user_id="owner-x",
+            attachments=[
+                Attachment(attachment_id="a1", type=AttachmentType.FILE, media_url="x")
+            ],
+        )
+    )
+    with pytest.raises(NotFoundError):
+        await svc1.remove_attachment("echo-1", "user-1", "a1")  # not owner
+
+    svc2, _, _ = _wire_service(
+        _echo_row(
+            attachments=[
+                Attachment(attachment_id="a1", type=AttachmentType.FILE, media_url="x")
+            ]
+        )
+    )
+    with pytest.raises(NotFoundError):
+        await svc2.remove_attachment("echo-1", "user-1", "nope")  # missing id

@@ -2336,6 +2336,84 @@ class EchoService:
         )
         return echo
 
+    async def remove_attachment(
+        self, echo_id: str, user_id: str, attachment_id: str
+    ) -> Echo:
+        """Remove an attachment from a DRAFT echo (owner-only).
+
+        Only editable while the echo is still a DRAFT (not yet sent). Hard-removes
+        the attachment from the list — the S3 object is left for lifecycle cleanup
+        (the echo was never delivered, so this isn't the soft-delete case). The
+        legacy media_url/poster_url/echo_type mirror fields are recomputed from
+        whatever attachments remain so single-media readers stay consistent.
+        """
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading echo for remove_attachment: {e}")
+            raise InternalServerError(f"Failed to load echo: {str(e)}")
+        if "Item" not in response:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        echo = Echo.from_dynamodb_item(response["Item"])
+        if echo.user_id != user_id:
+            logger.warning(
+                f"remove_attachment owner reject: caller={user_id} "
+                f"owner={echo.user_id} echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.status != EchoStatus.DRAFT:
+            raise ValidationError("Only draft echoes can be edited")
+
+        before = len(echo.attachments)
+        echo.attachments = [
+            a for a in echo.attachments if a.attachment_id != attachment_id
+        ]
+        if len(echo.attachments) == before:
+            raise NotFoundError(f"Attachment {attachment_id} not found")
+
+        # Recompute the legacy mirror fields from the remaining attachments.
+        first_av = next(
+            (
+                a
+                for a in echo.attachments
+                if a.type in (AttachmentType.AUDIO, AttachmentType.VIDEO)
+            ),
+            None,
+        )
+        if first_av:
+            echo.media_url = first_av.media_url
+            echo.echo_type = (
+                EchoType.AUDIO
+                if first_av.type == AttachmentType.AUDIO
+                else EchoType.VIDEO
+            )
+        else:
+            echo.media_url = None
+            echo.echo_type = EchoType.TEXT
+        echo.poster_url = next(
+            (a.thumb_url for a in echo.attachments if a.thumb_url),
+            next(
+                (
+                    a.media_url
+                    for a in echo.attachments
+                    if a.type == AttachmentType.IMAGE
+                ),
+                None,
+            ),
+        )
+
+        echo.updated_at = _current_timestamp()
+        try:
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed during remove_attachment: {e}")
+            raise InternalServerError(f"Failed to commit removal: {str(e)}")
+
+        logger.info(f"Removed attachment {attachment_id} from echo {echo_id}")
+        return echo
+
     async def sign_attachments(self, echo: Echo) -> Echo:
         """Presign every attachment's media_url + thumb_url in place (6h TTL).
 

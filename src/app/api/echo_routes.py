@@ -529,6 +529,50 @@ async def add_attachment_route(
     }
 
 
+@router.delete(
+    "/echoes/{echo_id}/attachments/{attachment_id}",
+    response_model=Dict[str, Any],
+)
+async def remove_attachment_route(
+    echo_id: str,
+    attachment_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Remove an attachment from a DRAFT echo (owner-only, not-yet-sent).
+
+    Used by the edit flow. Returns the updated echo with signed attachments so
+    the client can refresh. Rejected once the echo is RELEASED.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echo = await echo_service.remove_attachment(
+            echo_id=echo_id,
+            user_id=user_id,
+            attachment_id=attachment_id,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await echo_service.sign_attachments(echo)
+
+    return {
+        "success": True,
+        "data": {
+            "echo_id": echo.echo_id,
+            "echo_type": echo.echo_type.value,
+            "media_url": echo.media_url,
+            "poster_url": echo.poster_url,
+            "attachments": _attachments_json(echo),
+        },
+        "message": "Attachment removed",
+    }
+
+
 # ========================================
 # MULTIPART UPLOAD ROUTES (>50 MB files)
 # ========================================
