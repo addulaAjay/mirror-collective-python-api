@@ -21,6 +21,8 @@ from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
 from ..models.echo import (
+    Attachment,
+    AttachmentType,
     Echo,
     EchoStatus,
     EchoType,
@@ -431,6 +433,7 @@ class EchoService:
                             # Check if recipient is registered (has recipient_user_id)
                             is_registered = recipient.recipient_user_id is not None
 
+                            media_fields = await self.build_email_media_fields(echo)
                             await email_service.send_echo_notification(
                                 recipient_email=recipient.email,
                                 recipient_name=recipient.name,
@@ -439,6 +442,9 @@ class EchoService:
                                 echo_category=echo.category,
                                 echo_type=echo.echo_type.value,
                                 is_registered=is_registered,
+                                quote=echo.letter_to_recipient or echo.content,
+                                echo_date=echo.release_date or echo.updated_at,
+                                **media_fields,
                             )
                             logger.info(
                                 f"Sent auto-release notification for echo {echo.echo_id} (registered={is_registered})"
@@ -1091,6 +1097,7 @@ class EchoService:
                 # Check if recipient is registered (has recipient_user_id)
                 is_registered = recipient.recipient_user_id is not None
 
+                media_fields = await self.build_email_media_fields(echo)
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
@@ -1100,6 +1107,9 @@ class EchoService:
                     echo_category=echo.category,
                     echo_type=echo.echo_type.value,
                     is_registered=is_registered,
+                    quote=echo.letter_to_recipient or echo.content,
+                    echo_date=echo.release_date or echo.updated_at,
+                    **media_fields,
                 )
                 logger.info(
                     f"Sent echo notification for {echo_id} (registered={is_registered})"
@@ -2146,6 +2156,246 @@ class EchoService:
 
         logger.info(f"Attached poster to echo {echo_id}: key={key!r}")
         return echo
+
+    # ========================================
+    # ATTACHMENTS (multiple media per echo)
+    # ========================================
+
+    def _canonical_url(self, key: str) -> str:
+        """Canonical (non-presigned) S3 URL for an object key."""
+        return f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
+
+    @staticmethod
+    def _attachment_type_for(content_type: Optional[str], key: str) -> AttachmentType:
+        """Classify an attachment from its content-type, falling back to ext."""
+        ct = (content_type or "").lower()
+        if ct.startswith("image/"):
+            return AttachmentType.IMAGE
+        if ct.startswith("video/"):
+            return AttachmentType.VIDEO
+        if ct.startswith("audio/"):
+            return AttachmentType.AUDIO
+        lowered = key.lower()
+        if lowered.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic")):
+            return AttachmentType.IMAGE
+        if lowered.endswith((".mp4", ".mov", ".m4v")):
+            return AttachmentType.VIDEO
+        if lowered.endswith((".m4a", ".mp3", ".aac", ".wav", ".ogg")):
+            return AttachmentType.AUDIO
+        return AttachmentType.FILE
+
+    async def _head_object_or_raise(
+        self, key: str, content_type: Optional[str], *, what: str
+    ) -> Dict[str, Any]:
+        """HeadObject with the same error posture as finalize_upload."""
+        try:
+            s3 = await self._get_s3_client()
+            return await s3.head_object(Bucket=self.s3_bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                raise NotFoundError(
+                    f"No uploaded {what} at s3://{self.s3_bucket}/{key}"
+                )
+            if code in ("403", "AccessDenied", "Forbidden"):
+                logger.error(f"HeadObject access denied for {what} {key}: {e}")
+                raise InternalServerError(f"Failed to verify uploaded {what}")
+            logger.error(f"HeadObject failed for {what} {key}: {e}")
+            raise InternalServerError(f"Failed to verify uploaded {what}")
+
+    async def _presign_get(
+        self, url: Optional[str], expires: int = 21600
+    ) -> Optional[str]:
+        """Presign a canonical S3 URL for GET. No-op for non-S3 / already-signed.
+
+        Guards against double-signing: a URL that already carries query params
+        (a presigned URL) is returned untouched, so callers can pass an echo
+        whose media has already been signed by ``get_echo`` without corrupting
+        the key.
+        """
+        if not url or "amazonaws.com" not in url:
+            return url
+        if "?" in url or "X-Amz-Signature" in url:
+            return url  # already presigned
+        try:
+            key = url.split("amazonaws.com/")[-1]
+            s3 = await self._get_s3_client()
+            return await s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.s3_bucket, "Key": key},
+                ExpiresIn=expires,
+            )
+        except Exception as e:
+            logger.error(f"Failed to presign URL {url!r}: {e}")
+            return url
+
+    async def add_attachment(
+        self,
+        echo_id: str,
+        user_id: str,
+        key: str,
+        *,
+        content_type: Optional[str] = None,
+        duration: Optional[str] = None,
+        thumb_key: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> Echo:
+        """Verify an uploaded S3 object and APPEND it as an echo attachment.
+
+        Mirrors ``finalize_upload``'s server-side guarantees (owner-only,
+        tenancy prefix, HeadObject proof-of-life) but appends to
+        ``echo.attachments`` instead of the single ``media_url`` slot — so an
+        echo can carry a text message plus multiple photos/videos/voice notes.
+
+        The echo is loaded RAW (no URL signing) so existing attachments keep
+        their canonical URLs when we persist; signing happens only on read.
+
+        Args:
+            echo_id: Echo to attach to.
+            user_id: Caller (must own the echo).
+            key: S3 object key the client just PUT to.
+            content_type: Caller hint when HeadObject has none.
+            duration: Optional display duration ("2:32") for audio/video.
+            thumb_key: Optional poster/preview object key (same namespace).
+            filename: Optional original filename (for FILE attachments).
+
+        Returns:
+            The updated Echo (attachments carry canonical URLs).
+        """
+        # Raw load (no signing) + owner check.
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading echo for add_attachment: {e}")
+            raise InternalServerError(f"Failed to load echo: {str(e)}")
+        if "Item" not in response:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        echo = Echo.from_dynamodb_item(response["Item"])
+        if echo.user_id != user_id:
+            logger.warning(
+                f"add_attachment owner reject: caller={user_id} "
+                f"owner={echo.user_id} echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+
+        # Tenancy: object must live under this echo's namespace.
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            logger.warning(
+                f"add_attachment tenancy reject: user={user_id} echo={echo_id} "
+                f"key={key!r}"
+            )
+            raise ValidationError("Object key does not belong to this echo")
+
+        head = await self._head_object_or_raise(key, content_type, what="attachment")
+        s3_content_type = head.get("ContentType") or content_type
+        s3_size = int(head.get("ContentLength") or 0)
+
+        # Optional thumbnail (poster for video / preview for image).
+        thumb_url: Optional[str] = None
+        if thumb_key:
+            if not thumb_key.startswith(expected_prefix):
+                raise ValidationError("Thumbnail key does not belong to this echo")
+            await self._head_object_or_raise(thumb_key, None, what="thumbnail")
+            thumb_url = self._canonical_url(thumb_key)
+
+        att_type = self._attachment_type_for(s3_content_type, key)
+        media_url = self._canonical_url(key)
+        echo.attachments.append(
+            Attachment(
+                type=att_type,
+                media_url=media_url,
+                thumb_url=thumb_url,
+                mime_type=s3_content_type,
+                size_bytes=s3_size or None,
+                duration=duration,
+                filename=filename,
+            )
+        )
+
+        # Back-compat: mirror the first audio/video attachment into the legacy
+        # media_url/echo_type slot and the first poster/image into poster_url,
+        # so single-media readers and the email hero keep working unchanged.
+        if (
+            att_type in (AttachmentType.AUDIO, AttachmentType.VIDEO)
+            and not echo.media_url
+        ):
+            echo.media_url = media_url
+            echo.echo_type = (
+                EchoType.AUDIO if att_type == AttachmentType.AUDIO else EchoType.VIDEO
+            )
+        if not echo.poster_url:
+            if thumb_url:
+                echo.poster_url = thumb_url
+            elif att_type == AttachmentType.IMAGE:
+                echo.poster_url = media_url
+
+        echo.updated_at = _current_timestamp()
+        try:
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed during add_attachment: {e}")
+            raise InternalServerError(f"Failed to commit attachment: {str(e)}")
+
+        logger.info(
+            f"Added {att_type.value} attachment to echo {echo_id}: key={key} "
+            f"size={s3_size} content_type={s3_content_type}"
+        )
+        return echo
+
+    async def sign_attachments(self, echo: Echo) -> Echo:
+        """Presign every attachment's media_url + thumb_url in place (6h TTL).
+
+        Call at the response boundary only — never before a persist, or signed
+        URLs get written back to DynamoDB.
+        """
+        for att in echo.attachments:
+            signed = await self._presign_get(att.media_url)
+            if signed:
+                att.media_url = signed
+            if att.thumb_url:
+                att.thumb_url = await self._presign_get(att.thumb_url)
+        return echo
+
+    async def build_email_media_fields(self, echo: Echo) -> Dict[str, Any]:
+        """Derive the email template's media fields from an echo's attachments.
+
+        Returns keys understood by ``email_service.send_echo_notification``:
+        ``attachment_count``, ``media_duration``, ``hero_image_url``,
+        ``attachment_thumb_url``. ``attachment_url`` is intentionally omitted —
+        the email defaults it to the open-echo URL so the recipient opens the
+        app/web viewer to download (robust vs. presigned-URL expiry).
+
+        Hero/thumb URLs are presigned with the 7-day SigV4 max; emails opened
+        later fall back to the template's default asset. A durable fix is a
+        backend redirect endpoint (tracked in emails/README open questions).
+        """
+        atts = echo.attachments or []
+        fields: Dict[str, Any] = {"attachment_count": len(atts)}
+
+        primary_av = next(
+            (a for a in atts if a.type in (AttachmentType.AUDIO, AttachmentType.VIDEO)),
+            None,
+        )
+        if primary_av and primary_av.duration:
+            fields["media_duration"] = primary_av.duration
+
+        hero = next((a for a in atts if a.type == AttachmentType.IMAGE), None)
+        if hero:
+            thumb_source: Optional[str] = hero.thumb_url or hero.media_url
+        elif primary_av and primary_av.thumb_url:
+            thumb_source = primary_av.thumb_url
+        else:
+            # Already-signed poster from get_echo is passed through untouched.
+            thumb_source = echo.poster_url
+
+        if thumb_source:
+            signed = await self._presign_get(thumb_source, expires=604800)  # 7d max
+            fields["hero_image_url"] = signed
+            fields["attachment_thumb_url"] = signed
+        return fields
 
     # ========================================
     # RECIPIENT CRUD OPERATIONS

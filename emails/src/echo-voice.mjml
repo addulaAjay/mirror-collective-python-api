@@ -1,0 +1,92 @@
+<!--
+  Your Voice Echo — recipient notification.
+  Figma: 7539:3358 (Audio - Desktop) / 7539:4157 (Voice - Mobile)
+  Single-column, ~600px. Jinja placeholders ({{ }}) are filled by the Python
+  sender (see emails/README.md › Integration).
+-->
+<mjml>
+  <mj-head>
+    <mj-title>Your Voice Echo from {{ sender_name }}</mj-title>
+    <mj-preview>A private voice message has been shared with you.</mj-preview>
+    <mj-include path="./partials/_head.mjml" />
+  </mj-head>
+
+  <mj-body background-color="#0b1020" width="600px">
+    <mj-include path="./partials/_header.mjml" />
+
+    <!-- Title + subtitle -->
+    <mj-section background-color="#0b1020" padding="8px 24px 0">
+      <mj-column>
+        <mj-text css-class="echo-title" color="#f2e1b0" font-size="40px" line-height="44px" align="center" padding="0 0 12px">
+          Your Voice Echo
+        </mj-text>
+        <mj-text css-class="muted" font-size="16px" line-height="22px" align="center" padding="0 0 24px">
+          A private voice message has been shared with you<br />
+          from {{ sender_name }} on {{ echo_date }}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <!-- Hero photo (links into the echo) -->
+    <mj-section background-color="#0b1020" padding="0 24px 16px">
+      <mj-column>
+        <mj-image
+          css-class="rounded"
+          src="{{ hero_image_url }}"
+          alt="A moment shared by {{ sender_name }}"
+          href="{{ open_echo_url }}"
+          border-radius="16px"
+          padding="0" />
+      </mj-column>
+    </mj-section>
+
+    <!-- Audio player: [play] [waveform] [duration] as a linked row (no overlay) -->
+    <mj-section css-class="card" background-color="#1a2238" border="1px solid #2a3450" padding="14px 16px" border-radius="12px">
+      <mj-group>
+        <mj-column width="56px" vertical-align="middle">
+          <mj-image src="{{ asset_base }}/icon-play-gold.png" alt="Play voice echo" href="{{ open_echo_url }}" width="40px" padding="0" />
+        </mj-column>
+        <mj-column vertical-align="middle">
+          <mj-image src="{{ asset_base }}/waveform-gold.png" alt="" href="{{ open_echo_url }}" width="220px" align="left" padding="0" />
+        </mj-column>
+        <mj-column width="60px" vertical-align="middle">
+          <mj-text color="#fdfdf9" font-size="16px" align="right" padding="0">{{ audio_duration }}</mj-text>
+        </mj-column>
+      </mj-group>
+    </mj-section>
+
+    <!-- Attachment row (mobile pattern, used on all breakpoints).
+         Block-level Jinja must be wrapped in mj-raw or MJML strips it. -->
+    <mj-raw>{% if attachment_count %}</mj-raw>
+    <mj-section background-color="#0b1020" padding="12px 24px 0">
+      <mj-group>
+        <mj-column width="64px" vertical-align="middle">
+          <mj-image css-class="card" src="{{ attachment_thumb_url }}" alt="" href="{{ attachment_url }}" width="48px" border-radius="8px" padding="0" />
+        </mj-column>
+        <mj-column vertical-align="middle">
+          <mj-text font-size="15px" line-height="20px" align="left" padding="0">
+            {% if attachment_count == 1 %}See attachment:{% else %}See {{ attachment_count }} attachments:{% endif %}<br />
+            <a href="{{ attachment_url }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Tap to download</a>
+          </mj-text>
+        </mj-column>
+        <mj-column width="40px" vertical-align="middle">
+          <mj-image src="{{ asset_base }}/icon-download.png" alt="Download" href="{{ attachment_url }}" width="20px" align="right" padding="0" />
+        </mj-column>
+      </mj-group>
+    </mj-section>
+    <mj-raw>{% endif %}</mj-raw>
+
+    <!-- Quote card -->
+    <mj-section css-class="card" background-color="#131a2e" border="1px solid #2a3450" padding="24px 28px" border-radius="12px">
+      <mj-column>
+        <mj-text css-class="echo-quote" color="#fdfdf9" font-size="18px" line-height="26px" align="center" padding="0 0 16px">
+          &ldquo;{{ quote_text }}&rdquo;
+        </mj-text>
+        <mj-image src="{{ asset_base }}/divider-star.png" alt="" width="140px" align="center" padding="0" />
+      </mj-column>
+    </mj-section>
+
+    <mj-include path="./partials/_cta.mjml" />
+    <mj-include path="./partials/_footer.mjml" />
+  </mj-body>
+</mjml>

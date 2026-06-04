@@ -1,0 +1,14 @@
+{
+  "name": "mirror-collective-emails",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MJML sources for Echo Vault recipient emails. Compiles to dist/*.html for the Python SES sender.",
+  "scripts": {
+    "build": "mjml src/echo-voice.mjml -o dist/echo-voice.html && mjml src/echo-video.mjml -o dist/echo-video.html && mjml src/echo-written.mjml -o dist/echo-written.html",
+    "watch": "mjml -w src/*.mjml -o dist/",
+    "validate": "mjml -v src/echo-voice.mjml && mjml -v src/echo-video.mjml && mjml -v src/echo-written.mjml"
+  },
+  "devDependencies": {
+    "mjml": "^4.15.3"
+  }
+}

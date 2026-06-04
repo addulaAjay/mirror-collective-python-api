@@ -1,0 +1,61 @@
+<!--
+  Your Video Echo — recipient notification.
+  Figma: 7539:2975 (Video - Desktop) / 7539:4279 (Video - Mobile)
+  The play button must overlay the thumbnail -> mj-hero (emits VML for Outlook).
+  No inline playback in email: the whole hero links to open_echo_url.
+-->
+<mjml>
+  <mj-head>
+    <mj-title>Your Video Echo from {{ sender_name }}</mj-title>
+    <mj-preview>A private video message has been shared with you.</mj-preview>
+    <mj-include path="./partials/_head.mjml" />
+  </mj-head>
+
+  <mj-body background-color="#0b1020" width="600px">
+    <mj-include path="./partials/_header.mjml" />
+
+    <mj-section background-color="#0b1020" padding="8px 24px 0">
+      <mj-column>
+        <mj-text css-class="echo-title" color="#f2e1b0" font-size="40px" line-height="44px" align="center" padding="0 0 12px">
+          Your Video Echo
+        </mj-text>
+        <mj-text css-class="muted" font-size="16px" line-height="22px" align="center" padding="0 0 24px">
+          A private video message has been shared with you<br />
+          from {{ sender_name }} on {{ echo_date }}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <!-- Thumbnail with centered play overlay. mj-hero -> VML background in Outlook. -->
+    <mj-hero
+      mode="fluid-height"
+      background-url="{{ hero_image_url }}"
+      background-color="#0b1020"
+      background-position="center center"
+      padding="80px 0"
+      css-class="rounded">
+      <mj-image src="{{ asset_base }}/icon-play-gold.png" alt="Play video echo" href="{{ open_echo_url }}" width="64px" align="center" padding="0" />
+    </mj-hero>
+
+    <!-- Duration badge (overlay badges are unreliable in email; render as a row) -->
+    <mj-section background-color="#0b1020" padding="8px 24px 0">
+      <mj-column>
+        <mj-text css-class="muted" font-size="14px" align="center" padding="0">
+          &#9654;&#65039; {{ video_duration }}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section css-class="card" background-color="#131a2e" border="1px solid #2a3450" padding="24px 28px" border-radius="12px">
+      <mj-column>
+        <mj-text css-class="echo-quote" color="#fdfdf9" font-size="18px" line-height="26px" align="center" padding="0 0 16px">
+          &ldquo;{{ quote_text }}&rdquo;
+        </mj-text>
+        <mj-image src="{{ asset_base }}/divider-star.png" alt="" width="140px" align="center" padding="0" />
+      </mj-column>
+    </mj-section>
+
+    <mj-include path="./partials/_cta.mjml" />
+    <mj-include path="./partials/_footer.mjml" />
+  </mj-body>
+</mjml>

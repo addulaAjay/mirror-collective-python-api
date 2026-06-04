@@ -161,6 +161,23 @@ class AttachPosterRequest(BaseModel):
     key: str  # S3 object key of the uploaded poster JPEG
 
 
+class FinalizeAttachmentRequest(BaseModel):
+    """Client tells the backend: "I've finished PUT-ing an attachment to
+    s3://.../{key}; verify it and append it to this echo's attachments."
+
+    Unlike FinalizeMediaRequest (single media_url slot, first-write only),
+    this APPENDS — an echo carries a text message plus multiple photo/video/
+    voice/file attachments. The backend HEADs the object, validates the key
+    prefix, and stores the canonical (non-presigned) URL.
+    """
+
+    key: str  # S3 object key the client just uploaded to
+    content_type: Optional[str] = None  # caller hint, overridden by S3 HEAD
+    duration: Optional[str] = None  # display duration "2:32" (audio/video)
+    thumb_key: Optional[str] = None  # optional poster/preview object key
+    filename: Optional[str] = None  # optional original filename (FILE type)
+
+
 class MultipartInitiateRequest(BaseModel):
     """Start an S3 multipart upload for a >50 MB file."""
 
@@ -367,6 +384,8 @@ async def finalize_media_upload(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    await echo_service.sign_attachments(echo)
+
     return {
         "success": True,
         "data": {
@@ -378,6 +397,7 @@ async def finalize_media_upload(
             "content": echo.content,
             "media_url": echo.media_url,
             "poster_url": echo.poster_url,
+            "attachments": _attachments_json(echo),
             "recipient_id": echo.recipient_id,
             "recipient": echo.recipient,
             "release_date": echo.release_date,
@@ -432,6 +452,80 @@ async def attach_poster_route(
             "poster_url": echo.poster_url,
         },
         "message": "Echo poster attached",
+    }
+
+
+def _attachments_json(echo) -> list:
+    """Serialize an echo's attachments for API responses.
+
+    URLs are whatever the echo currently holds — sign via
+    ``echo_service.sign_attachments(echo)`` before calling this when the
+    response is meant for playback/download.
+    """
+    return [
+        {
+            "attachment_id": a.attachment_id,
+            "type": a.type.value,
+            "media_url": a.media_url,
+            "thumb_url": a.thumb_url,
+            "mime_type": a.mime_type,
+            "size_bytes": a.size_bytes,
+            "duration": a.duration,
+            "filename": a.filename,
+            "created_at": a.created_at,
+        }
+        for a in echo.attachments
+    ]
+
+
+@router.post("/echoes/{echo_id}/attachments", response_model=Dict[str, Any])
+@idempotent(route_id="add_attachment")
+async def add_attachment_route(
+    echo_id: str,
+    payload: FinalizeAttachmentRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Verify an uploaded S3 object and append it to the echo's attachments.
+
+    The client uploads via the standard presigned-PUT (or multipart) flow,
+    then calls this with the resulting key. Unlike ``finalize-media`` (single
+    slot, first-write), this APPENDS — an echo can carry a text message plus
+    multiple photo/video/voice/file attachments. Returns the full echo with
+    signed attachment URLs so the client can refresh without a follow-up read.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echo = await echo_service.add_attachment(
+            echo_id=echo_id,
+            user_id=user_id,
+            key=payload.key,
+            content_type=payload.content_type,
+            duration=payload.duration,
+            thumb_key=payload.thumb_key,
+            filename=payload.filename,
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Sign for playback in the response (persisted rows stay canonical).
+    await echo_service.sign_attachments(echo)
+
+    return {
+        "success": True,
+        "data": {
+            "echo_id": echo.echo_id,
+            "echo_type": echo.echo_type.value,
+            "media_url": echo.media_url,
+            "poster_url": echo.poster_url,
+            "attachments": _attachments_json(echo),
+        },
+        "message": "Attachment added",
     }
 
 
@@ -768,6 +862,9 @@ async def get_echo(
     if not echo:
         raise HTTPException(status_code=404, detail="Echo not found")
 
+    # get_echo signs media_url/poster_url; attachments are signed separately.
+    await echo_service.sign_attachments(echo)
+
     return {
         "success": True,
         "data": {
@@ -779,6 +876,7 @@ async def get_echo(
             "content": echo.content,
             "media_url": echo.media_url,
             "poster_url": echo.poster_url,
+            "attachments": _attachments_json(echo),
             "recipient_id": echo.recipient_id,
             "recipient": echo.recipient,
             # release_date / lock_date / letter_to_recipient are needed by

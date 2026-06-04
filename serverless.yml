@@ -948,3 +948,6 @@ package:
     - '!**/*'
     - 'src/**'
     - 'requirements.txt'
+    # Compiled echo-share email templates rendered by email_service.py.
+    # Sources (emails/src/*.mjml) and node_modules are intentionally excluded.
+    - 'emails/dist/**'
