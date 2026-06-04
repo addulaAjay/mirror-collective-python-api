@@ -46,6 +46,27 @@
       </mj-column>
     </mj-section>
 
+    <!-- Attachment row (mobile pattern, used on all breakpoints).
+         Block-level Jinja must be wrapped in mj-raw or MJML strips it. -->
+    <mj-raw>{% if attachment_count %}</mj-raw>
+    <mj-section background-color="#0b1020" padding="12px 24px 0">
+      <mj-group>
+        <mj-column width="64px" vertical-align="middle">
+          <mj-image css-class="card" src="{{ attachment_thumb_url }}" alt="" href="{{ attachment_url }}" width="48px" border-radius="8px" padding="0" />
+        </mj-column>
+        <mj-column vertical-align="middle">
+          <mj-text font-size="15px" line-height="20px" align="left" padding="0">
+            {% if attachment_count == 1 %}See attachment:{% else %}See {{ attachment_count }} attachments:{% endif %}<br />
+            <a href="{{ attachment_url }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Tap to download</a>
+          </mj-text>
+        </mj-column>
+        <mj-column width="40px" vertical-align="middle">
+          <mj-image src="{{ asset_base }}/icon-download.png" alt="Download" href="{{ attachment_url }}" width="20px" align="right" padding="0" />
+        </mj-column>
+      </mj-group>
+    </mj-section>
+    <mj-raw>{% endif %}</mj-raw>
+
     <mj-section css-class="card" background-color="#131a2e" border="1px solid #2a3450" padding="24px 28px" border-radius="12px">
       <mj-column>
         <mj-text css-class="echo-quote" color="#fdfdf9" font-size="18px" line-height="26px" align="center" padding="0 0 16px">

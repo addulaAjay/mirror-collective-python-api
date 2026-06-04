@@ -20,6 +20,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
+from ..core.share_token import build_share_url, create_share_token
 from ..models.echo import (
     Attachment,
     AttachmentType,
@@ -461,7 +462,9 @@ class EchoService:
                             # Check if recipient is registered (has recipient_user_id)
                             is_registered = recipient.recipient_user_id is not None
 
-                            media_fields = await self.build_email_media_fields(echo)
+                            media_fields = await self.build_email_media_fields(
+                                echo, recipient.recipient_id
+                            )
                             await email_service.send_echo_notification(
                                 recipient_email=recipient.email,
                                 recipient_name=recipient.name,
@@ -1125,7 +1128,9 @@ class EchoService:
                 # Check if recipient is registered (has recipient_user_id)
                 is_registered = recipient.recipient_user_id is not None
 
-                media_fields = await self.build_email_media_fields(echo)
+                media_fields = await self.build_email_media_fields(
+                    echo, recipient.recipient_id
+                )
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
@@ -2345,21 +2350,29 @@ class EchoService:
                 att.thumb_url = await self._presign_get(att.thumb_url)
         return echo
 
-    async def build_email_media_fields(self, echo: Echo) -> Dict[str, Any]:
+    async def build_email_media_fields(
+        self, echo: Echo, recipient_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Derive the email template's media fields from an echo's attachments.
 
         Returns keys understood by ``email_service.send_echo_notification``:
         ``attachment_count``, ``media_duration``, ``hero_image_url``,
-        ``attachment_thumb_url``. ``attachment_url`` is intentionally omitted —
-        the email defaults it to the open-echo URL so the recipient opens the
-        app/web viewer to download (robust vs. presigned-URL expiry).
+        ``attachment_thumb_url``, and (when ``recipient_id`` is given)
+        ``open_echo_url`` / ``attachment_url`` pointing at the tokenized public
+        share viewer so the recipient can play/download every attachment
+        without the app and without stale links.
 
         Hero/thumb URLs are presigned with the 7-day SigV4 max; emails opened
-        later fall back to the template's default asset. A durable fix is a
-        backend redirect endpoint (tracked in emails/README open questions).
+        later fall back to the template's default asset.
         """
         atts = echo.attachments or []
         fields: Dict[str, Any] = {"attachment_count": len(atts)}
+
+        if recipient_id:
+            token = create_share_token(echo.echo_id, recipient_id)
+            share_url = build_share_url(echo.echo_id, token)
+            fields["open_echo_url"] = share_url
+            fields["attachment_url"] = share_url
 
         primary_av = next(
             (a for a in atts if a.type in (AttachmentType.AUDIO, AttachmentType.VIDEO)),
@@ -2382,6 +2395,95 @@ class EchoService:
             fields["hero_image_url"] = signed
             fields["attachment_thumb_url"] = signed
         return fields
+
+    # ========================================
+    # PUBLIC SHARE (tokenized recipient viewer)
+    # ========================================
+
+    async def get_shared_echo(self, echo_id: str, recipient_id: str) -> Optional[Echo]:
+        """Load an echo for the public viewer (token already verified upstream).
+
+        No authenticated user — access is authorized by the share token, which
+        binds echo_id + recipient_id. Returns the echo with CANONICAL attachment
+        URLs (the viewer routes media through the redirect endpoint, not signed
+        URLs). Only RELEASED, non-deleted echoes addressed to this recipient are
+        shareable — never drafts.
+        """
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading shared echo {echo_id}: {e}")
+            return None
+        if "Item" not in response:
+            return None
+        echo = Echo.from_dynamodb_item(response["Item"])
+        if echo.recipient_id != recipient_id:
+            return None
+        if echo.deleted_at:
+            return None
+        if echo.status != EchoStatus.RELEASED:
+            return None
+        return echo
+
+    async def _presign_get_with_disposition(
+        self,
+        url: Optional[str],
+        *,
+        download: bool,
+        filename: Optional[str] = None,
+        expires: int = 21600,
+    ) -> Optional[str]:
+        """Presign a canonical S3 URL; force download via Content-Disposition."""
+        if not url or "amazonaws.com" not in url:
+            return url
+        key = url.split("amazonaws.com/")[-1]
+        params: Dict[str, Any] = {"Bucket": self.s3_bucket, "Key": key}
+        if download:
+            name = filename or key.split("/")[-1]
+            params["ResponseContentDisposition"] = f'attachment; filename="{name}"'
+        try:
+            s3 = await self._get_s3_client()
+            return await s3.generate_presigned_url(
+                "get_object", Params=params, ExpiresIn=expires
+            )
+        except Exception as e:
+            logger.error(f"Failed to presign shared URL {url!r}: {e}")
+            return None
+
+    async def presign_shared_attachment(
+        self,
+        echo_id: str,
+        recipient_id: str,
+        attachment_id: str,
+        *,
+        download: bool,
+    ) -> Optional[str]:
+        """Resolve a shared attachment to a fresh presigned URL.
+
+        ``attachment_id == "primary"`` resolves the legacy single ``media_url``
+        (echoes created before the attachments model). Returns None if the echo
+        isn't shareable or the attachment doesn't exist.
+        """
+        echo = await self.get_shared_echo(echo_id, recipient_id)
+        if not echo:
+            return None
+        if attachment_id == "primary":
+            url: Optional[str] = echo.media_url
+            filename: Optional[str] = None
+        else:
+            att = next(
+                (a for a in echo.attachments if a.attachment_id == attachment_id),
+                None,
+            )
+            if not att:
+                return None
+            url = att.media_url
+            filename = att.filename
+        return await self._presign_get_with_disposition(
+            url, download=download, filename=filename
+        )
 
     # ========================================
     # RECIPIENT CRUD OPERATIONS
