@@ -118,9 +118,7 @@ class EmailService:
     def __init__(self):
         """Initialize Email service"""
         self.region = os.getenv("AWS_REGION", "us-east-1")
-        self.sender_email = os.getenv(
-            "SES_SENDER_EMAIL", "noreply@mirrorcollective.com"
-        )
+        self.sender_email = os.getenv("SES_SENDER_EMAIL", "app@themirrorcollective.com")
         self.app_name = os.getenv("APP_NAME", "Mirror Collective")
         self.app_url = os.getenv("APP_URL", "https://mirrorcollective.com")
         self.app_store_url = os.getenv(
