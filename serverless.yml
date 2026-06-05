@@ -20,7 +20,7 @@ provider:
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     # SNS/SES Notifications
     SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN, ''}
-    SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'noreply@mirrorcollective.com'}
+    SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'app@themirrorcollective.com'}
     APP_NAME: "Mirror Collective"
     APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
     # Public tokenized echo viewer (email-recipient attachment playback).
