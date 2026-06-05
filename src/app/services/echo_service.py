@@ -1390,7 +1390,12 @@ class EchoService:
         Raises:
             ValidationError: ``file_type`` is not on the upload allowlist.
         """
-        # Normalize client-reported aliases (image/jpg -> image/jpeg, etc.).
+        # The presigned PUT signs Content-Type, so the value we sign MUST equal
+        # the Content-Type header the client sends — otherwise S3 rejects the
+        # PUT with 403 SignatureDoesNotMatch. The client sends back the exact
+        # string it passed here, so sign THAT (requested_type). We normalize a
+        # separate copy only for the allowlist check + extension mapping.
+        requested_type = file_type
         file_type = _normalize_mime(file_type)
         if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
             raise ValidationError(
@@ -1451,7 +1456,9 @@ class EchoService:
             put_params: Dict[str, Any] = {
                 "Bucket": self.s3_bucket,
                 "Key": key,
-                "ContentType": file_type,
+                # Sign the client's exact Content-Type (not the normalized one)
+                # so the PUT header matches the signature — see requested_type.
+                "ContentType": requested_type,
                 "CacheControl": _PUT_CACHE_CONTROL,
                 "Tagging": tagging,
                 "Metadata": metadata,

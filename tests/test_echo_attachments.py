@@ -286,6 +286,21 @@ def test_mime_alias_normalization():
 
 
 @pytest.mark.asyncio
+async def test_upload_url_signs_original_content_type():
+    # image/jpg is normalized for the allowlist + extension, but the presigned
+    # PUT must sign the client's EXACT Content-Type so the PUT header matches
+    # (else S3 returns 403 SignatureDoesNotMatch).
+    service, _, s3 = _wire_service(_echo_row())
+    s3.generate_presigned_url.return_value = "https://presigned"
+    out = await service.generate_upload_url(
+        user_id="user-1", file_type="image/jpg", echo_id="echo-1"
+    )
+    params = s3.generate_presigned_url.call_args.kwargs["Params"]
+    assert params["ContentType"] == "image/jpg"  # verbatim, NOT image/jpeg
+    assert out["key"].endswith(".jpg")  # extension from the normalized type
+
+
+@pytest.mark.asyncio
 async def test_add_attachment_pdf_classified_as_file():
     service, _, _ = _wire_service(
         _echo_row(),
