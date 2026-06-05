@@ -23,6 +23,11 @@ router = APIRouter(tags=["share"])
 logger = logging.getLogger(__name__)
 echo_service = get_echo_service()
 
+# Never cache share responses: the viewer is per-recipient and the redirect
+# resolves to a SHORT-LIVED presigned URL — a cached 302 would hand out an
+# expired/dead link. Defends against a misconfigured CDN/browser cache.
+_NO_STORE = {"Cache-Control": "no-store"}
+
 
 def _normalize_attachments(echo: Echo) -> List[Dict[str, Any]]:
     """Flatten attachments to render-friendly dicts; synth a primary for legacy."""
@@ -110,7 +115,7 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
   .empty {{ color:#a3b3cc; text-align:center; }}
 </style></head>
 <body><div class="wrap">{body}</div></body></html>"""
-    return HTMLResponse(doc, status_code=status)
+    return HTMLResponse(doc, status_code=status, headers=_NO_STORE)
 
 
 def _error_page(message: str, status: int) -> HTMLResponse:
@@ -157,7 +162,7 @@ async def shared_attachment_redirect(
     """302 to a fresh presigned URL; mode=download forces Content-Disposition."""
     payload = verify_share_token(t, echo_id)
     if not payload:
-        return Response(status_code=403)
+        return Response(status_code=403, headers=_NO_STORE)
     url = await echo_service.presign_shared_attachment(
         echo_id,
         payload["recipient_id"],
@@ -165,5 +170,5 @@ async def shared_attachment_redirect(
         download=(mode == "download"),
     )
     if not url:
-        return Response(status_code=404)
-    return RedirectResponse(url, status_code=302)
+        return Response(status_code=404, headers=_NO_STORE)
+    return RedirectResponse(url, status_code=302, headers=_NO_STORE)

@@ -19,6 +19,7 @@ from src.app.api import share_routes  # noqa: E402
 from src.app.core.share_token import (  # noqa: E402
     build_share_url,
     create_share_token,
+    share_base_url,
     verify_share_token,
 )
 from src.app.models.echo import (  # noqa: E402
@@ -60,7 +61,8 @@ def test_share_token_rejects_wrong_echo_tampered_empty():
 
 
 def test_build_share_url():
-    assert build_share_url("e1", "tok") == "https://api.test/share/echo/e1?t=tok"
+    # Robust against whatever SHARE_BASE_URL the env supplies (e.g. a real .env).
+    assert build_share_url("e1", "tok") == f"{share_base_url()}/share/echo/e1?t=tok"
 
 
 # --------------------------------------------------------------------------- #
@@ -173,6 +175,7 @@ async def test_viewer_route_renders_message_and_attachments():
     ):
         resp = await share_routes.shared_echo_viewer("e1", t=tok)
     assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
     body = resp.body.decode()
     assert "A private message" in body
     assert "Your Echo" in body
@@ -199,6 +202,7 @@ async def test_attachment_redirect_view_download_and_bad_token():
         )
     assert resp.status_code == 302
     assert resp.headers["location"] == "https://signed-s3"
+    assert resp.headers["cache-control"] == "no-store"
 
     resp_bad = await share_routes.shared_attachment_redirect(
         "e1", "a1", t="bad", mode="view"
