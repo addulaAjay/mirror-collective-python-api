@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="und" dir="auto" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+
+<head>
+  <title>Your Video Echo from {{ sender_name }}</title>
+  <!--[if !mso]><!-->
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <!--<![endif]-->
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style type="text/css">
+    #outlook a {
+      padding: 0;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+    }
+
+    table,
+    td {
+      border-collapse: collapse;
+      mso-table-lspace: 0pt;
+      mso-table-rspace: 0pt;
+    }
+
+    img {
+      border: 0;
+      height: auto;
+      line-height: 100%;
+      outline: none;
+      text-decoration: none;
+      -ms-interpolation-mode: bicubic;
+    }
+
+    p {
+      display: block;
+      margin: 13px 0;
+    }
+
+  </style>
+  <!--[if mso]>
+    <noscript>
+    <xml>
+    <o:OfficeDocumentSettings>
+      <o:AllowPNG/>
+      <o:PixelsPerInch>96</o:PixelsPerInch>
+    </o:OfficeDocumentSettings>
+    </xml>
+    </noscript>
+    <![endif]-->
+  <!--[if lte mso 11]>
+    <style type="text/css">
+      .mj-outlook-group-fix { width:100% !important; }
+    </style>
+    <![endif]-->
+  <!--[if !mso]><!-->
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet" type="text/css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet" type="text/css">
+  <style type="text/css">
+    @import url(https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&display=swap);
+    @import url(https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap);
+
+  </style>
+  <!--<![endif]-->
+  <style type="text/css">
+    @media only screen and (min-width:480px) {
+      .mj-column-per-100 {
+        width: 100% !important;
+        max-width: 100%;
+      }
+
+      .mj-column-px-64 {
+        width: 64px !important;
+        max-width: 64px;
+      }
+
+      .mj-column-per-33-333333333333336 {
+        width: 33.333333333333336% !important;
+        max-width: 33.333333333333336%;
+      }
+
+      .mj-column-px-40 {
+        width: 40px !important;
+        max-width: 40px;
+      }
+
+      .mj-column-px-32 {
+        width: 32px !important;
+        max-width: 32px;
+      }
+
+      .mj-column-per-50 {
+        width: 50% !important;
+        max-width: 50%;
+      }
+    }
+
+  </style>
+  <style media="screen and (min-width:480px)">
+    .moz-text-html .mj-column-per-100 {
+      width: 100% !important;
+      max-width: 100%;
+    }
+
+    .moz-text-html .mj-column-px-64 {
+      width: 64px !important;
+      max-width: 64px;
+    }
+
+    .moz-text-html .mj-column-per-33-333333333333336 {
+      width: 33.333333333333336% !important;
+      max-width: 33.333333333333336%;
+    }
+
+    .moz-text-html .mj-column-px-40 {
+      width: 40px !important;
+      max-width: 40px;
+    }
+
+    .moz-text-html .mj-column-px-32 {
+      width: 32px !important;
+      max-width: 32px;
+    }
+
+    .moz-text-html .mj-column-per-50 {
+      width: 50% !important;
+      max-width: 50%;
+    }
+
+  </style>
+  <style type="text/css">
+    @media only screen and (max-width:479px) {
+      table.mj-full-width-mobile {
+        width: 100% !important;
+      }
+
+      td.mj-full-width-mobile {
+        width: auto !important;
+      }
+    }
+
+  </style>
+  <style type="text/css">
+    /* bgcolor on every cell keeps text legible when the starfield image is
+     blocked or stripped (Outlook). Belt-and-suspenders with mj-section bg. */
+    .echo-title {
+      font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif !important;
+    }
+
+    .echo-quote {
+      font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif !important;
+      font-style: italic;
+    }
+
+    .muted {
+      color: #a3b3cc !important;
+    }
+
+    /* Rounded corners — ignored by Outlook, fine elsewhere. */
+    .rounded {
+      border-radius: 16px;
+    }
+
+    .card {
+      border-radius: 12px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+
+      /* Hold the brand palette; don't let clients auto-invert gold/navy. */
+      .echo-title,
+      .echo-quote {
+        color: #f2e1b0 !important;
+      }
+    }
+
+  </style>
+  <!--
+  Shared <mj-head> contents for every Echo email.
+  Included via <mj-include> inside each variant's <mj-head>.
+  Values mirror emails/tokens.json — keep them in sync.
+-->
+  <!-- Dark-mode hints. Apple Mail / Gmail honour these; locks our palette. -->
+  <meta name="color-scheme" content="dark light" />
+  <meta name="supported-color-schemes" content="dark light" />
+  <!-- Web fonts (degrade to Georgia / Arial in Outlook & Gmail — by design). -->
+</head>
+
+<body style="word-spacing:normal;background-color:#0b1020;">
+  <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">A private video message has been shared with you.</div>
+  <div aria-label="Your Video Echo from {{ sender_name }}" aria-roledescription="email" style="background-color:#0b1020;" role="article" lang="und" dir="auto">
+    <!-- Logo header — identical across all three variants. -->
+    <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:40px 24px 24px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
+                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                          <tbody>
+                            <tr>
+                              <td style="width:220px;">
+                                <img alt="The Mirror Collective" src="{{ asset_base }}/logo-mirror-collective.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="220" height="auto" />
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:8px 24px 0;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" class="echo-title" style="font-size:0px;padding:0 0 12px;word-break:break-word;">
+                        <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:40px;line-height:44px;text-align:center;color:#f2e1b0;">Your Video Echo</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td align="center" class="muted" style="font-size:0px;padding:0 0 24px;word-break:break-word;">
+                        <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:16px;line-height:22px;text-align:center;color:#fdfdf9;">A private video message has been shared with you<br /> from {{ sender_name }} on {{ echo_date }}</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]-->
+    <!-- Thumbnail with centered play overlay. mj-hero -> VML background in Outlook. -->
+    <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="width:600px;" width="600" ><tr><td style="line-height:0;font-size:0;mso-line-height-rule:exactly;"><v:image style="border:0;mso-position-horizontal:center;position:absolute;top:0;width:600px;z-index:-3;" src="{{ hero_image_url }}" xmlns:v="urn:schemas-microsoft-com:vml" /><![endif]-->
+    <div class="rounded" style="margin:0 auto;max-width:600px;">
+      <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="width:100%;">
+        <tbody>
+          <tr style="vertical-align:top;">
+            <td style="width:0.01%;padding-bottom:NaN%;mso-padding-bottom-alt:0;" />
+            <td background="{{ hero_image_url }}" style="background:#0b1020 url('{{ hero_image_url }}') no-repeat center center / cover;background-position:center center;background-repeat:no-repeat;padding:80px 0;vertical-align:top;">
+              <!--[if mso | IE]><table border="0" cellpadding="0" cellspacing="0" style="width:600px;" width="600" ><tr><td style=""><![endif]-->
+              <div class="mj-hero-content" style="margin:0px auto;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="width:100%;margin:0px;">
+                  <tbody>
+                    <tr>
+                      <td style="">
+                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="width:100%;margin:0px;">
+                          <tbody>
+                            <tr>
+                              <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
+                                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                                  <tbody>
+                                    <tr>
+                                      <td style="width:64px;">
+                                        <a href="{{ open_echo_url }}" target="_blank">
+                                          <img alt="Play video echo" src="{{ asset_base }}/icon-play-gold.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="64" height="auto" />
+                                        </a>
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+            <td style="width:0.01%;padding-bottom:NaN%;mso-padding-bottom-alt:0;" />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]-->
+    <!-- Duration badge (overlay badges are unreliable in email; render as a row) -->
+    <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:8px 24px 0;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" class="muted" style="font-size:0px;padding:0;word-break:break-word;">
+                        <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:14px;line-height:24px;text-align:center;color:#fdfdf9;">&#9654;&#65039; {{ video_duration }}</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]-->
+    <!-- Attachment row (mobile pattern, used on all breakpoints).
+         Block-level Jinja must be wrapped in mj-raw or MJML strips it. -->{% if attachment_count %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:12px 24px 0;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0;line-height:0;text-align:left;display:inline-block;width:100%;direction:ltr;">
+                <!--[if mso | IE]><table border="0" cellpadding="0" cellspacing="0" role="presentation" ><tr><td style="vertical-align:middle;width:64px;" ><![endif]-->
+                <div class="mj-column-px-64 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:11.594202898550725%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="center" class="card" style="font-size:0px;padding:0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:48px;">
+                                  <a href="{{ attachment_url }}" target="_blank">
+                                    <img alt="" src="{{ attachment_thumb_url }}" style="border:0;border-radius:8px;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="48" height="auto" />
+                                  </a>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:184px;" ><![endif]-->
+                <div class="mj-column-per-33-333333333333336 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:33%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="left" style="font-size:0px;padding:0;word-break:break-word;">
+                          <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:15px;line-height:20px;text-align:left;color:#fdfdf9;">{% if attachment_count == 1 %}See attachment:{% else %}See {{ attachment_count }} attachments:{% endif %}<br />
+                            <a href="{{ attachment_url }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Tap to download</a>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:40px;" ><![endif]-->
+                <div class="mj-column-px-40 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:7.246376811594203%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="right" style="font-size:0px;padding:0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:20px;">
+                                  <a href="{{ attachment_url }}" target="_blank">
+                                    <img alt="Download" src="{{ asset_base }}/icon-download.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="20" height="auto" />
+                                  </a>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td></tr></table><![endif]-->
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]--> {% endif %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="card-outlook" role="presentation" style="width:600px;" width="600" bgcolor="#131a2e" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div class="card" style="background:#131a2e;background-color:#131a2e;margin:0px auto;max-width:600px;border-radius:12px;overflow:hidden;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#131a2e;background-color:#131a2e;width:100%;border-collapse:separate;">
+        <tbody>
+          <tr>
+            <td style="border:1px solid #2a3450;border-radius:12px;direction:ltr;font-size:0px;padding:24px 28px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:542px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" class="echo-quote" style="font-size:0px;padding:0 0 16px;word-break:break-word;">
+                        <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:18px;line-height:26px;text-align:center;color:#fdfdf9;">&ldquo;{{ quote_text }}&rdquo;</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
+                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                          <tbody>
+                            <tr>
+                              <td style="width:140px;">
+                                <img alt="" src="{{ asset_base }}/divider-star.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="140" height="auto" />
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]-->
+    <!--
+  Primary CTA. Figma shows "GET THE APP" only on mobile; we render it on every
+  client (it's the primary action). Confirm copy/visibility with design.
+  mj-button emits the bulletproof VML-padded table button for Outlook.
+-->
+    <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:8px 24px 24px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" style="font-size:0px;padding:10px 25px;word-break:break-word;">
+                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:separate;line-height:100%;">
+                          <tbody>
+                            <tr>
+                              <td align="center" bgcolor="#f2e1b0" role="presentation" style="border:none;border-radius:8px;cursor:auto;mso-padding-alt:14px 36px;background:#f2e1b0;" valign="middle">
+                                <a href="{{ open_echo_url }}" style="display:inline-block;background:#f2e1b0;color:#0b1020;font-family:'Cormorant Garamond', Georgia, serif;font-size:20px;font-weight:500;line-height:120%;letter-spacing:2px;margin:0;text-decoration:none;text-transform:none;padding:14px 36px;mso-padding-alt:0px;border-radius:8px;" target="_blank"> GET THE APP </a>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]-->
+    <!-- Privacy line + legal footer — identical across all three variants. -->
+    <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:24px 24px 8px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0;line-height:0;text-align:left;display:inline-block;width:100%;direction:ltr;">
+                <!--[if mso | IE]><table border="0" cellpadding="0" cellspacing="0" role="presentation" ><tr><td style="vertical-align:middle;width:32px;" ><![endif]-->
+                <div class="mj-column-px-32 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:5.797101449275362%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="right" style="font-size:0px;padding:0 6px 0 0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:16px;">
+                                  <img alt="" src="{{ asset_base }}/icon-lock.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="16" height="auto" />
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:276px;" ><![endif]-->
+                <div class="mj-column-per-50 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:50%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="left" class="muted" style="font-size:0px;padding:0;word-break:break-word;">
+                          <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:14px;line-height:24px;text-align:left;color:#fdfdf9;">Shared privately through Echo Vault</div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td></tr></table><![endif]-->
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:8px 24px 40px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" class="muted" style="font-size:0px;padding:0;word-break:break-word;">
+                        <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:12px;line-height:18px;text-align:center;color:#fdfdf9;">This is an automated message from {{ app_name }}.<br /> If you didn't expect this email, you can safely ignore it.</div>
+                      </td>
+                    </tr>
+                    <!-- TODO(legal): unsubscribe / postal address per CAN-SPAM. Transactional
+         echo notifications may be exempt — confirm with legal before launch. -->
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]-->
+  </div>
+</body>
+
+</html>

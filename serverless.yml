@@ -23,6 +23,13 @@ provider:
     SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'noreply@mirrorcollective.com'}
     APP_NAME: "Mirror Collective"
     APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
+    # Public tokenized echo viewer (email-recipient attachment playback).
+    # SHARE_TOKEN_SECRET signs the share JWT — REQUIRED in every env (no default;
+    # set per stage). SHARE_BASE_URL is the API's own public origin (where the
+    # /share/* routes live) — the API Gateway URL or a CloudFront distro that
+    # forwards /share/* to the API with query strings + no caching.
+    SHARE_TOKEN_SECRET: ${env:SHARE_TOKEN_SECRET, ''}
+    SHARE_BASE_URL: ${env:SHARE_BASE_URL, 'https://ct3onxgeol.execute-api.us-east-1.amazonaws.com'}
     DYNAMODB_USERS_TABLE: ${self:service}-users-${self:provider.stage}
     DYNAMODB_ACTIVITY_TABLE: ${self:service}-activity-${self:provider.stage}
     DYNAMODB_CONVERSATIONS_TABLE: ${self:service}-conversations-${self:provider.stage}-v2
@@ -948,3 +955,6 @@ package:
     - '!**/*'
     - 'src/**'
     - 'requirements.txt'
+    # Compiled echo-share email templates rendered by email_service.py.
+    # Sources (emails/src/*.mjml) and node_modules are intentionally excluded.
+    - 'emails/dist/**'

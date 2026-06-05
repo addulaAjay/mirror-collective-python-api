@@ -8,11 +8,15 @@ Uses AWS SES to send emails for:
 
 import logging
 import os
-from typing import Optional
+from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
+from typing import List, Optional
 
 import aioboto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from jinja2 import Environment, FileSystemLoader, TemplateError, select_autoescape
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,85 @@ _SES_CLIENT_CONFIG = Config(
     max_pool_connections=50,
     retries={"max_attempts": 5, "mode": "adaptive"},
 )
+
+
+# ---------------------------------------------------------------------------
+# Rich Echo-share templates (Figma "Email Templates" -> MJML -> compiled HTML).
+#
+# Sources live in emails/src/*.mjml; `npm run build` compiles them to
+# emails/dist/*.html (committed + packaged with the Lambda — see
+# serverless.yml `package.patterns` and emails/README.md). At render time the
+# compiled HTML is a Jinja2 template; we fill the {{ }} placeholders here.
+# ---------------------------------------------------------------------------
+_ECHO_TEMPLATE_BY_TYPE = {
+    "TEXT": "echo-written.html",
+    "AUDIO": "echo-voice.html",
+    "VIDEO": "echo-video.html",
+}
+
+_ECHO_TYPE_LABEL = {"TEXT": "Written", "AUDIO": "Voice", "VIDEO": "Video"}
+
+# Boilerplate used only when the sender left no cover note / message of their
+# own. Mirrors the sample copy in the Figma frames.
+_DEFAULT_QUOTE_BY_TYPE = {
+    "AUDIO": (
+        "Some things are meant to be heard, not just read. This voice echo was "
+        "shared with you as a private moment of presence, memory, and meaning."
+    ),
+    "VIDEO": (
+        "When words needed more presence, this message was recorded for you. "
+        "Open the echo to watch the full video and experience it as intended."
+    ),
+    "TEXT": "A private message has been shared with you through Echo Vault.",
+}
+
+_DAY_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
+
+
+def _template_dir() -> Path:
+    """Directory holding the compiled email templates.
+
+    Overridable via EMAIL_TEMPLATE_DIR (tests / non-standard layouts). Default
+    resolves from this file: services -> app -> src -> <repo root> -> emails/dist.
+    """
+    override = os.getenv("EMAIL_TEMPLATE_DIR")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parents[3] / "emails" / "dist"
+
+
+@lru_cache(maxsize=1)
+def _template_env() -> Environment:
+    """Lazily build the Jinja2 environment over the compiled templates.
+
+    autoescape is ON: quote text is sender-authored and must be escaped to
+    prevent HTML injection into the email body.
+    """
+    return Environment(
+        loader=FileSystemLoader(str(_template_dir())),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+
+
+def _format_echo_date(value: Optional[str]) -> str:
+    """Format an ISO date/datetime string (or None=now) as 'May 4th, 2025'."""
+    dt: Optional[datetime] = None
+    if value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            dt = None
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    day = dt.day
+    suffix = "th" if 11 <= (day % 100) <= 13 else _DAY_SUFFIXES.get(day % 10, "th")
+    return f"{dt.strftime('%B')} {day}{suffix}, {dt.year}"
+
+
+def _split_paragraphs(text: str) -> List[str]:
+    """Split a message into paragraphs on blank lines; never returns empty."""
+    parts = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    return parts or [(text or "").strip()]
 
 
 class EmailService:
@@ -46,6 +129,11 @@ class EmailService:
         self.play_store_url = os.getenv(
             "PLAY_STORE_URL",
             "https://play.google.com/store/apps/details?id=com.mirrorcollective",
+        )
+        # CDN base for static brand assets referenced by the rich echo templates
+        # (logo, gold play button, lock, download, waveform, star divider).
+        self.asset_base = os.getenv(
+            "EMAIL_ASSET_BASE_URL", f"{self.app_url}/email-assets"
         )
 
         # Initialize aioboto3 session
@@ -249,11 +337,27 @@ If you didn't expect this email, please contact us.
         echo_category: str,
         echo_type: str,
         is_registered: bool = True,
+        *,
+        quote: Optional[str] = None,
+        echo_date: Optional[str] = None,
+        open_echo_url: Optional[str] = None,
+        hero_image_url: Optional[str] = None,
+        media_duration: Optional[str] = None,
+        attachment_count: int = 0,
+        attachment_url: Optional[str] = None,
+        attachment_thumb_url: Optional[str] = None,
     ) -> bool:
         """
         Send notification when an echo is released to a recipient.
 
-        If recipient is not registered, sends invitation to download app.
+        Registered recipients get the rich, Figma-designed echo email
+        (delegated to :meth:`send_echo_share_email`). Unregistered recipients
+        get the download-the-app invitation instead.
+
+        The keyword-only args enrich the rich template; callers that have the
+        full Echo (e.g. echo_service) should pass them. They are optional so
+        existing callers keep working — missing fields degrade gracefully
+        (boilerplate quote, default hero image, no attachment row).
 
         Args:
             recipient_email: Email address of the recipient
@@ -262,7 +366,15 @@ If you didn't expect this email, please contact us.
             echo_title: Title of the echo
             echo_category: Category of the echo
             echo_type: Type of echo (TEXT, AUDIO, VIDEO)
-            is_registered: Whether recipient has an account (default True for backward compatibility)
+            is_registered: Whether recipient has an account (default True)
+            quote: Sender's cover note / message; falls back to per-type copy
+            echo_date: ISO date of release; formatted to "May 4th, 2025"
+            open_echo_url: Deep link / web URL the email's CTA + media point to
+            hero_image_url: Hero/poster image; falls back to a default asset
+            media_duration: Audio/video length, e.g. "2:32" (voice/video only)
+            attachment_count: Number of downloadable attachments (0 = no row)
+            attachment_url: Download URL for attachments
+            attachment_thumb_url: Thumbnail for the attachment row
 
         Returns:
             True if email was sent successfully
@@ -278,77 +390,100 @@ If you didn't expect this email, please contact us.
                 echo_type=echo_type,
             )
 
-        # Send standard notification for registered users
-        subject = f"You've received an Echo from {sender_name}"
+        # Registered recipients get the rich, branded echo email.
+        return await self.send_echo_share_email(
+            recipient_email=recipient_email,
+            sender_name=sender_name,
+            echo_type=echo_type,
+            quote=quote
+            or _DEFAULT_QUOTE_BY_TYPE.get(
+                (echo_type or "TEXT").upper(), _DEFAULT_QUOTE_BY_TYPE["TEXT"]
+            ),
+            echo_date=echo_date,
+            open_echo_url=open_echo_url,
+            hero_image_url=hero_image_url,
+            media_duration=media_duration,
+            attachment_count=attachment_count,
+            attachment_url=attachment_url,
+            attachment_thumb_url=attachment_thumb_url,
+        )
 
-        type_icon = {"TEXT": "📝", "AUDIO": "🎤", "VIDEO": "🎬"}.get(echo_type, "✨")
-
-        html_body = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body {{ font-family: 'Inter', Arial, sans-serif; background: #1a1a2e; color: #fdfdf9; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 40px 20px; }}
-                .header {{ text-align: center; margin-bottom: 40px; }}
-                .logo {{ color: #f2e2b1; font-size: 28px; font-family: 'Cormorant Garamond', serif; }}
-                .content {{ background: rgba(255,255,255,0.05); border-radius: 12px; padding: 30px; }}
-                .highlight {{ color: #f2e2b1; }}
-                .footer {{ text-align: center; margin-top: 40px; color: #a3b3cc; font-size: 12px; }}
-                .button {{ display: inline-block; background: linear-gradient(135deg, #f2e2b1, #d4c79e);
-                          color: #1a1a2e; padding: 14px 28px; border-radius: 8px;
-                          text-decoration: none; font-weight: 600; margin-top: 20px; }}
-                .echo-card {{ background: rgba(242,226,177,0.1); border-radius: 8px;
-                             padding: 20px; margin: 20px 0; text-align: center; }}
-                .echo-icon {{ font-size: 48px; margin-bottom: 10px; }}
-                .echo-title {{ font-size: 20px; color: #f2e2b1; margin-bottom: 5px; }}
-                .echo-meta {{ font-size: 12px; color: #a3b3cc; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <div class="logo">Mirror Collective</div>
-                </div>
-                <div class="content">
-                    <p>Hello <span class="highlight">{recipient_name}</span>,</p>
-                    <p><strong>{sender_name}</strong> has released an echo for you.</p>
-
-                    <div class="echo-card">
-                        <div class="echo-icon">{type_icon}</div>
-                        <div class="echo-title">{echo_title}</div>
-                        <div class="echo-meta">{echo_category} • {echo_type}</div>
-                    </div>
-
-                    <p>This message was created especially for you. Open the app to view it.</p>
-
-                    <div style="text-align: center;">
-                        <a href="{self.app_url}" class="button">View Echo</a>
-                    </div>
-                </div>
-                <div class="footer">
-                    <p>Echoes are meaningful messages shared through {self.app_name}.</p>
-                </div>
-            </div>
-        </body>
-        </html>
+    async def send_echo_share_email(
+        self,
+        *,
+        recipient_email: str,
+        sender_name: str,
+        echo_type: str,
+        quote: str,
+        echo_date: Optional[str] = None,
+        open_echo_url: Optional[str] = None,
+        hero_image_url: Optional[str] = None,
+        media_duration: Optional[str] = None,
+        attachment_count: int = 0,
+        attachment_url: Optional[str] = None,
+        attachment_thumb_url: Optional[str] = None,
+    ) -> bool:
         """
+        Render and send the rich echo-share email (Voice / Video / Written).
 
-        text_body = f"""
-Hello {recipient_name},
+        Renders the compiled MJML template for ``echo_type`` with Jinja2 and
+        sends it via SES with a plain-text alternative. On any template/render
+        failure, falls back to a minimal inline HTML so the notification still
+        goes out.
 
-{sender_name} has released an echo for you.
-
-{type_icon} {echo_title}
-{echo_category} • {echo_type}
-
-This message was created especially for you. Open the app to view it.
-
-View Echo: {self.app_url}
-
----
-Echoes are meaningful messages shared through {self.app_name}.
+        Returns:
+            True if email was sent successfully
         """
+        echo_type = (echo_type or "TEXT").upper()
+        template_name = _ECHO_TEMPLATE_BY_TYPE.get(echo_type, "echo-written.html")
+        type_label = _ECHO_TYPE_LABEL.get(echo_type, "Written")
+        open_url = open_echo_url or self.app_url
+        formatted_date = _format_echo_date(echo_date)
+        subject = f"Your {type_label} Echo from {sender_name}"
+
+        context: dict = {
+            "app_name": self.app_name,
+            "asset_base": self.asset_base,
+            "sender_name": sender_name,
+            "echo_date": formatted_date,
+            "open_echo_url": open_url,
+            "hero_image_url": hero_image_url or f"{self.asset_base}/hero-default.jpg",
+            "attachment_count": attachment_count or 0,
+            "attachment_url": attachment_url or open_url,
+            "attachment_thumb_url": attachment_thumb_url
+            or f"{self.asset_base}/attachment-thumb.png",
+            "audio_duration": media_duration or "",
+            "video_duration": media_duration or "",
+        }
+        # Written renders multi-paragraph; voice/video use a single block.
+        if echo_type == "TEXT":
+            context["quote_paragraphs"] = _split_paragraphs(quote)
+        else:
+            context["quote_text"] = quote
+
+        text_body = self._echo_share_text(
+            type_label=type_label,
+            sender_name=sender_name,
+            echo_date=formatted_date,
+            quote=quote,
+            open_url=open_url,
+        )
+
+        try:
+            template = _template_env().get_template(template_name)
+            html_body = template.render(**context)
+        except (TemplateError, OSError) as e:
+            logger.error(
+                f"Echo template render failed ({template_name}): {e}. "
+                "Falling back to plain notification."
+            )
+            html_body = self._echo_share_fallback_html(
+                type_label=type_label,
+                sender_name=sender_name,
+                echo_date=formatted_date,
+                quote=quote,
+                open_url=open_url,
+            )
 
         return await self._send_email(
             to_email=recipient_email,
@@ -356,6 +491,70 @@ Echoes are meaningful messages shared through {self.app_name}.
             html_body=html_body,
             text_body=text_body,
         )
+
+    def _echo_share_text(
+        self,
+        *,
+        type_label: str,
+        sender_name: str,
+        echo_date: str,
+        quote: str,
+        open_url: str,
+    ) -> str:
+        """Plain-text alternative for the rich echo email (required by SES)."""
+        return f"""Your {type_label} Echo
+
+A private {type_label.lower()} message has been shared with you
+from {sender_name} on {echo_date}.
+
+"{quote}"
+
+Open your echo: {open_url}
+
+---
+Shared privately through Echo Vault.
+This is an automated message from {self.app_name}.
+If you didn't expect this email, you can safely ignore it.
+"""
+
+    def _echo_share_fallback_html(
+        self,
+        *,
+        type_label: str,
+        sender_name: str,
+        echo_date: str,
+        quote: str,
+        open_url: str,
+    ) -> str:
+        """Minimal inline-styled HTML used only if template rendering fails."""
+        safe_quote = (
+            (quote or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        return f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;background:#0b1020;color:#fdfdf9;font-family:Arial,Helvetica,sans-serif;">
+  <div style="max-width:600px;margin:0 auto;padding:40px 24px;background:#0b1020;">
+    <h1 style="color:#f2e1b0;font-family:Georgia,serif;text-align:center;">Your {type_label} Echo</h1>
+    <p style="color:#a3b3cc;text-align:center;">
+      A private {type_label.lower()} message has been shared with you from
+      {sender_name} on {echo_date}.
+    </p>
+    <p style="background:#131a2e;border:1px solid #2a3450;border-radius:12px;padding:24px;text-align:center;">
+      &ldquo;{safe_quote}&rdquo;
+    </p>
+    <p style="text-align:center;">
+      <a href="{open_url}" style="display:inline-block;background:#f2e1b0;color:#0b1020;
+         padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:600;">GET THE APP</a>
+    </p>
+    <p style="color:#a3b3cc;font-size:12px;text-align:center;">
+      Shared privately through Echo Vault. This is an automated message from {self.app_name}.
+    </p>
+  </div>
+</body>
+</html>"""
 
     async def _send_echo_invitation_to_register(
         self,

@@ -1,0 +1,8 @@
+node_modules/
+
+# dist/ is committed so the Python sender + deploy don't need a Node build step
+# (the compiled HTML is the artifact loaded at runtime). The repo-root .gitignore
+# ignores `dist/` globally, so re-include it here. Remove these two lines and
+# ignore dist/ instead if you move MJML compilation into CI/CD.
+!dist/
+!dist/**

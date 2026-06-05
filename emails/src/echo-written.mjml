@@ -1,0 +1,75 @@
+<!--
+  Your Written Echo — recipient notification.
+  Figma: 7539:3775 (Written - Desktop) / 7539:4387 (Written - Mobile)
+  No media player. Quote card holds the full message (multi-paragraph).
+-->
+<mjml>
+  <mj-head>
+    <mj-title>Your Written Echo from {{ sender_name }}</mj-title>
+    <mj-preview>A private written message has been shared with you.</mj-preview>
+    <mj-include path="./partials/_head.mjml" />
+  </mj-head>
+
+  <mj-body background-color="#0b1020" width="600px">
+    <mj-include path="./partials/_header.mjml" />
+
+    <mj-section background-color="#0b1020" padding="8px 24px 0">
+      <mj-column>
+        <mj-text css-class="echo-title" color="#f2e1b0" font-size="40px" line-height="44px" align="center" padding="0 0 12px">
+          Your Written Echo
+        </mj-text>
+        <mj-text css-class="muted" font-size="16px" line-height="22px" align="center" padding="0 0 24px">
+          A private written message has been shared with you<br />
+          from {{ sender_name }} on {{ echo_date }}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#0b1020" padding="0 24px 16px">
+      <mj-column>
+        <mj-image
+          css-class="rounded"
+          src="{{ hero_image_url }}"
+          alt="A moment shared by {{ sender_name }}"
+          href="{{ open_echo_url }}"
+          border-radius="16px"
+          padding="0" />
+      </mj-column>
+    </mj-section>
+
+    <!-- Block-level Jinja must be wrapped in mj-raw or MJML strips it. -->
+    <mj-raw>{% if attachment_count %}</mj-raw>
+    <mj-section background-color="#0b1020" padding="0 24px 16px">
+      <mj-group>
+        <mj-column width="64px" vertical-align="middle">
+          <mj-image css-class="card" src="{{ attachment_thumb_url }}" alt="" href="{{ attachment_url }}" width="48px" border-radius="8px" padding="0" />
+        </mj-column>
+        <mj-column vertical-align="middle">
+          <mj-text font-size="15px" line-height="20px" align="left" padding="0">
+            {% if attachment_count == 1 %}See attachment:{% else %}See {{ attachment_count }} attachments:{% endif %}<br />
+            <a href="{{ attachment_url }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Download</a>
+          </mj-text>
+        </mj-column>
+        <mj-column width="40px" vertical-align="middle">
+          <mj-image src="{{ asset_base }}/icon-download.png" alt="Download" href="{{ attachment_url }}" width="20px" align="right" padding="0" />
+        </mj-column>
+      </mj-group>
+    </mj-section>
+    <mj-raw>{% endif %}</mj-raw>
+
+    <!-- Quote card. quote_paragraphs is a list; sender's full message.
+         mj-raw wraps the loop so the per-paragraph repetition survives compile;
+         the &ldquo;/&rdquo; conditionals sit inside mj-text so they're preserved. -->
+    <mj-section css-class="card" background-color="#131a2e" border="1px solid #2a3450" padding="28px 28px 24px" border-radius="12px">
+      <mj-column>
+        <mj-raw>{% for para in quote_paragraphs %}</mj-raw>
+        <mj-text css-class="echo-quote" color="#fdfdf9" font-size="18px" line-height="28px" align="center" padding="0 0 16px">{% if loop.first %}&ldquo;{% endif %}{{ para }}{% if loop.last %}&rdquo;{% endif %}</mj-text>
+        <mj-raw>{% endfor %}</mj-raw>
+        <mj-image src="{{ asset_base }}/divider-star.png" alt="" width="140px" align="center" padding="8px 0 0" />
+      </mj-column>
+    </mj-section>
+
+    <mj-include path="./partials/_cta.mjml" />
+    <mj-include path="./partials/_footer.mjml" />
+  </mj-body>
+</mjml>
