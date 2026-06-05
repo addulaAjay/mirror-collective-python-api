@@ -271,6 +271,20 @@ def test_pdf_allowed_and_extension_mapping():
     assert _upload_extension_for("video/quicktime") == "mp4"
 
 
+def test_mime_alias_normalization():
+    from src.app.services.echo_service import ALLOWED_UPLOAD_MIME_TYPES, _normalize_mime
+
+    # image/jpg (what gallery pickers send) -> the allowlisted image/jpeg.
+    assert _normalize_mime("image/jpg") == "image/jpeg"
+    assert _normalize_mime("IMAGE/JPG") == "image/jpeg"
+    assert _normalize_mime(" image/jpeg ") == "image/jpeg"
+    assert _normalize_mime("video/mov") == "video/quicktime"
+    assert _normalize_mime(None) == ""
+    # Canonical types pass through, and normalized aliases land on the allowlist.
+    assert _normalize_mime("image/png") == "image/png"
+    assert _normalize_mime("image/jpg") in ALLOWED_UPLOAD_MIME_TYPES
+
+
 @pytest.mark.asyncio
 async def test_add_attachment_pdf_classified_as_file():
     service, _, _ = _wire_service(
