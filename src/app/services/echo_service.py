@@ -85,6 +85,25 @@ def _upload_extension_for(file_type: str) -> str:
     return "bin"
 
 
+# Common non-canonical MIME types clients send (image pickers, older Androids)
+# normalized to the canonical type the allowlist accepts. image/jpg is the big
+# one — gallery pickers report it but it isn't a registered MIME type.
+_MIME_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+    "audio/x-m4a": "audio/m4a",
+    "audio/x-aac": "audio/aac",
+    "video/mov": "video/quicktime",
+    "video/x-quicktime": "video/quicktime",
+}
+
+
+def _normalize_mime(file_type: Optional[str]) -> str:
+    """Lowercase + map known aliases (e.g. image/jpg -> image/jpeg)."""
+    ct = (file_type or "").strip().lower()
+    return _MIME_ALIASES.get(ct, ct)
+
+
 # Pattern that flags a presigned S3 URL. We refuse to write any of these
 # query-string parameters back into DynamoDB via update_echo, because
 # presigned URLs are short-lived and would corrupt the canonical media_url.
@@ -1371,6 +1390,8 @@ class EchoService:
         Raises:
             ValidationError: ``file_type`` is not on the upload allowlist.
         """
+        # Normalize client-reported aliases (image/jpg -> image/jpeg, etc.).
+        file_type = _normalize_mime(file_type)
         if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
             raise ValidationError(
                 f"Unsupported media type '{file_type}'. "
@@ -1653,6 +1674,7 @@ class EchoService:
             ValidationError: ``file_type`` isn't allowlisted, or the echo
                 already has media attached.
         """
+        file_type = _normalize_mime(file_type)
         if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
             raise ValidationError(
                 f"Unsupported media type '{file_type}'. "
