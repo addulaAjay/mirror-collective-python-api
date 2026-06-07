@@ -62,6 +62,12 @@ provider:
     # AccelerateConfiguration to be Enabled (see resources section). See
     # EchoService._get_s3_kwargs for the client-side switch.
     S3_ACCELERATE_ENABLED: "true"
+    # Video transcoding (MediaConvert) — web-playable MP4 renditions so videos
+    # play in any browser from the email-share viewer. Role is created in
+    # resources; output lands under TRANSCODE_OUTPUT_PREFIX in the vault bucket.
+    MEDIACONVERT_ROLE_ARN:
+      Fn::GetAtt: [ MediaConvertRole, Arn ]
+    TRANSCODE_OUTPUT_PREFIX: "transcoded/"
     # Subscription/IAP Tables
     DYNAMODB_SUBSCRIPTIONS_TABLE: ${self:service}-subscriptions-${self:provider.stage}
     DYNAMODB_SUBSCRIPTION_EVENTS_TABLE: ${self:service}-subscription-events-${self:provider.stage}
@@ -197,6 +203,19 @@ provider:
             - ses:SendEmail
             - ses:SendRawEmail
           Resource: "*"
+        # Video transcoding: submit/inspect MediaConvert jobs + discover the
+        # account/region endpoint, and pass the MediaConvert service role.
+        - Effect: Allow
+          Action:
+            - mediaconvert:CreateJob
+            - mediaconvert:GetJob
+            - mediaconvert:DescribeEndpoints
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - iam:PassRole
+          Resource:
+            - Fn::GetAtt: [ MediaConvertRole, Arn ]
         - Effect: Allow
           Action:
             - sns:Publish
@@ -341,6 +360,24 @@ functions:
       - schedule:
           rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
           description: Auto-release scheduled echoes
+
+  # Writes the web-playable MP4 url back onto an attachment when a MediaConvert
+  # transcode finishes. Triggered by EventBridge on job-state COMPLETE.
+  transcodeComplete:
+    handler: src/app/jobs/transcode_complete_job.lambda_handler
+    description: Record MediaConvert MP4 rendition on the echo attachment
+    timeout: 60
+    memorySize: 256
+    events:
+      - eventBridge:
+          pattern:
+            source:
+              - aws.mediaconvert
+            detail-type:
+              - MediaConvert Job State Change
+            detail:
+              status:
+                - COMPLETE
 
 resources:
   # Stage-level throttling for the HTTP API. Serverless Framework creates the
@@ -838,6 +875,32 @@ resources:
               Principal: '*'
               Action: s3:GetObject
               Resource: 'arn:aws:s3:::${self:provider.environment.EMAIL_ASSETS_BUCKET}/*'
+
+    # IAM role AWS Elemental MediaConvert assumes to read source videos and
+    # write transcoded MP4 renditions back into the vault bucket. Referenced by
+    # MEDIACONVERT_ROLE_ARN and passed on every CreateJob call.
+    MediaConvertRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:service}-mediaconvert-${self:provider.stage}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: mediaconvert.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: mediaconvert-vault-s3
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:PutObject
+                  Resource:
+                    - 'arn:aws:s3:::${self:provider.environment.ECHO_MEDIA_BUCKET}/*'
 
     # Subscription/IAP Tables
     SubscriptionsTable:
