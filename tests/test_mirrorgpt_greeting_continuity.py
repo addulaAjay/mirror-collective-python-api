@@ -119,9 +119,14 @@ async def test_load_continuity_with_summaries_builds_context_lines():
     conv_service = MagicMock()
     conv_service.get_recent_conversations = AsyncMock(return_value=convs)
 
-    result = await mirrorgpt_routes._load_continuity_context(
-        user_id="user-1", conversation_service=conv_service
-    )
+    with patch.object(
+        mirrorgpt_routes,
+        "_try_lazy_summarize",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await mirrorgpt_routes._load_continuity_context(
+            user_id="user-1", conversation_service=conv_service
+        )
 
     assert result["resume_conversation_id"] == "c1"
     assert result["has_prior_context"] is True
@@ -129,6 +134,68 @@ async def test_load_continuity_with_summaries_builds_context_lines():
     assert "Working through avoidance" in result["context_lines"][0]
     assert "Open thread: hasn't told the manager yet." in result["context_lines"][0]
     assert "people-pleasing" in result["context_lines"][1]
+    # The first line is tagged so the greeting LLM anchors on the latest
+    # conversation instead of picking an older one at random.
+    assert result["context_lines"][0].startswith("- (most recent —")
+    assert "most recent" not in result["context_lines"][1]
+
+
+@pytest.mark.asyncio
+async def test_load_continuity_refreshes_stale_summary_on_most_recent():
+    """Lazy-on-read must run even when the most-recent conversation already
+    HAS a summary — staleness is decided inside summarize_if_stale. The old
+    behavior (only summarize when missing) served outdated summaries that
+    described conversations from several sessions back."""
+    stale = _conv(
+        conv_id="c1",
+        summary="Old summary covering only the first few messages.",
+        message_count=20,
+        last_message_at=_iso(datetime.now(timezone.utc) - timedelta(hours=1)),
+    )
+    conv_service = MagicMock()
+    conv_service.get_recent_conversations = AsyncMock(return_value=[stale])
+
+    with patch.object(
+        mirrorgpt_routes,
+        "_try_lazy_summarize",
+        new=AsyncMock(return_value=None),
+    ) as mock_lazy:
+        await mirrorgpt_routes._load_continuity_context(
+            user_id="user-1", conversation_service=conv_service
+        )
+
+    mock_lazy.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_try_lazy_summarize_delegates_staleness_to_summarize_if_stale():
+    """_try_lazy_summarize must call summarize_if_stale (refresh stale
+    summaries), not summarize() gated on summary-missing only."""
+    conversation = _conv(conv_id="c1", summary="existing", message_count=10)
+    conv_service = MagicMock()
+
+    summarizer_instance = MagicMock()
+    summarizer_instance.summarize_if_stale = AsyncMock(return_value=None)
+
+    with (
+        patch(
+            "src.app.services.conversation_summarizer.ConversationSummarizer",
+            return_value=summarizer_instance,
+        ),
+        patch(
+            "src.app.services.openai_service.OpenAIService",
+            return_value=MagicMock(),
+        ),
+    ):
+        await mirrorgpt_routes._try_lazy_summarize(
+            conversation_service=conv_service,
+            conversation=conversation,
+            user_id="user-1",
+        )
+
+    summarizer_instance.summarize_if_stale.assert_awaited_once_with(
+        conversation_id="c1", user_id="user-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -288,6 +355,10 @@ async def test_greeting_with_continuity_mandates_name_and_acknowledgement():
     assert "MUST acknowledge the prior context" in trigger
     assert "MUST address them by their first name" in trigger
     assert "Ajay" in trigger
+    # The trigger must anchor the model on the most recent conversation so
+    # the greeting doesn't recap an older conversation at random.
+    assert "ordered most recent first" in trigger
+    assert "FIRST line" in trigger
 
 
 @pytest.mark.asyncio

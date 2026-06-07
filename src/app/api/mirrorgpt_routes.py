@@ -277,16 +277,18 @@ async def _load_continuity_context(
     if not recent:
         return empty
 
-    # Lazy-on-read: try to summarize the single most-recent conversation if
-    # it qualifies but has no summary yet. We only do this for the top one
-    # to cap greeting latency.
+    # Lazy-on-read: refresh the single most-recent conversation's summary if
+    # it's missing OR stale (summarize_if_stale decides internally). We only
+    # do this for the top one to cap greeting latency. This is the reliable
+    # refresh path — the post-chat fire-and-forget task is not guaranteed to
+    # complete on Lambda before the environment freezes, so without this the
+    # greeting can recap a summary that's several sessions out of date.
     most_recent = recent[0]
-    if not most_recent.summary:
-        await _try_lazy_summarize(
-            conversation_service=conversation_service,
-            conversation=most_recent,
-            user_id=user_id,
-        )
+    await _try_lazy_summarize(
+        conversation_service=conversation_service,
+        conversation=most_recent,
+        user_id=user_id,
+    )
 
     # Re-read summaries for the most-recent (in case lazy summarize ran).
     # Cheap second fetch keeps the data model honest.
@@ -304,7 +306,10 @@ async def _load_continuity_context(
         if not conv.summary:
             continue
         age = _format_age_label(conv.last_message_at)
-        line = f"- ({age}) {conv.summary}"
+        # Tag the latest summarized conversation explicitly so the greeting
+        # LLM anchors on it instead of picking an older line at random.
+        recency_tag = "most recent — " if not context_lines else ""
+        line = f"- ({recency_tag}{age}) {conv.summary}"
         threads = (conv.open_threads or [])[:1]
         if threads:
             line += f" Open thread: {threads[0]}."
@@ -324,8 +329,9 @@ async def _try_lazy_summarize(
 ) -> None:
     """Best-effort lazy summarization for the most-recent conversation.
 
-    Only runs the summarizer if the conversation has crossed the first
-    summary threshold and has no summary yet. Errors are swallowed.
+    Cheap pre-check on the first-summary threshold, then delegates the
+    missing-vs-stale-vs-fresh decision to summarize_if_stale so a stale
+    summary gets refreshed too. Errors are swallowed.
     """
     try:
         from ..services.conversation_summarizer import (
@@ -345,7 +351,7 @@ async def _try_lazy_summarize(
             openai_service=OpenAIService(),
             conversation_service=conversation_service,
         )
-        await summarizer.summarize(
+        await summarizer.summarize_if_stale(
             conversation_id=conversation.conversation_id,
             user_id=user_id,
         )
@@ -1312,18 +1318,21 @@ async def generate_personalized_greeting(
         trigger = (
             f"Open a new MirrorGPT session{name_for_header}. They are a "
             "returning user.\n\n"
-            "Continuity context (background only — do not quote, do not "
-            "treat as the user's current message):\n"
+            "Continuity context, ordered most recent first (background "
+            "only — do not quote, do not treat as the user's current "
+            "message):\n"
             f"{context_block}\n\n"
             "Write a single short opening message (1–2 sentences). "
             f"{name_instruction}"
-            "You MUST acknowledge the prior context briefly — stance "
-            "first (how they were sitting with it — e.g. 'feeling stuck', "
-            "'working through', 'sitting with') and then the topic in a "
-            "few words — then invite them to continue or shift focus. "
-            "Use plain grounded language. Do not quote their words. Obey "
-            "the anti-oracle, safety, and banned-language rules from the "
-            "system prompt."
+            "You MUST acknowledge the prior context briefly — anchor on "
+            "the FIRST line only (their most recent conversation); the "
+            "older lines are light background and must not be recapped — "
+            "stance first (how they were sitting with it — e.g. 'feeling "
+            "stuck', 'working through', 'sitting with') and then the "
+            "topic in a few words — then invite them to continue or shift "
+            "focus. Use plain grounded language. Do not quote their "
+            "words. Obey the anti-oracle, safety, and banned-language "
+            "rules from the system prompt."
         )
     else:
         returning_clause = (

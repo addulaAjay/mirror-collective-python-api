@@ -31,14 +31,16 @@
     <!-- Quote card. quote_paragraphs is a list; sender's full message.
          mj-raw wraps the loop so the per-paragraph repetition survives compile;
          the &ldquo;/&rdquo; conditionals sit inside mj-text so they're preserved. -->
-    <mj-section css-class="card" background-color="#131a2e" border="1px solid #2a3450" padding="28px 28px 24px" border-radius="12px">
-      <mj-column>
-        <mj-raw>{% for para in quote_paragraphs %}</mj-raw>
-        <mj-text css-class="echo-quote" color="#fdfdf9" font-size="18px" line-height="28px" align="center" padding="0 0 16px">{% if loop.first %}&ldquo;{% endif %}{{ para }}{% if loop.last %}&rdquo;{% endif %}</mj-text>
-        <mj-raw>{% endfor %}</mj-raw>
-        <mj-image src="{{ asset_base }}/divider-star.png" alt="" width="140px" align="center" padding="8px 0 0" />
-      </mj-column>
-    </mj-section>
+    <mj-wrapper background-color="#0b1020" padding="0 24px">
+      <mj-section css-class="card" background-color="#131a2e" border="1px solid #2a3450" padding="28px 28px 24px" border-radius="12px">
+        <mj-column>
+          <mj-raw>{% for para in quote_paragraphs %}</mj-raw>
+          <mj-text css-class="echo-quote" color="#fdfdf9" font-size="18px" line-height="28px" align="center" padding="0 0 16px">{% if loop.first %}&ldquo;{% endif %}{{ para }}{% if loop.last %}&rdquo;{% endif %}</mj-text>
+          <mj-raw>{% endfor %}</mj-raw>
+          <mj-image src="{{ asset_base }}/divider-star.png" alt="" width="140px" align="center" padding="8px 0 0" />
+        </mj-column>
+      </mj-section>
+    </mj-wrapper>
 
     <mj-include path="./partials/_cta.mjml" />
     <mj-include path="./partials/_footer.mjml" />
