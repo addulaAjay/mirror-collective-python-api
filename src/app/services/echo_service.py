@@ -1150,11 +1150,22 @@ class EchoService:
                 media_fields = await self.build_email_media_fields(
                     echo, recipient.recipient_id
                 )
+                # Resolve the sender's display name so the email reads
+                # "from Jane Smith" (Figma) instead of the raw user_id UUID.
+                # Falls back to user_id if the profile lookup fails.
+                sender_name = user_id
+                try:
+                    sender_profile = await self.dynamodb_service.get_user_profile(
+                        user_id
+                    )
+                    if sender_profile:
+                        sender_name = sender_profile.full_name
+                except Exception as e:  # noqa: BLE001 - non-fatal enrichment
+                    logger.warning(f"Could not resolve sender name for {user_id}: {e}")
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
-                    sender_name=user_id,  # Caller's display name not available here;
-                    # use user_id as fallback — routes layer can enrich if desired
+                    sender_name=sender_name,
                     echo_title=echo.title,
                     echo_category=echo.category,
                     echo_type=echo.echo_type.value,
