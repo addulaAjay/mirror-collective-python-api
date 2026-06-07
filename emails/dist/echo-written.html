@@ -73,9 +73,9 @@
         max-width: 100%;
       }
 
-      .mj-column-px-64 {
-        width: 64px !important;
-        max-width: 64px;
+      .mj-column-px-48 {
+        width: 48px !important;
+        max-width: 48px;
       }
 
       .mj-column-per-33-333333333333336 {
@@ -86,6 +86,16 @@
       .mj-column-px-40 {
         width: 40px !important;
         max-width: 40px;
+      }
+
+      .mj-column-px-56 {
+        width: 56px !important;
+        max-width: 56px;
+      }
+
+      .mj-column-px-64 {
+        width: 64px !important;
+        max-width: 64px;
       }
 
       .mj-column-px-32 {
@@ -106,9 +116,9 @@
       max-width: 100%;
     }
 
-    .moz-text-html .mj-column-px-64 {
-      width: 64px !important;
-      max-width: 64px;
+    .moz-text-html .mj-column-px-48 {
+      width: 48px !important;
+      max-width: 48px;
     }
 
     .moz-text-html .mj-column-per-33-333333333333336 {
@@ -119,6 +129,16 @@
     .moz-text-html .mj-column-px-40 {
       width: 40px !important;
       max-width: 40px;
+    }
+
+    .moz-text-html .mj-column-px-56 {
+      width: 56px !important;
+      max-width: 56px;
+    }
+
+    .moz-text-html .mj-column-px-64 {
+      width: 64px !important;
+      max-width: 64px;
     }
 
     .moz-text-html .mj-column-px-32 {
@@ -256,8 +276,225 @@
       </table>
     </div>
     <!--[if mso | IE]></td></tr></table><![endif]-->
-    <!-- No hero image for written echoes (Figma 7539:4387): the quote card +
-         attachments row are the content. --><!-- Block-level Jinja must be wrapped in mj-raw or MJML strips it. -->{% if attachment_count %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <!-- Every attachment (photo / video / voice / file), one after another. --><!--
+  Media blocks — renders EVERY attachment on an echo, one after another, each in
+  its type-specific format (Figma 7539:4157 voice / 7539:4279 video).
+  Driven by the `media_blocks` list from build_email_media_fields():
+    { kind: IMAGE|VIDEO|AUDIO|FILE, image, duration, name, link }
+  Jinja control flow is wrapped in <mj-raw> so MJML keeps it through compile.
+-->{% for m in media_blocks %}{% if m.kind == 'IMAGE' %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:0 24px 16px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" class="rounded" style="font-size:0px;padding:0;word-break:break-word;">
+                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                          <tbody>
+                            <tr>
+                              <td style="width:552px;">
+                                <a href="{{ m.link }}" target="_blank">
+                                  <img alt="{{ m.name }}" src="{{ m.image }}" style="border:0;border-radius:16px;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="552" height="auto" />
+                                </a>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]--> {% elif m.kind == 'VIDEO' %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
+        <tbody>
+          <tr>
+            <td style="direction:ltr;font-size:0px;padding:0 24px 8px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                  <tbody>
+                    <tr>
+                      <td align="center" class="rounded" style="font-size:0px;padding:0;word-break:break-word;">
+                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                          <tbody>
+                            <tr>
+                              <td style="width:552px;">
+                                <a href="{{ m.link }}" target="_blank">
+                                  <img alt="{{ m.name }}" src="{% if m.image %}{{ m.image }}{% else %}{{ asset_base }}/hero-default.jpg{% endif %}" style="border:0;border-radius:16px;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="552" height="auto" />
+                                </a>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><table align="center" border="0" cellpadding="0" cellspacing="0" class="card-outlook" role="presentation" style="width:600px;" width="600" bgcolor="#1a2238" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div class="card" style="background:#1a2238;background-color:#1a2238;margin:0px auto;max-width:600px;border-radius:12px;overflow:hidden;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#1a2238;background-color:#1a2238;width:100%;border-collapse:separate;">
+        <tbody>
+          <tr>
+            <td style="border:1px solid #2a3450;border-radius:12px;direction:ltr;font-size:0px;padding:12px 16px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="width:566px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0;line-height:0;text-align:left;display:inline-block;width:100%;direction:ltr;">
+                <!--[if mso | IE]><table border="0" cellpadding="0" cellspacing="0" role="presentation" ><tr><td style="vertical-align:middle;width:48px;" ><![endif]-->
+                <div class="mj-column-px-48 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:8.480565371024735%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:36px;">
+                                  <a href="{{ m.link }}" target="_blank">
+                                    <img alt="Play video" src="{{ asset_base }}/icon-play-gold.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="36" height="auto" />
+                                  </a>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:188px;" ><![endif]-->
+                <div class="mj-column-per-33-333333333333336 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:33%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="left" style="font-size:0px;padding:0;word-break:break-word;">
+                          <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:15px;line-height:24px;text-align:left;color:#fdfdf9;">Watch video{% if m.duration %} &middot; {{ m.duration }}{% endif %}</div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:40px;" ><![endif]-->
+                <div class="mj-column-px-40 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:7.06713780918728%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="right" style="font-size:0px;padding:0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:20px;">
+                                  <a href="{{ m.link }}" target="_blank">
+                                    <img alt="Open" src="{{ asset_base }}/icon-download.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="20" height="auto" />
+                                  </a>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td></tr></table><![endif]-->
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]--> {% elif m.kind == 'AUDIO' %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="card-outlook" role="presentation" style="width:600px;" width="600" bgcolor="#1a2238" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+    <div class="card" style="background:#1a2238;background-color:#1a2238;margin:0px auto;max-width:600px;border-radius:12px;overflow:hidden;">
+      <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#1a2238;background-color:#1a2238;width:100%;border-collapse:separate;">
+        <tbody>
+          <tr>
+            <td style="border:1px solid #2a3450;border-radius:12px;direction:ltr;font-size:0px;padding:14px 16px;text-align:center;">
+              <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="width:566px;" ><![endif]-->
+              <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0;line-height:0;text-align:left;display:inline-block;width:100%;direction:ltr;">
+                <!--[if mso | IE]><table border="0" cellpadding="0" cellspacing="0" role="presentation" ><tr><td style="vertical-align:middle;width:56px;" ><![endif]-->
+                <div class="mj-column-px-56 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:9.89399293286219%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:40px;">
+                                  <a href="{{ m.link }}" target="_blank">
+                                    <img alt="Play voice echo" src="{{ asset_base }}/icon-play-gold.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="40" height="auto" />
+                                  </a>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:188px;" ><![endif]-->
+                <div class="mj-column-per-33-333333333333336 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:33%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="left" style="font-size:0px;padding:0;word-break:break-word;">
+                          <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                            <tbody>
+                              <tr>
+                                <td style="width:188px;">
+                                  <a href="{{ m.link }}" target="_blank">
+                                    <img alt="" src="{{ asset_base }}/waveform-gold.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="188" height="auto" />
+                                  </a>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td><td style="vertical-align:middle;width:56px;" ><![endif]-->
+                <div class="mj-column-px-56 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:9.89399293286219%;">
+                  <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
+                    <tbody>
+                      <tr>
+                        <td align="right" style="font-size:0px;padding:0;word-break:break-word;">
+                          <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:15px;line-height:24px;text-align:right;color:#fdfdf9;">{{ m.duration }}</div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <!--[if mso | IE]></td></tr></table><![endif]-->
+              </div>
+              <!--[if mso | IE]></td></tr></table><![endif]-->
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!--[if mso | IE]></td></tr></table><![endif]--> {% else %} <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
     <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
       <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
         <tbody>
@@ -275,8 +512,8 @@
                             <tbody>
                               <tr>
                                 <td style="width:48px;">
-                                  <a href="{{ attachment_url }}" target="_blank">
-                                    <img alt="" src="{{ attachment_thumb_url }}" style="border:0;border-radius:8px;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="48" height="auto" />
+                                  <a href="{{ m.link }}" target="_blank">
+                                    <img alt="" src="{{ asset_base }}/attachment-thumb.png" style="border:0;border-radius:8px;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="48" height="auto" />
                                   </a>
                                 </td>
                               </tr>
@@ -293,9 +530,7 @@
                     <tbody>
                       <tr>
                         <td align="left" style="font-size:0px;padding:0;word-break:break-word;">
-                          <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:15px;line-height:20px;text-align:left;color:#fdfdf9;">{% if attachment_count == 1 %}See attachment:{% else %}See {{ attachment_count }} attachments:{% endif %}<br />
-                            <a href="{{ attachment_url }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Download</a>
-                          </div>
+                          <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:15px;line-height:20px;text-align:left;color:#fdfdf9;">{{ m.name }}<br /><a href="{{ m.link }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Tap to download</a></div>
                         </td>
                       </tr>
                     </tbody>
@@ -311,7 +546,7 @@
                             <tbody>
                               <tr>
                                 <td style="width:20px;">
-                                  <a href="{{ attachment_url }}" target="_blank">
+                                  <a href="{{ m.link }}" target="_blank">
                                     <img alt="Download" src="{{ asset_base }}/icon-download.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="20" height="auto" />
                                   </a>
                                 </td>
@@ -331,7 +566,7 @@
         </tbody>
       </table>
     </div>
-    <!--[if mso | IE]></td></tr></table><![endif]--> {% endif %}<!-- Quote card. quote_paragraphs is a list; sender's full message.
+    <!--[if mso | IE]></td></tr></table><![endif]--> {% endif %}{% endfor %}<!-- Quote card. quote_paragraphs is a list; sender's full message.
          mj-raw wraps the loop so the per-paragraph repetition survives compile;
          the &ldquo;/&rdquo; conditionals sit inside mj-text so they're preserved. -->
     <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="card-outlook" role="presentation" style="width:600px;" width="600" bgcolor="#131a2e" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->

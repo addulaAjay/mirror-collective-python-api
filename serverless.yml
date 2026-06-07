@@ -302,6 +302,16 @@ functions:
       - httpApi:
           method: POST
           path: /api/mirrorgpt/quiz/submit
+      # Public tokenized echo share viewer + attachment redirect. Email
+      # recipients have no Cognito JWT — access is authorized by the share
+      # token in the ?t= query param (core/share_token.verify_share_token),
+      # so these must NOT sit behind cognitoJwtAuthorizer.
+      - httpApi:
+          method: GET
+          path: /share/echo/{echo_id}
+      - httpApi:
+          method: GET
+          path: /share/echo/{echo_id}/attachment/{attachment_id}
       # ---- Authenticated catch-all ----
       # Every other route requires a valid Cognito JWT.
       - httpApi:
