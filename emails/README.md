@@ -110,6 +110,37 @@ Notes:
   already takes `text_body`. Author one per type.
 - Bundle `emails/dist/` with the Lambda (check `serverless.yml` `package.include`).
 
+## Hosting the brand images (required — or emails render with broken images)
+
+The templates load images from `EMAIL_ASSET_BASE_URL` (set in `serverless.yml`).
+A per-stage **public-read** bucket is created by the stack:
+`mirror-collective-email-assets-<stage>` →
+`https://mirror-collective-email-assets-<stage>.s3.us-east-1.amazonaws.com`.
+
+After the first `serverless deploy` (which creates the bucket), upload the 8
+brand images to the bucket **root** (filenames must match exactly):
+
+```
+logo-mirror-collective.png   divider-star.png      waveform-gold.png
+icon-play-gold.png           icon-download.png     icon-lock.png
+hero-default.jpg             attachment-thumb.png
+```
+
+```bash
+# from a folder containing the 8 files, for the stage you deployed:
+aws s3 sync ./email-assets \
+  s3://mirror-collective-email-assets-staging/ \
+  --cache-control "public, max-age=31536000"
+
+# verify one is publicly fetchable:
+curl -I https://mirror-collective-email-assets-staging.s3.us-east-1.amazonaws.com/logo-mirror-collective.png
+# expect: HTTP/1.1 200 OK, Content-Type: image/png
+```
+
+Public read is granted by `EmailAssetsBucketPolicy` (GetObject for `*`); no
+listing or writes are public. To use one shared bucket / CloudFront across all
+stages instead, override `EMAIL_ASSET_BASE_URL` per stage.
+
 ## Token gaps (carry into design review)
 
 - **Background navy** (`color.bg.*` in `tokens.json`) are not Figma variables —

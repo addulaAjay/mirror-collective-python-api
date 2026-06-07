@@ -20,7 +20,11 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
-from ..core.share_token import build_share_url, create_share_token
+from ..core.share_token import (
+    build_share_attachment_url,
+    build_share_url,
+    create_share_token,
+)
 from ..models.echo import (
     Attachment,
     AttachmentType,
@@ -1150,11 +1154,22 @@ class EchoService:
                 media_fields = await self.build_email_media_fields(
                     echo, recipient.recipient_id
                 )
+                # Resolve the sender's display name so the email reads
+                # "from Jane Smith" (Figma) instead of the raw user_id UUID.
+                # Falls back to user_id if the profile lookup fails.
+                sender_name = user_id
+                try:
+                    sender_profile = await self.dynamodb_service.get_user_profile(
+                        user_id
+                    )
+                    if sender_profile:
+                        sender_name = sender_profile.full_name
+                except Exception as e:  # noqa: BLE001 - non-fatal enrichment
+                    logger.warning(f"Could not resolve sender name for {user_id}: {e}")
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
-                    sender_name=user_id,  # Caller's display name not available here;
-                    # use user_id as fallback — routes layer can enrich if desired
+                    sender_name=sender_name,
                     echo_title=echo.title,
                     echo_category=echo.category,
                     echo_type=echo.echo_type.value,
@@ -2469,12 +2484,16 @@ class EchoService:
         share viewer so the recipient can play/download every attachment
         without the app and without stale links.
 
-        Hero/thumb URLs are presigned with the 7-day SigV4 max; emails opened
-        later fall back to the template's default asset.
+        When the echo has an image attachment, hero/thumb point at the durable
+        share-attachment endpoint (re-signs on every fetch, never expires) so the
+        email shows the recipient's actual attached image. A/V posters (no image
+        attachment) use a 7-day presigned URL; echoes with no image fall back to
+        the template's default asset.
         """
         atts = echo.attachments or []
         fields: Dict[str, Any] = {"attachment_count": len(atts)}
 
+        token: Optional[str] = None
         if recipient_id:
             token = create_share_token(echo.echo_id, recipient_id)
             share_url = build_share_url(echo.echo_id, token)
@@ -2489,18 +2508,32 @@ class EchoService:
             fields["media_duration"] = primary_av.duration
 
         hero = next((a for a in atts if a.type == AttachmentType.IMAGE), None)
-        if hero:
-            thumb_source: Optional[str] = hero.thumb_url or hero.media_url
-        elif primary_av and primary_av.thumb_url:
-            thumb_source = primary_av.thumb_url
+        if hero and token:
+            # Hero/thumb show the recipient's ACTUAL attached image via the
+            # durable share-attachment endpoint (302 -> fresh presigned URL on
+            # every fetch), so the inline image never expires — unlike a one-shot
+            # 7-day presigned URL. The template's static default only renders
+            # when an echo has no image attachment at all.
+            img_url = build_share_attachment_url(
+                echo.echo_id, hero.attachment_id, token, mode="view"
+            )
+            fields["hero_image_url"] = img_url
+            fields["attachment_thumb_url"] = img_url
         else:
-            # Already-signed poster from get_echo is passed through untouched.
-            thumb_source = echo.poster_url
-
-        if thumb_source:
-            signed = await self._presign_get(thumb_source, expires=604800)  # 7d max
-            fields["hero_image_url"] = signed
-            fields["attachment_thumb_url"] = signed
+            # No image attachment (voice/video-only) — presign the A/V poster
+            # thumb if there is one; otherwise the template falls back to its
+            # default asset. (The redirect endpoint serves the media file, not a
+            # separate poster object, so posters still use a presigned URL.)
+            if primary_av and primary_av.thumb_url:
+                thumb_source: Optional[str] = primary_av.thumb_url
+            elif hero:
+                thumb_source = hero.thumb_url or hero.media_url
+            else:
+                thumb_source = echo.poster_url
+            if thumb_source:
+                signed = await self._presign_get(thumb_source, expires=604800)
+                fields["hero_image_url"] = signed
+                fields["attachment_thumb_url"] = signed
         return fields
 
     # ========================================

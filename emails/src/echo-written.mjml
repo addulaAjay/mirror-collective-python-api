@@ -25,17 +25,8 @@
       </mj-column>
     </mj-section>
 
-    <mj-section background-color="#0b1020" padding="0 24px 16px">
-      <mj-column>
-        <mj-image
-          css-class="rounded"
-          src="{{ hero_image_url }}"
-          alt="A moment shared by {{ sender_name }}"
-          href="{{ open_echo_url }}"
-          border-radius="16px"
-          padding="0" />
-      </mj-column>
-    </mj-section>
+    <!-- No hero image for written echoes (Figma 7539:4387): the quote card +
+         attachments row are the content. -->
 
     <!-- Block-level Jinja must be wrapped in mj-raw or MJML strips it. -->
     <mj-raw>{% if attachment_count %}</mj-raw>
