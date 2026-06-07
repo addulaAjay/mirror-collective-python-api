@@ -86,3 +86,18 @@ def share_base_url() -> str:
 def build_share_url(echo_id: str, token: str) -> str:
     """Full viewer URL for an echo + token (used as the email CTA)."""
     return f"{share_base_url()}/share/echo/{quote(echo_id)}?t={quote(token)}"
+
+
+def build_share_attachment_url(
+    echo_id: str, attachment_id: str, token: str, mode: str = "view"
+) -> str:
+    """Durable URL for a single attachment (302 -> a fresh presigned S3 URL).
+
+    Used as the email's inline hero/thumb <img> source so it shows the
+    recipient's ACTUAL attached image and never expires — each fetch re-signs,
+    unlike a one-shot presigned URL that dies after 7 days.
+    """
+    return (
+        f"{share_base_url()}/share/echo/{quote(echo_id)}"
+        f"/attachment/{quote(attachment_id)}?t={quote(token)}&mode={mode}"
+    )
