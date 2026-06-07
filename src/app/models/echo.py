@@ -72,6 +72,10 @@ class Attachment:
     attachment_id: str = field(default_factory=_generate_id)
     type: AttachmentType = AttachmentType.FILE
     media_url: str = ""  # canonical S3 URL; signed on read
+    # Web-playable H.264/AAC MP4 rendition (set by the MediaConvert pipeline
+    # once transcoding of an iOS .mov/HEVC video completes). The share viewer
+    # plays this so video works in every browser, not just Safari.
+    playable_url: Optional[str] = None
     thumb_url: Optional[str] = None  # poster/thumbnail for video/image
     mime_type: Optional[str] = None
     size_bytes: Optional[int] = None

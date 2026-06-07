@@ -101,6 +101,43 @@ _MIME_ALIASES = {
     "video/x-quicktime": "video/quicktime",
 }
 
+# Extension → web-playable MIME, used to set the presigned URL's
+# ResponseContentType so the share viewer's <audio>/<video>/<img> treat the
+# file as media even if S3 stored a generic/incorrect Content-Type. Note: m4a
+# is served as audio/mp4 (the type browsers actually play).
+_MEDIA_MIME_BY_EXT = {
+    "m4a": "audio/mp4",
+    "mp4": "video/mp4",
+    "m4v": "video/x-m4v",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "aac": "audio/aac",
+    "wav": "audio/wav",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "pdf": "application/pdf",
+}
+
+
+def _playable_content_type(mime: Optional[str], name: Optional[str]) -> Optional[str]:
+    """Best web-playable Content-Type for a shared attachment.
+
+    Prefers a concrete stored mime (normalizing m4a→audio/mp4 so browsers play
+    it); otherwise infers from the filename/key extension.
+    """
+    if mime and mime != "application/octet-stream":
+        m = mime.strip().lower()
+        if m in ("audio/m4a", "audio/x-m4a"):
+            return "audio/mp4"
+        return _MIME_ALIASES.get(m, m)
+    ext = (name or "").rsplit(".", 1)[-1].lower() if name else ""
+    return _MEDIA_MIME_BY_EXT.get(ext)
+
 
 def _normalize_mime(file_type: Optional[str]) -> str:
     """Lowercase + map known aliases (e.g. image/jpg -> image/jpeg)."""
@@ -242,6 +279,18 @@ class EchoService:
         self.presigned_url_expiry = int(
             os.getenv("PRESIGNED_URL_EXPIRY", "3600")
         )  # 1 hour
+
+        # AWS Elemental MediaConvert — transcodes iOS .mov/HEVC videos to a
+        # web-playable H.264/AAC MP4 so they play in every browser (not just
+        # Safari) from the email-share viewer. Role is the IAM role MediaConvert
+        # assumes to read/write S3; endpoint is account/region-specific and
+        # discovered lazily (cached for the process lifetime).
+        self.mediaconvert_role_arn = os.getenv("MEDIACONVERT_ROLE_ARN", "")
+        self.mediaconvert_queue = os.getenv("MEDIACONVERT_QUEUE") or None
+        self.transcode_output_prefix = os.getenv(
+            "TRANSCODE_OUTPUT_PREFIX", "transcoded/"
+        )
+        self._mc_endpoint: Optional[str] = None
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -2304,6 +2353,159 @@ class EchoService:
             logger.error(f"Failed to presign URL {url!r}: {e}")
             return url
 
+    # ========================================
+    # VIDEO TRANSCODING (AWS Elemental MediaConvert)
+    # ========================================
+
+    def _video_job_settings(self, input_key: str, output_prefix: str) -> Dict[str, Any]:
+        """Minimal H.264 (QVBR) + AAC MP4 job for broad browser playback."""
+        return {
+            "TimecodeConfig": {"Source": "ZEROBASED"},
+            "Inputs": [
+                {
+                    "FileInput": f"s3://{self.s3_bucket}/{input_key}",
+                    "TimecodeSource": "ZEROBASED",
+                    "VideoSelector": {"Rotate": "AUTO"},
+                    "AudioSelectors": {
+                        "Audio Selector 1": {"DefaultSelection": "DEFAULT"}
+                    },
+                }
+            ],
+            "OutputGroups": [
+                {
+                    "Name": "File Group",
+                    "OutputGroupSettings": {
+                        "Type": "FILE_GROUP_SETTINGS",
+                        "FileGroupSettings": {
+                            "Destination": f"s3://{self.s3_bucket}/{output_prefix}"
+                        },
+                    },
+                    "Outputs": [
+                        {
+                            "ContainerSettings": {
+                                "Container": "MP4",
+                                "Mp4Settings": {},
+                            },
+                            "VideoDescription": {
+                                "CodecSettings": {
+                                    "Codec": "H_264",
+                                    "H264Settings": {
+                                        "RateControlMode": "QVBR",
+                                        "MaxBitrate": 5000000,
+                                        "SceneChangeDetect": "TRANSITION_DETECTION",
+                                    },
+                                },
+                            },
+                            "AudioDescriptions": [
+                                {
+                                    "CodecSettings": {
+                                        "Codec": "AAC",
+                                        "AacSettings": {
+                                            "Bitrate": 96000,
+                                            "CodingMode": "CODING_MODE_2_0",
+                                            "SampleRate": 48000,
+                                        },
+                                    }
+                                }
+                            ],
+                            "NameModifier": "-web",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    async def _submit_video_transcode(
+        self, echo_id: str, attachment_id: str, input_key: str
+    ) -> None:
+        """Best-effort: kick off a MediaConvert job for one video attachment.
+
+        Output lands under ``transcode_output_prefix/<echo_id>/`` and the job
+        carries echo_id + attachment_id in UserMetadata so the completion
+        handler (transcode_complete_job) can write ``playable_url`` back onto the
+        attachment. Failures are logged, never raised — the upload still
+        succeeds and the viewer falls back to the original file.
+        """
+        if not self.mediaconvert_role_arn:
+            logger.warning(
+                "MEDIACONVERT_ROLE_ARN not set — skipping video transcode "
+                f"for echo {echo_id} attachment {attachment_id}"
+            )
+            return
+        try:
+            output_prefix = f"{self.transcode_output_prefix}{echo_id}/"
+            kwargs: Dict[str, Any] = {
+                "Role": self.mediaconvert_role_arn,
+                "Settings": self._video_job_settings(input_key, output_prefix),
+                "UserMetadata": {
+                    "echo_id": echo_id,
+                    "attachment_id": attachment_id,
+                },
+            }
+            if self.mediaconvert_queue:
+                kwargs["Queue"] = self.mediaconvert_queue
+            # MediaConvert requires the account/region endpoint; discover once.
+            if not self._mc_endpoint:
+                async with self.session.client(
+                    "mediaconvert", region_name=self.region
+                ) as mc_disco:
+                    eps = await mc_disco.describe_endpoints()
+                    self._mc_endpoint = eps["Endpoints"][0]["Url"]
+            async with self.session.client(
+                "mediaconvert",
+                region_name=self.region,
+                endpoint_url=self._mc_endpoint,
+            ) as mc:
+                job = await mc.create_job(**kwargs)
+            logger.info(
+                f"Submitted transcode job {job['Job']['Id']} for echo {echo_id} "
+                f"attachment {attachment_id}"
+            )
+        except Exception as e:  # noqa: BLE001 - transcode is best-effort
+            logger.warning(
+                f"Transcode submit failed (non-fatal) for echo {echo_id} "
+                f"attachment {attachment_id}: {e}"
+            )
+
+    async def set_attachment_playable_url(
+        self, echo_id: str, attachment_id: str, playable_url: str
+    ) -> bool:
+        """Persist the transcoded web rendition URL onto an attachment.
+
+        Called by the MediaConvert completion handler. Returns False if the
+        echo/attachment is gone (e.g. draft deleted before transcode finished).
+        """
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            resp = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading echo for playable_url: {e}")
+            return False
+        if "Item" not in resp:
+            logger.warning(f"playable_url: echo {echo_id} not found")
+            return False
+        echo = Echo.from_dynamodb_item(resp["Item"])
+        updated = False
+        for a in echo.attachments:
+            if a.attachment_id == attachment_id:
+                a.playable_url = playable_url
+                updated = True
+                break
+        if not updated:
+            logger.warning(
+                f"playable_url: attachment {attachment_id} not on echo {echo_id}"
+            )
+            return False
+        echo.updated_at = _current_timestamp()
+        try:
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed setting playable_url: {e}")
+            return False
+        logger.info(f"Set playable_url on echo {echo_id} attachment {attachment_id}")
+        return True
+
     async def add_attachment(
         self,
         echo_id: str,
@@ -2378,17 +2580,16 @@ class EchoService:
 
         att_type = self._attachment_type_for(s3_content_type, key)
         media_url = self._canonical_url(key)
-        echo.attachments.append(
-            Attachment(
-                type=att_type,
-                media_url=media_url,
-                thumb_url=thumb_url,
-                mime_type=s3_content_type,
-                size_bytes=s3_size or None,
-                duration=duration,
-                filename=filename,
-            )
+        new_attachment = Attachment(
+            type=att_type,
+            media_url=media_url,
+            thumb_url=thumb_url,
+            mime_type=s3_content_type,
+            size_bytes=s3_size or None,
+            duration=duration,
+            filename=filename,
         )
+        echo.attachments.append(new_attachment)
 
         # Back-compat: mirror the first audio/video attachment into the legacy
         # media_url/echo_type slot and the first poster/image into poster_url,
@@ -2418,6 +2619,15 @@ class EchoService:
             f"Added {att_type.value} attachment to echo {echo_id}: key={key} "
             f"size={s3_size} content_type={s3_content_type}"
         )
+
+        # Kick off a web-playable transcode for videos (best-effort; the
+        # completion handler writes playable_url back). Done after the DDB
+        # commit so the attachment_id is already persisted.
+        if att_type == AttachmentType.VIDEO:
+            await self._submit_video_transcode(
+                echo_id, new_attachment.attachment_id, key
+            )
+
         return echo
 
     async def remove_attachment(
@@ -2652,13 +2862,22 @@ class EchoService:
         *,
         download: bool,
         filename: Optional[str] = None,
+        content_type: Optional[str] = None,
         expires: int = 21600,
     ) -> Optional[str]:
-        """Presign a canonical S3 URL; force download via Content-Disposition."""
+        """Presign a canonical S3 URL.
+
+        ``download`` forces a save via Content-Disposition; ``content_type``
+        overrides the object's stored Content-Type on the response so the share
+        viewer's <audio>/<video>/<img> treat it as playable media (S3 sometimes
+        stores a generic type that browsers won't play inline).
+        """
         if not url or "amazonaws.com" not in url:
             return url
         key = url.split("amazonaws.com/")[-1]
         params: Dict[str, Any] = {"Bucket": self.s3_bucket, "Key": key}
+        if content_type:
+            params["ResponseContentType"] = content_type
         if download:
             name = filename or key.split("/")[-1]
             params["ResponseContentDisposition"] = f'attachment; filename="{name}"'
@@ -2688,6 +2907,7 @@ class EchoService:
         echo = await self.get_shared_echo(echo_id, recipient_id)
         if not echo:
             return None
+        mime: Optional[str] = None
         if attachment_id == "primary":
             url: Optional[str] = echo.media_url
             filename: Optional[str] = None
@@ -2700,8 +2920,19 @@ class EchoService:
                 return None
             url = att.media_url
             filename = att.filename
+            mime = att.mime_type
+            # For inline viewing, prefer the transcoded web rendition so video
+            # plays in every browser (the original may be HEVC/.mov). Downloads
+            # keep the original. Falls back to the original if not transcoded yet.
+            if not download and att.type == AttachmentType.VIDEO and att.playable_url:
+                url = att.playable_url
+                mime = "video/mp4"
+        # Override the response Content-Type so browsers play the media inline
+        # even if S3 stored a generic/incorrect type (key fix for "video not
+        # playable" / "audio error" in the email-link viewer).
+        content_type = _playable_content_type(mime, filename or url)
         return await self._presign_get_with_disposition(
-            url, download=download, filename=filename
+            url, download=download, filename=filename, content_type=content_type
         )
 
     # ========================================

@@ -10,6 +10,7 @@ token-gated). See core/share_token.py.
 
 import html
 import logging
+import os
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query
@@ -22,6 +23,13 @@ from ..services.echo_service import get_echo_service
 router = APIRouter(tags=["share"])
 logger = logging.getLogger(__name__)
 echo_service = get_echo_service()
+
+# Brand assets + app link, shared with the echo emails so the viewer matches.
+_APP_URL = os.getenv("APP_URL", "https://mirrorcollective.com")
+_ASSET_BASE = (os.getenv("EMAIL_ASSET_BASE_URL") or f"{_APP_URL}/email-assets").rstrip(
+    "/"
+)
+_GET_APP_URL = os.getenv("APP_STORE_URL", _APP_URL)
 
 # Never cache share responses: the viewer is per-recipient and the redirect
 # resolves to a SHORT-LIVED presigned URL — a cached 302 would hand out an
@@ -91,26 +99,32 @@ def _render_attachment(att: Dict[str, Any], echo_id: str, token: str) -> str:
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
+    """Branded shell matching the echo emails: logo image, Cormorant headings,
+    gold-on-navy, GET THE APP button, lock footer."""
     doc = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
 <title>{html.escape(title)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@300;400&display=swap" rel="stylesheet" />
 <style>
   :root {{ color-scheme: dark; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; background:#0b1020; color:#fdfdf9;
-    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }}
-  .wrap {{ max-width:600px; margin:0 auto; padding:40px 20px; }}
-  .logo {{ text-align:center; color:#f2e1b0; letter-spacing:3px;
-    font-size:14px; margin-bottom:8px; }}
-  h1 {{ font-family:Georgia,'Times New Roman',serif; color:#f2e1b0;
-    text-align:center; font-weight:400; font-size:32px; margin:8px 0 24px; }}
+    font-family:'Inter',-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }}
+  .wrap {{ max-width:600px; margin:0 auto; padding:32px 24px 40px; }}
+  .logo-img {{ display:block; width:220px; max-width:70%; height:auto;
+    margin:8px auto 20px; }}
+  h1 {{ font-family:'Cormorant Garamond',Georgia,serif; color:#f2e1b0;
+    text-align:center; font-weight:400; font-size:34px; margin:8px 0 6px;
+    text-shadow:0 0 10px rgba(240,212,168,0.3); }}
   .msg {{ background:#131a2e; border:1px solid #2a3450; border-radius:12px;
-    padding:20px; line-height:1.5; white-space:pre-wrap; }}
-  .section {{ color:#f2e1b0; text-align:center; margin:28px 0 16px;
-    font-family:Georgia,serif; }}
+    padding:20px 22px; line-height:1.6; white-space:pre-wrap; margin-top:20px;
+    font-size:16px; }}
+  .section {{ color:#f2e1b0; text-align:center; margin:28px 0 14px;
+    font-family:'Cormorant Garamond',Georgia,serif; font-size:22px; }}
   .att {{ background:#131a2e; border:1px solid #2a3450; border-radius:12px;
     overflow:hidden; margin-bottom:16px; }}
   .media {{ width:100%; display:block; background:#0b1020; }}
@@ -123,20 +137,25 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
     text-overflow:ellipsis; white-space:nowrap; }}
   .dl {{ flex:none; color:#0b1020; background:#f2e1b0; text-decoration:none;
     font-weight:600; padding:8px 16px; border-radius:8px; font-size:14px; }}
-  .footer {{ color:#a3b3cc; font-size:12px; text-align:center; margin-top:32px; }}
+  .cta {{ display:block; width:max-content; max-width:90%; margin:28px auto 0;
+    font-family:'Cormorant Garamond',Georgia,serif; font-size:20px;
+    color:#f2e1b0; text-decoration:none; text-align:center;
+    padding:12px 36px; border:1px solid #a3b3cc; border-radius:16px; }}
+  .footer {{ color:#a3b3cc; font-size:13px; text-align:center; margin-top:28px; }}
   .empty {{ color:#a3b3cc; text-align:center; }}
 </style></head>
-<body><div class="wrap">{body}</div></body></html>"""
+<body><div class="wrap">
+<img class="logo-img" src="{_ASSET_BASE}/logo-mirror-collective.png" alt="The Mirror Collective" />
+{body}
+<a class="cta" href="{html.escape(_GET_APP_URL)}">GET THE APP</a>
+<div class="footer">Shared privately through Echo Vault.</div>
+</div></body></html>"""
     return HTMLResponse(doc, status_code=status, headers=_NO_STORE)
 
 
 def _error_page(message: str, status: int) -> HTMLResponse:
-    body = (
-        '<div class="logo">THE MIRROR COLLECTIVE</div>'
-        "<h1>Echo</h1>"
-        f'<p class="empty">{html.escape(message)}</p>'
-    )
-    return _page("Echo", body, status)
+    body = "<h1>Your Echo</h1>" f'<p class="empty">{html.escape(message)}</p>'
+    return _page("Your Echo", body, status)
 
 
 @router.get("/share/echo/{echo_id}", response_class=HTMLResponse)
@@ -162,7 +181,8 @@ async def shared_echo_viewer(echo_id: str, t: str = Query(...)):
             logger.warning(f"Presign for inline view failed ({a['id']}): {e}")
             a["media_src"] = None
     message = echo.content or echo.letter_to_recipient or ""
-    parts = ['<div class="logo">THE MIRROR COLLECTIVE</div>', "<h1>Your Echo</h1>"]
+    # Logo, GET THE APP and footer come from _page (the branded shell).
+    parts = ["<h1>Your Echo</h1>"]
     if message:
         parts.append(f'<div class="msg">{html.escape(message)}</div>')
     if atts:
@@ -170,7 +190,6 @@ async def shared_echo_viewer(echo_id: str, t: str = Query(...)):
         parts.extend(_render_attachment(a, echo_id, t) for a in atts)
     elif not message:
         parts.append('<p class="empty">This echo has no content.</p>')
-    parts.append('<div class="footer">Shared privately through Echo Vault.</div>')
     return _page("Your Echo", "".join(parts))
 
 
