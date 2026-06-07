@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from contextlib import AsyncExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1217,8 +1217,12 @@ class EchoService:
           GSI on `status` and switch this to a query.
         - Per-echo release calls are guarded so one failure does not abort
           the whole batch. Failures are counted and logged but not raised.
-        - Skips items where `release_date` is missing (no schedule = nothing
-          for the scheduler to act on; manual release path is unaffected).
+        - Also rescues "stranded" instant echoes: a DRAFT with a recipient,
+          no guardian and no release_date that's older than a 15-min grace
+          window — i.e. an instant echo whose client created it (defer_release)
+          but never reached the explicit release call (e.g. app force-quit
+          between upload and release). The grace window guarantees we never
+          race a live save.
         - The release_echo call enforces the standard preconditions
           (recipient required, no guardian, still DRAFT) — anything not
           eligible falls into the failed count and is logged.
@@ -1231,6 +1235,17 @@ class EchoService:
         from boto3.dynamodb.conditions import Attr
 
         now_iso = _current_timestamp()
+        # Grace window for stranded instant echoes: an instant echo (recipient,
+        # no lock date) is created with defer_release and released by the client
+        # right after uploading its attachments. If the app is force-quit between
+        # upload and release, it's left as a DRAFT with no release_date — the
+        # normal scan never catches it. Rescue such drafts once they're older
+        # than the grace window (long enough that we never race a live save).
+        instant_cutoff_iso = (
+            (datetime.now(timezone.utc) - timedelta(minutes=15))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         scanned = released = skipped = failed = 0
         errors: List[str] = []
 
@@ -1240,11 +1255,22 @@ class EchoService:
 
             # Page through scan results — DynamoDB caps single-page size
             # to 1MB, so we loop on ExclusiveStartKey for large tables.
+            # Matches EITHER a scheduled echo whose release_date has passed, OR a
+            # stranded instant draft (no release_date, has a recipient, no
+            # guardian, older than the grace window).
             scan_kwargs: Dict[str, Any] = {
                 "FilterExpression": (
                     Attr("status").eq(EchoStatus.DRAFT.value)
-                    & Attr("release_date").lte(now_iso)
                     & Attr("deleted_at").not_exists()
+                    & (
+                        Attr("release_date").lte(now_iso)
+                        | (
+                            Attr("release_date").not_exists()
+                            & Attr("recipient_id").exists()
+                            & Attr("guardian_id").not_exists()
+                            & Attr("created_at").lte(instant_cutoff_iso)
+                        )
+                    )
                 ),
             }
 
