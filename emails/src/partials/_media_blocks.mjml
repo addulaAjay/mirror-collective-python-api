@@ -3,66 +3,72 @@
   its type-specific format (Figma 7539:4157 voice / 7539:4279 video).
   Driven by the `media_blocks` list from build_email_media_fields():
     { kind: IMAGE|VIDEO|AUDIO|FILE, image, duration, name, link }
-  Jinja control flow is wrapped in <mj-raw> so MJML keeps it through compile.
+  A single mj-wrapper provides ONE consistent 24px side gutter for every block
+  (images AND cards) so nothing is full-bleed and the padding matches across
+  all types. Jinja control flow is wrapped in <mj-raw> so MJML keeps it.
 -->
-<mj-raw>{% for m in media_blocks %}</mj-raw>
+<mj-wrapper background-color="#0b1020" padding="0 24px">
+  <mj-raw>{% for m in media_blocks %}</mj-raw>
 
-<mj-raw>{% if m.kind == 'IMAGE' %}</mj-raw>
-<mj-section background-color="#0b1020" padding="0 24px 16px">
-  <mj-column>
-    <mj-image css-class="rounded" src="{{ m.image }}" alt="{{ m.name }}" href="{{ m.link }}" border-radius="16px" padding="0" />
-  </mj-column>
-</mj-section>
+  <mj-raw>{% if m.kind == 'IMAGE' %}</mj-raw>
+  <mj-section background-color="#0b1020" padding="0 0 16px">
+    <mj-column>
+      <mj-image css-class="rounded" src="{{ m.image }}" alt="{{ m.name }}" href="{{ m.link }}" border-radius="16px" padding="0" />
+    </mj-column>
+  </mj-section>
 
-<mj-raw>{% elif m.kind == 'VIDEO' %}</mj-raw>
-<mj-section background-color="#0b1020" padding="0 24px 8px">
-  <mj-column>
-    <mj-image css-class="rounded" src="{% if m.image %}{{ m.image }}{% else %}{{ asset_base }}/hero-default.jpg{% endif %}" alt="{{ m.name }}" href="{{ m.link }}" border-radius="16px" padding="0" />
-  </mj-column>
-</mj-section>
-<mj-section css-class="card" background-color="#1a2238" border="1px solid #2a3450" padding="12px 16px" border-radius="12px">
-  <mj-group>
-    <mj-column width="48px" vertical-align="middle">
-      <mj-image src="{{ asset_base }}/icon-play-gold.png" alt="Play video" href="{{ m.link }}" width="36px" padding="0" />
+  <mj-raw>{% elif m.kind == 'VIDEO' %}</mj-raw>
+  <mj-section background-color="#0b1020" padding="0 0 8px">
+    <mj-column>
+      <mj-image css-class="rounded" src="{% if m.image %}{{ m.image }}{% else %}{{ asset_base }}/hero-default.jpg{% endif %}" alt="{{ m.name }}" href="{{ m.link }}" border-radius="16px" padding="0" />
     </mj-column>
-    <mj-column vertical-align="middle">
-      <mj-text color="#fdfdf9" font-size="15px" align="left" padding="0">Watch video{% if m.duration %} &middot; {{ m.duration }}{% endif %}</mj-text>
-    </mj-column>
-    <mj-column width="40px" vertical-align="middle">
-      <mj-image src="{{ asset_base }}/icon-download.png" alt="Open" href="{{ m.link }}" width="20px" align="right" padding="0" />
-    </mj-column>
-  </mj-group>
-</mj-section>
+  </mj-section>
+  <mj-section css-class="card" background-color="#1a2238" border="1px solid #2a3450" padding="12px 16px" border-radius="12px">
+    <mj-group>
+      <mj-column width="48px" vertical-align="middle">
+        <mj-image src="{{ asset_base }}/icon-play-gold.png" alt="Play video" href="{{ m.link }}" width="36px" padding="0" />
+      </mj-column>
+      <mj-column vertical-align="middle">
+        <mj-text color="#fdfdf9" font-size="15px" align="left" padding="0">Watch video{% if m.duration %} &middot; {{ m.duration }}{% endif %}</mj-text>
+      </mj-column>
+      <mj-column width="40px" vertical-align="middle">
+        <mj-image src="{{ asset_base }}/icon-download.png" alt="Open" href="{{ m.link }}" width="20px" align="right" padding="0" />
+      </mj-column>
+    </mj-group>
+  </mj-section>
+  <mj-section background-color="#0b1020" padding="0 0 16px"><mj-column><mj-spacer height="0px" /></mj-column></mj-section>
 
-<mj-raw>{% elif m.kind == 'AUDIO' %}</mj-raw>
-<mj-section css-class="card" background-color="#1a2238" border="1px solid #2a3450" padding="14px 16px" border-radius="12px">
-  <mj-group>
-    <mj-column width="56px" vertical-align="middle">
-      <mj-image src="{{ asset_base }}/icon-play-gold.png" alt="Play voice echo" href="{{ m.link }}" width="40px" padding="0" />
-    </mj-column>
-    <mj-column vertical-align="middle">
-      <mj-image src="{{ asset_base }}/waveform-gold.png" alt="" href="{{ m.link }}" width="200px" align="left" padding="0" />
-    </mj-column>
-    <mj-column width="56px" vertical-align="middle">
-      <mj-text color="#fdfdf9" font-size="15px" align="right" padding="0">{{ m.duration }}</mj-text>
-    </mj-column>
-  </mj-group>
-</mj-section>
+  <mj-raw>{% elif m.kind == 'AUDIO' %}</mj-raw>
+  <mj-section css-class="card" background-color="#1a2238" border="1px solid #2a3450" padding="14px 16px" border-radius="12px">
+    <mj-group>
+      <mj-column width="56px" vertical-align="middle">
+        <mj-image src="{{ asset_base }}/icon-play-gold.png" alt="Play voice echo" href="{{ m.link }}" width="40px" padding="0" />
+      </mj-column>
+      <mj-column vertical-align="middle">
+        <mj-image src="{{ asset_base }}/waveform-gold.png" alt="" href="{{ m.link }}" width="200px" align="left" padding="0" />
+      </mj-column>
+      <mj-column width="56px" vertical-align="middle">
+        <mj-text color="#fdfdf9" font-size="15px" align="right" padding="0">{{ m.duration }}</mj-text>
+      </mj-column>
+    </mj-group>
+  </mj-section>
+  <mj-section background-color="#0b1020" padding="0 0 16px"><mj-column><mj-spacer height="0px" /></mj-column></mj-section>
 
-<mj-raw>{% else %}</mj-raw>
-<mj-section background-color="#0b1020" padding="0 24px 16px">
-  <mj-group>
-    <mj-column width="64px" vertical-align="middle">
-      <mj-image css-class="card" src="{{ asset_base }}/attachment-thumb.png" alt="" href="{{ m.link }}" width="48px" border-radius="8px" padding="0" />
-    </mj-column>
-    <mj-column vertical-align="middle">
-      <mj-text font-size="15px" line-height="20px" align="left" padding="0">{{ m.name }}<br /><a href="{{ m.link }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Tap to download</a></mj-text>
-    </mj-column>
-    <mj-column width="40px" vertical-align="middle">
-      <mj-image src="{{ asset_base }}/icon-download.png" alt="Download" href="{{ m.link }}" width="20px" align="right" padding="0" />
-    </mj-column>
-  </mj-group>
-</mj-section>
+  <mj-raw>{% else %}</mj-raw>
+  <mj-section background-color="#0b1020" padding="0 0 16px">
+    <mj-group>
+      <mj-column width="64px" vertical-align="middle">
+        <mj-image css-class="card" src="{{ asset_base }}/attachment-thumb.png" alt="" href="{{ m.link }}" width="48px" border-radius="8px" padding="0" />
+      </mj-column>
+      <mj-column vertical-align="middle">
+        <mj-text font-size="15px" line-height="20px" align="left" padding="0">{{ m.name }}<br /><a href="{{ m.link }}" style="color:#a3b3cc;font-style:italic;text-decoration:none;">Tap to download</a></mj-text>
+      </mj-column>
+      <mj-column width="40px" vertical-align="middle">
+        <mj-image src="{{ asset_base }}/icon-download.png" alt="Download" href="{{ m.link }}" width="20px" align="right" padding="0" />
+      </mj-column>
+    </mj-group>
+  </mj-section>
 
-<mj-raw>{% endif %}</mj-raw>
-<mj-raw>{% endfor %}</mj-raw>
+  <mj-raw>{% endif %}</mj-raw>
+  <mj-raw>{% endfor %}</mj-raw>
+</mj-wrapper>

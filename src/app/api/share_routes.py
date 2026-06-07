@@ -55,22 +55,33 @@ def _normalize_attachments(echo: Echo) -> List[Dict[str, Any]]:
 
 
 def _render_attachment(att: Dict[str, Any], echo_id: str, token: str) -> str:
-    view = f"/share/echo/{echo_id}/attachment/{att['id']}?t={token}&mode=view"
+    # Inline media plays from a DIRECT presigned S3 URL (set by the viewer) so
+    # the browser's byte-range requests work — a 302 redirect breaks <video>
+    # playback in Safari/Chrome. Falls back to the redirect endpoint if presign
+    # failed. Download always uses the redirect (forces Content-Disposition).
+    redirect_view = f"/share/echo/{echo_id}/attachment/{att['id']}?t={token}&mode=view"
+    src = att.get("media_src") or redirect_view
     dl = f"/share/echo/{echo_id}/attachment/{att['id']}?t={token}&mode=download"
     name = html.escape(str(att["name"]))
     kind = att["kind"]
-    if kind == "IMAGE":
-        media = f'<img class="media" src="{view}" alt="{name}" />'
+    lname = str(att["name"]).lower()
+    if kind == "IMAGE" and (lname.endswith(".heic") or lname.endswith(".heif")):
+        # Browsers can't render HEIC/HEIF — show a hint instead of a broken box.
+        media = (
+            '<div class="file-icon">🖼️'
+            '<div class="hint">Preview not supported — download to view</div></div>'
+        )
+    elif kind == "IMAGE":
+        media = f'<img class="media" src="{src}" alt="{name}" />'
     elif kind == "VIDEO":
         media = (
-            f'<video class="media" controls preload="metadata" src="{view}"></video>'
+            '<video class="media" controls playsinline preload="metadata" '
+            f'src="{src}"></video>'
         )
     elif kind == "AUDIO":
-        media = (
-            f'<audio class="audio" controls preload="metadata" src="{view}"></audio>'
-        )
+        media = f'<audio class="audio" controls preload="metadata" src="{src}"></audio>'
     else:
-        media = f'<div class="file-icon">📄</div>'
+        media = '<div class="file-icon">📄</div>'
     dur = f" · {html.escape(str(att['duration']))}" if att.get("duration") else ""
     return (
         f'<div class="att">{media}'
@@ -105,6 +116,7 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
   .media {{ width:100%; display:block; background:#0b1020; }}
   .audio {{ width:100%; display:block; padding:12px; }}
   .file-icon {{ font-size:40px; text-align:center; padding:24px; }}
+  .hint {{ font-size:13px; color:#a3b3cc; margin-top:8px; }}
   .att-row {{ display:flex; align-items:center; justify-content:space-between;
     padding:12px 16px; gap:12px; }}
   .att-name {{ color:#a3b3cc; font-size:14px; overflow:hidden;
@@ -139,6 +151,16 @@ async def shared_echo_viewer(echo_id: str, t: str = Query(...)):
         return _error_page("This echo is no longer available.", 404)
 
     atts = _normalize_attachments(echo)
+    # Presign a direct S3 URL per attachment for inline playback (range-request
+    # friendly, unlike the 302 redirect). Download links still use the redirect.
+    for a in atts:
+        try:
+            a["media_src"] = await echo_service.presign_shared_attachment(
+                echo_id, payload["recipient_id"], a["id"], download=False
+            )
+        except Exception as e:  # noqa: BLE001 - inline preview is best-effort
+            logger.warning(f"Presign for inline view failed ({a['id']}): {e}")
+            a["media_src"] = None
     message = echo.content or echo.letter_to_recipient or ""
     parts = ['<div class="logo">THE MIRROR COLLECTIVE</div>', "<h1>Your Echo</h1>"]
     if message:
