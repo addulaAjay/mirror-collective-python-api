@@ -101,6 +101,43 @@ _MIME_ALIASES = {
     "video/x-quicktime": "video/quicktime",
 }
 
+# Extension → web-playable MIME, used to set the presigned URL's
+# ResponseContentType so the share viewer's <audio>/<video>/<img> treat the
+# file as media even if S3 stored a generic/incorrect Content-Type. Note: m4a
+# is served as audio/mp4 (the type browsers actually play).
+_MEDIA_MIME_BY_EXT = {
+    "m4a": "audio/mp4",
+    "mp4": "video/mp4",
+    "m4v": "video/x-m4v",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "aac": "audio/aac",
+    "wav": "audio/wav",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "pdf": "application/pdf",
+}
+
+
+def _playable_content_type(mime: Optional[str], name: Optional[str]) -> Optional[str]:
+    """Best web-playable Content-Type for a shared attachment.
+
+    Prefers a concrete stored mime (normalizing m4a→audio/mp4 so browsers play
+    it); otherwise infers from the filename/key extension.
+    """
+    if mime and mime != "application/octet-stream":
+        m = mime.strip().lower()
+        if m in ("audio/m4a", "audio/x-m4a"):
+            return "audio/mp4"
+        return _MIME_ALIASES.get(m, m)
+    ext = (name or "").rsplit(".", 1)[-1].lower() if name else ""
+    return _MEDIA_MIME_BY_EXT.get(ext)
+
 
 def _normalize_mime(file_type: Optional[str]) -> str:
     """Lowercase + map known aliases (e.g. image/jpg -> image/jpeg)."""
@@ -2652,13 +2689,22 @@ class EchoService:
         *,
         download: bool,
         filename: Optional[str] = None,
+        content_type: Optional[str] = None,
         expires: int = 21600,
     ) -> Optional[str]:
-        """Presign a canonical S3 URL; force download via Content-Disposition."""
+        """Presign a canonical S3 URL.
+
+        ``download`` forces a save via Content-Disposition; ``content_type``
+        overrides the object's stored Content-Type on the response so the share
+        viewer's <audio>/<video>/<img> treat it as playable media (S3 sometimes
+        stores a generic type that browsers won't play inline).
+        """
         if not url or "amazonaws.com" not in url:
             return url
         key = url.split("amazonaws.com/")[-1]
         params: Dict[str, Any] = {"Bucket": self.s3_bucket, "Key": key}
+        if content_type:
+            params["ResponseContentType"] = content_type
         if download:
             name = filename or key.split("/")[-1]
             params["ResponseContentDisposition"] = f'attachment; filename="{name}"'
@@ -2688,6 +2734,7 @@ class EchoService:
         echo = await self.get_shared_echo(echo_id, recipient_id)
         if not echo:
             return None
+        mime: Optional[str] = None
         if attachment_id == "primary":
             url: Optional[str] = echo.media_url
             filename: Optional[str] = None
@@ -2700,8 +2747,13 @@ class EchoService:
                 return None
             url = att.media_url
             filename = att.filename
+            mime = att.mime_type
+        # Override the response Content-Type so browsers play the media inline
+        # even if S3 stored a generic/incorrect type (key fix for "video not
+        # playable" / "audio error" in the email-link viewer).
+        content_type = _playable_content_type(mime, filename or url)
         return await self._presign_get_with_disposition(
-            url, download=download, filename=filename
+            url, download=download, filename=filename, content_type=content_type
         )
 
     # ========================================
