@@ -23,6 +23,14 @@ provider:
     SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'app@themirrorcollective.com'}
     APP_NAME: "Mirror Collective"
     APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
+    # Public brand-asset bucket for the rich echo-share emails. Email clients
+    # (Gmail, etc.) fetch the <img> sources server-side with no auth, so this
+    # bucket is public-read — unlike the presigned-only vault bucket. The MJML
+    # templates reference images as ${EMAIL_ASSET_BASE_URL}/<name>.png. Scoped
+    # per-stage (like ECHO_MEDIA_BUCKET) to avoid cross-stage name conflicts;
+    # override EMAIL_ASSET_BASE_URL to point all stages at one shared bucket.
+    EMAIL_ASSETS_BUCKET: mirror-collective-email-assets-${self:provider.stage}
+    EMAIL_ASSET_BASE_URL: ${env:EMAIL_ASSET_BASE_URL, 'https://mirror-collective-email-assets-${self:provider.stage}.s3.${self:provider.region}.amazonaws.com'}
     # Public tokenized echo viewer (email-recipient attachment playback).
     # SHARE_TOKEN_SECRET signs the share JWT — REQUIRED in every env (no default;
     # set per stage). SHARE_BASE_URL is the API's own public origin (where the
@@ -777,6 +785,49 @@ resources:
               AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
               AllowedOrigins: ['*']
               MaxAge: 3000
+
+    # Public brand-asset bucket for the rich echo-share emails. Email clients
+    # fetch <img> sources server-side with no auth, so objects must be
+    # public-read (the opposite of the vault bucket). After first deploy, upload
+    # the 8 brand images to the bucket root (see emails/README.md):
+    #   logo-mirror-collective.png  divider-star.png      waveform-gold.png
+    #   icon-play-gold.png          icon-download.png     icon-lock.png
+    #   hero-default.jpg            attachment-thumb.png
+    EmailAssetsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.EMAIL_ASSETS_BUCKET}
+        # ACLs disabled; public access granted via the bucket policy below.
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: BucketOwnerEnforced
+        # Allow a public read policy (the three other guards stay on).
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: false
+          RestrictPublicBuckets: false
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, HEAD]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
+
+    # Public-read policy: anyone can GET objects (brand images only). No list,
+    # no write — those require IAM/owner credentials.
+    EmailAssetsBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: ${self:provider.environment.EMAIL_ASSETS_BUCKET}
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: PublicReadGetObject
+              Effect: Allow
+              Principal: '*'
+              Action: s3:GetObject
+              Resource: 'arn:aws:s3:::${self:provider.environment.EMAIL_ASSETS_BUCKET}/*'
 
     # Subscription/IAP Tables
     SubscriptionsTable:
