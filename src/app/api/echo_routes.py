@@ -40,6 +40,10 @@ class CreateEchoRequest(BaseModel):
     # picker screen as "Letter to Recipient". Distinct from `content` so it
     # works for AUDIO / VIDEO echoes (where content is unused) as well.
     letter_to_recipient: Optional[str] = None
+    # When true, create the echo WITHOUT auto-releasing it, even for an instant
+    # (recipient + no lock date) echo. The client uploads attachments and then
+    # calls release explicitly, so the email goes out once with everything.
+    defer_release: Optional[bool] = False
 
     @validator("release_date")
     def validate_release_date(cls, v):
