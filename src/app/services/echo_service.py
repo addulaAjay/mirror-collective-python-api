@@ -432,9 +432,15 @@ class EchoService:
 
             logger.info(f"Created echo {echo.echo_id} for user {user_id}")
 
-            # Auto-release: Check if immediate release is needed
+            # Auto-release: Check if immediate release is needed.
+            # defer_release lets a client that uploads attachments AFTER create
+            # (then calls release explicitly) suppress the premature create-time
+            # send — otherwise the email goes out before the attachments exist
+            # and with no chance to resolve the sender name.
             should_release_now = False
-            if echo.recipient_id and not echo.guardian_id:
+            if data.get("defer_release"):
+                should_release_now = False
+            elif echo.recipient_id and not echo.guardian_id:
                 if not echo.release_date:
                     # No scheduled date → release immediately
                     should_release_now = True
@@ -491,7 +497,7 @@ class EchoService:
                             await email_service.send_echo_notification(
                                 recipient_email=recipient.email,
                                 recipient_name=recipient.name,
-                                sender_name=user_id,  # TODO: fetch actual user name
+                                sender_name=await self._resolve_sender_name(user_id),
                                 echo_title=echo.title,
                                 echo_category=echo.category,
                                 echo_type=echo.echo_type.value,
@@ -1083,6 +1089,25 @@ class EchoService:
             logger.error(f"Error deleting echo: {e}")
             return False
 
+    async def _resolve_sender_name(self, user_id: str) -> str:
+        """Display name for the echo email's 'from' line.
+
+        Used by BOTH release paths (manual release_echo + create_echo's
+        auto-release). NEVER returns the raw user_id UUID — falls back to a
+        friendly generic when the sender's profile has no name.
+        """
+        try:
+            profile = await self.dynamodb_service.get_user_profile(user_id)
+            if profile and profile.full_name:
+                return profile.full_name
+        except Exception as e:  # noqa: BLE001 - non-fatal enrichment
+            logger.warning(f"Could not resolve sender name for {user_id}: {e}")
+            return "Someone"
+        logger.warning(
+            f"No profile/name for sender {user_id}; using generic sender name."
+        )
+        return "Someone"
+
     async def release_echo(self, echo_id: str, user_id: str) -> Echo:
         """
         Directly release an echo to its recipient (no-guardian path).
@@ -1154,23 +1179,7 @@ class EchoService:
                 media_fields = await self.build_email_media_fields(
                     echo, recipient.recipient_id
                 )
-                # Resolve the sender's display name so the email reads
-                # "from Jane Smith" (Figma). NEVER fall back to the raw user_id
-                # UUID — use a friendly generic if the profile has no name.
-                sender_name = "Someone"
-                try:
-                    sender_profile = await self.dynamodb_service.get_user_profile(
-                        user_id
-                    )
-                    if sender_profile and sender_profile.full_name:
-                        sender_name = sender_profile.full_name
-                    else:
-                        logger.warning(
-                            f"No profile/name for sender {user_id}; "
-                            "using generic sender name in echo email."
-                        )
-                except Exception as e:  # noqa: BLE001 - non-fatal enrichment
-                    logger.warning(f"Could not resolve sender name for {user_id}: {e}")
+                sender_name = await self._resolve_sender_name(user_id)
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
