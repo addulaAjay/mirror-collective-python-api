@@ -251,7 +251,7 @@ async def test_build_email_media_fields():
 async def test_build_email_media_fields_empty():
     service, _, _ = _wire_service(_echo_row())
     fields = await service.build_email_media_fields(Echo())
-    assert fields == {"attachment_count": 0}
+    assert fields == {"attachment_count": 0, "media_blocks": []}
 
 
 # --------------------------------------------------------------------------- #

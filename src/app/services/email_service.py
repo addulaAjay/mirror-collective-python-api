@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import aioboto3
 from botocore.config import Config
@@ -344,6 +344,7 @@ If you didn't expect this email, please contact us.
         attachment_count: int = 0,
         attachment_url: Optional[str] = None,
         attachment_thumb_url: Optional[str] = None,
+        media_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
         """
         Send notification when an echo is released to a recipient.
@@ -404,6 +405,7 @@ If you didn't expect this email, please contact us.
             attachment_count=attachment_count,
             attachment_url=attachment_url,
             attachment_thumb_url=attachment_thumb_url,
+            media_blocks=media_blocks,
         )
 
     async def send_echo_share_email(
@@ -420,6 +422,7 @@ If you didn't expect this email, please contact us.
         attachment_count: int = 0,
         attachment_url: Optional[str] = None,
         attachment_thumb_url: Optional[str] = None,
+        media_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
         """
         Render and send the rich echo-share email (Voice / Video / Written).
@@ -452,6 +455,8 @@ If you didn't expect this email, please contact us.
             or f"{self.asset_base}/attachment-thumb.png",
             "audio_duration": media_duration or "",
             "video_duration": media_duration or "",
+            # Per-attachment render list (image/video/audio/file), in order.
+            "media_blocks": media_blocks or [],
         }
         # Written renders multi-paragraph; voice/video use a single block.
         if echo_type == "TEXT":

@@ -1155,15 +1155,20 @@ class EchoService:
                     echo, recipient.recipient_id
                 )
                 # Resolve the sender's display name so the email reads
-                # "from Jane Smith" (Figma) instead of the raw user_id UUID.
-                # Falls back to user_id if the profile lookup fails.
-                sender_name = user_id
+                # "from Jane Smith" (Figma). NEVER fall back to the raw user_id
+                # UUID — use a friendly generic if the profile has no name.
+                sender_name = "Someone"
                 try:
                     sender_profile = await self.dynamodb_service.get_user_profile(
                         user_id
                     )
-                    if sender_profile:
+                    if sender_profile and sender_profile.full_name:
                         sender_name = sender_profile.full_name
+                    else:
+                        logger.warning(
+                            f"No profile/name for sender {user_id}; "
+                            "using generic sender name in echo email."
+                        )
                 except Exception as e:  # noqa: BLE001 - non-fatal enrichment
                     logger.warning(f"Could not resolve sender name for {user_id}: {e}")
                 await email_service.send_echo_notification(
@@ -2534,6 +2539,45 @@ class EchoService:
                 signed = await self._presign_get(thumb_source, expires=604800)
                 fields["hero_image_url"] = signed
                 fields["attachment_thumb_url"] = signed
+
+        # Per-attachment blocks: the template renders EACH one in order
+        # (image / video / audio / file) — Figma 7539:4157. `link` is the share
+        # viewer so the recipient can play/download every item.
+        view_url = fields.get("open_echo_url", "")
+        media_blocks: List[Dict[str, Any]] = []
+        for a in atts:
+            name = a.filename or f"{a.type.value.lower()} attachment"
+            block: Dict[str, Any] = {
+                "name": name,
+                "duration": a.duration or "",
+                "link": view_url,
+                "image": "",
+            }
+            if a.type == AttachmentType.IMAGE:
+                block["kind"] = "IMAGE"
+                # Durable inline URL → the actual image, never expires.
+                block["image"] = (
+                    build_share_attachment_url(
+                        echo.echo_id, a.attachment_id, token, mode="view"
+                    )
+                    if token
+                    else (a.media_url or "")
+                )
+            elif a.type == AttachmentType.VIDEO:
+                block["kind"] = "VIDEO"
+                # Poster: re-presign the thumbnail with the 7-day max so the
+                # still renders in the email (template falls back to the default
+                # hero if there's no poster).
+                if a.thumb_url:
+                    block["image"] = await self._presign_get(
+                        a.thumb_url, expires=604800
+                    )
+            elif a.type == AttachmentType.AUDIO:
+                block["kind"] = "AUDIO"  # template draws the waveform asset
+            else:
+                block["kind"] = "FILE"  # template uses the default thumb asset
+            media_blocks.append(block)
+        fields["media_blocks"] = media_blocks
         return fields
 
     # ========================================

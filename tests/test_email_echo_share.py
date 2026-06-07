@@ -148,6 +148,16 @@ async def test_audio_includes_duration():
         echo_type="AUDIO",
         quote="hi",
         media_duration="2:32",
+        # Duration now renders per-attachment in the media-blocks loop.
+        media_blocks=[
+            {
+                "kind": "AUDIO",
+                "image": "",
+                "name": "voice",
+                "duration": "2:32",
+                "link": "x",
+            }
+        ],
     )
 
     assert "2:32" in captured["r@example.com"]["html"]
