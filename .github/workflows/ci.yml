@@ -125,6 +125,13 @@ jobs:
         cp -r src/ build/
         cp requirements.txt build/
         cp serverless.yml build/
+        # Compiled echo-share email templates, rendered at runtime by
+        # email_service.py (serverless.yml packages `emails/dist/**`). The
+        # deploy runs from build/, so they MUST be copied here too — without
+        # this the Lambda's /var/task/emails/dist is empty and every echo
+        # email falls back to plain HTML.
+        mkdir -p build/emails
+        cp -r emails/dist build/emails/dist
         # Create package.json for serverless plugins
         echo '{"dependencies": {"serverless-python-requirements": "5.4.0"}}' > build/package.json
 
@@ -199,6 +206,15 @@ jobs:
         SNS_TOPIC_ARN: ${{ secrets.STAGING_SNS_TOPIC_ARN }}
         APP_URL: ${{ secrets.STAGING_APP_URL }}
 
+    # Upload the rich-email brand images to the public bucket the deploy just
+    # created (mirror-collective-email-assets-<stage>). Runs from the repo
+    # checkout (not build/), which has emails/email-assets/.
+    - name: Sync email brand assets
+      run: |
+        aws s3 sync emails/email-assets \
+          s3://mirror-collective-email-assets-staging/ \
+          --cache-control "public, max-age=31536000"
+
   deploy-production:
     runs-on: ubuntu-latest
     needs: build
@@ -263,6 +279,15 @@ jobs:
         SES_SENDER_EMAIL: ${{ secrets.PROD_SES_SENDER_EMAIL }}
         SNS_TOPIC_ARN: ${{ secrets.PROD_SNS_TOPIC_ARN }}
         APP_URL: ${{ secrets.PROD_APP_URL }}
+
+    # Upload brand images to the public bucket created by the deploy. Prod
+    # deploys to stage "production-v2", so the bucket is
+    # mirror-collective-email-assets-production-v2.
+    - name: Sync email brand assets
+      run: |
+        aws s3 sync emails/email-assets \
+          s3://mirror-collective-email-assets-production-v2/ \
+          --cache-control "public, max-age=31536000"
 
   notify:
     runs-on: ubuntu-latest
