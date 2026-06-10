@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError
 from ..models.conversation import Conversation, ConversationMessage
+from ..models.soul_ping import SoulPing
 from ..models.user_profile import UserProfile
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ class DynamoDBService:
         self.device_tokens_table = os.getenv(
             "DYNAMODB_DEVICE_TOKENS_TABLE", "user_device_tokens"
         )
+        self.soul_pings_table = os.getenv("DYNAMODB_SOUL_PINGS_TABLE", "soul_pings")
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -1031,6 +1033,64 @@ class DynamoDBService:
         except Exception as e:
             logger.error(f"Error getting device tokens for user {user_id}: {e}")
             return []
+
+    async def scan_active_device_user_ids(self) -> List[str]:
+        """Distinct, non-GUEST user_ids that have at least one active device
+        token — i.e. everyone who can receive a push. Used by the hourly Soul
+        Ping dispatch job to enumerate candidates.
+
+        Runs a paginated scan with a projection (user_id + is_active only) to
+        keep it cheap; at current scale this is acceptable for an hourly job.
+        """
+        user_ids: set[str] = set()
+        try:
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.device_tokens_table)
+            scan_kwargs: Dict[str, Any] = {
+                "ProjectionExpression": "user_id, is_active",
+            }
+            while True:
+                response = await table.scan(**scan_kwargs)
+                for item in response.get("Items", []):
+                    uid = item.get("user_id")
+                    if uid and uid != "GUEST" and item.get("is_active", True):
+                        user_ids.add(uid)
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
+        except Exception as e:
+            logger.error(f"Error scanning active device user_ids: {e}")
+        return list(user_ids)
+
+    async def save_soul_ping(self, ping: "SoulPing") -> bool:
+        """Persist a sent Soul Ping (source of truth for the one-per-hour
+        throttle + future in-app feed)."""
+        try:
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.soul_pings_table)
+            await table.put_item(Item=ping.to_dynamodb_item())
+            return True
+        except Exception as e:
+            logger.error(f"Error saving soul ping for user {ping.user_id}: {e}")
+            return False
+
+    async def get_last_soul_ping(self, user_id: str) -> Optional["SoulPing"]:
+        """Most recent Soul Ping for a user (PK user_id, SK sent_at desc)."""
+        try:
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.soul_pings_table)
+            response = await table.query(
+                KeyConditionExpression="user_id = :uid",
+                ExpressionAttributeValues={":uid": user_id},
+                ScanIndexForward=False,  # newest first
+                Limit=1,
+            )
+            items = response.get("Items", [])
+            return SoulPing.from_dynamodb_item(items[0]) if items else None
+        except Exception as e:
+            logger.error(f"Error getting last soul ping for user {user_id}: {e}")
+            return None
 
     async def get_device_token(
         self, user_id: str, device_token: str

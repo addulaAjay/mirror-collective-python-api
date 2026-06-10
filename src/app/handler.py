@@ -19,6 +19,7 @@ from .api.models import HealthResponse
 from .api.practice_routes import router as practice_router
 from .api.reflection_routes import router as reflection_router
 from .api.routes import router as api_router
+from .api.soul_ping_routes import router as soul_ping_router
 from .api.subscription_routes import router as subscription_router
 from .api.telemetry_routes import router as telemetry_router
 from .core.error_handlers import setup_error_handlers
@@ -219,6 +220,7 @@ app.include_router(echo_v1_router, prefix="/api")
 app.include_router(practice_router, prefix="/api")
 app.include_router(me_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
+app.include_router(soul_ping_router, prefix="/api")
 
 # lifespan="off" skips Starlette's startup/shutdown probe on every cold start.
 # We had no real lifespan handlers to run anyway (the previous on_event(startup)

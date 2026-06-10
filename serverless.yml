@@ -34,6 +34,7 @@ provider:
     DYNAMODB_QUIZ_RESULTS_TABLE: ${self:service}-quiz-results-${self:provider.stage}
     DYNAMODB_QUIZ_QUESTIONS_TABLE: ${self:service}-quiz-questions-${self:provider.stage}
     DYNAMODB_DEVICE_TOKENS_TABLE: ${self:service}-device-tokens-${self:provider.stage}
+    DYNAMODB_SOUL_PINGS_TABLE: ${self:service}-soul-pings-${self:provider.stage}
     # Echo Vault Tables
     DYNAMODB_ECHOES_TABLE: ${self:service}-echoes-${self:provider.stage}
     DYNAMODB_RECIPIENTS_TABLE: ${self:service}-recipients-${self:provider.stage}
@@ -115,6 +116,7 @@ provider:
                 - 'index/*'
             - Fn::GetAtt: [ QuizQuestionsTable, Arn ]
             - Fn::GetAtt: [ DeviceTokensTable, Arn ]
+            - Fn::GetAtt: [ SoulPingsTable, Arn ]
             # Echo Vault Tables
             - Fn::GetAtt: [ EchoVaultEchoesTable, Arn ]
             - Fn::Join:
@@ -316,6 +318,19 @@ functions:
       - schedule:
           rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
           description: Auto-release scheduled echoes
+
+  # Scheduled job: hourly Soul Ping dispatch (one proactive ping per user max,
+  # generated from recent mirror-chat history + summary). The service enforces
+  # the per-user one-per-hour throttle and per-user category config.
+  soulPingDispatch:
+    handler: src/app/jobs/soul_ping_job.lambda_handler
+    description: Hourly per-user Soul Ping generation + delivery
+    timeout: 600
+    memorySize: 512
+    events:
+      - schedule:
+          rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
+          description: Generate and send Soul Pings
 
 resources:
   # Stage-level throttling for the HTTP API. Serverless Framework creates the
@@ -584,6 +599,26 @@ resources:
           - AttributeName: user_id
             KeyType: HASH
           - AttributeName: device_token
+            KeyType: RANGE
+
+    # Soul Pings: one row per sent ping (PK user_id, SK sent_at desc) — source
+    # of truth for the one-per-hour throttle and a future in-app feed.
+    SoulPingsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-soul-pings-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: sent_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: sent_at
             KeyType: RANGE
 
     # Echo Vault Tables
