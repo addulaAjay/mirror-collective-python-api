@@ -1095,6 +1095,36 @@ class TestEchoServiceReleaseDueEchoes:
         assert result["skipped"] == 0
 
     @pytest.mark.asyncio
+    async def test_release_due_echoes_rescues_stranded_instant_draft(self):
+        """A DRAFT with a recipient but no release_date (stranded instant echo,
+        e.g. app force-quit between upload and release) is still released."""
+        from src.app.services.echo_service import EchoService
+
+        service = EchoService()
+        scan_pages = [
+            {
+                "Items": [
+                    {
+                        "echo_id": "e-instant",
+                        "user_id": "u-9",
+                        "recipient_id": "r-9",
+                        # No release_date — the scan's filter selects it by age;
+                        # the loop releases any recipient'd, guardian-free draft.
+                        "created_at": "2026-01-01T00:00:00Z",
+                    },
+                ],
+            }
+        ]
+        _, scan_ctx = self._wire_scan_mock(service, scan_pages)
+        release_mock = AsyncMock()
+
+        with scan_ctx, patch.object(service, "release_echo", new=release_mock):
+            result = await service.release_due_echoes()
+
+        release_mock.assert_any_await("e-instant", "u-9")
+        assert result["released"] == 1
+
+    @pytest.mark.asyncio
     async def test_release_due_echoes_skips_guardian_locked_rows(self):
         """Rows with a guardian_id go through the guardian flow, not this one."""
         from src.app.services.echo_service import EchoService

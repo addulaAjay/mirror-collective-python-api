@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from contextlib import AsyncExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,7 +20,14 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError, NotFoundError, ValidationError
+from ..core.share_token import (
+    build_share_attachment_url,
+    build_share_url,
+    create_share_token,
+)
 from ..models.echo import (
+    Attachment,
+    AttachmentType,
     Echo,
     EchoStatus,
     EchoType,
@@ -51,8 +58,92 @@ ALLOWED_UPLOAD_MIME_TYPES: frozenset[str] = frozenset(
         "video/mp4",
         "video/quicktime",
         "video/x-m4v",
+        # Document attachments — the "File" option in the Create-an-Echo
+        # upload sheet (Figma 7544:2839 allows .pdf alongside .png/.jpg/.mp4).
+        "application/pdf",
     }
 )
+
+# Canonical file extension per upload MIME type. Single source of truth for the
+# single-PUT and multipart key builders. Video falls back to mp4 (camera-roll
+# exports); anything off the allowlist never reaches here (rejected earlier).
+_UPLOAD_EXT_BY_MIME: dict[str, str] = {
+    "audio/m4a": "m4a",
+    "audio/mp4": "m4a",
+    "audio/aac": "aac",
+    "audio/mpeg": "mp3",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "application/pdf": "pdf",
+}
+
+
+def _upload_extension_for(file_type: str) -> str:
+    """Map an upload MIME type to its stored file extension."""
+    if file_type in _UPLOAD_EXT_BY_MIME:
+        return _UPLOAD_EXT_BY_MIME[file_type]
+    if "video" in file_type:
+        return "mp4"
+    return "bin"
+
+
+# Common non-canonical MIME types clients send (image pickers, older Androids)
+# normalized to the canonical type the allowlist accepts. image/jpg is the big
+# one — gallery pickers report it but it isn't a registered MIME type.
+_MIME_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+    "audio/x-m4a": "audio/m4a",
+    "audio/x-aac": "audio/aac",
+    "video/mov": "video/quicktime",
+    "video/x-quicktime": "video/quicktime",
+}
+
+# Extension → web-playable MIME, used to set the presigned URL's
+# ResponseContentType so the share viewer's <audio>/<video>/<img> treat the
+# file as media even if S3 stored a generic/incorrect Content-Type. Note: m4a
+# is served as audio/mp4 (the type browsers actually play).
+_MEDIA_MIME_BY_EXT = {
+    "m4a": "audio/mp4",
+    "mp4": "video/mp4",
+    "m4v": "video/x-m4v",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "aac": "audio/aac",
+    "wav": "audio/wav",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "pdf": "application/pdf",
+}
+
+
+def _playable_content_type(mime: Optional[str], name: Optional[str]) -> Optional[str]:
+    """Best web-playable Content-Type for a shared attachment.
+
+    Prefers a concrete stored mime (normalizing m4a→audio/mp4 so browsers play
+    it); otherwise infers from the filename/key extension.
+    """
+    if mime and mime != "application/octet-stream":
+        m = mime.strip().lower()
+        if m in ("audio/m4a", "audio/x-m4a"):
+            return "audio/mp4"
+        return _MIME_ALIASES.get(m, m)
+    ext = (name or "").rsplit(".", 1)[-1].lower() if name else ""
+    return _MEDIA_MIME_BY_EXT.get(ext)
+
+
+def _normalize_mime(file_type: Optional[str]) -> str:
+    """Lowercase + map known aliases (e.g. image/jpg -> image/jpeg)."""
+    ct = (file_type or "").strip().lower()
+    return _MIME_ALIASES.get(ct, ct)
+
 
 # Pattern that flags a presigned S3 URL. We refuse to write any of these
 # query-string parameters back into DynamoDB via update_echo, because
@@ -188,6 +279,18 @@ class EchoService:
         self.presigned_url_expiry = int(
             os.getenv("PRESIGNED_URL_EXPIRY", "3600")
         )  # 1 hour
+
+        # AWS Elemental MediaConvert — transcodes iOS .mov/HEVC videos to a
+        # web-playable H.264/AAC MP4 so they play in every browser (not just
+        # Safari) from the email-share viewer. Role is the IAM role MediaConvert
+        # assumes to read/write S3; endpoint is account/region-specific and
+        # discovered lazily (cached for the process lifetime).
+        self.mediaconvert_role_arn = os.getenv("MEDIACONVERT_ROLE_ARN", "")
+        self.mediaconvert_queue = os.getenv("MEDIACONVERT_QUEUE") or None
+        self.transcode_output_prefix = os.getenv(
+            "TRANSCODE_OUTPUT_PREFIX", "transcoded/"
+        )
+        self._mc_endpoint: Optional[str] = None
 
         # Initialize aioboto3 session
         self.session = aioboto3.Session()
@@ -378,9 +481,15 @@ class EchoService:
 
             logger.info(f"Created echo {echo.echo_id} for user {user_id}")
 
-            # Auto-release: Check if immediate release is needed
+            # Auto-release: Check if immediate release is needed.
+            # defer_release lets a client that uploads attachments AFTER create
+            # (then calls release explicitly) suppress the premature create-time
+            # send — otherwise the email goes out before the attachments exist
+            # and with no chance to resolve the sender name.
             should_release_now = False
-            if echo.recipient_id and not echo.guardian_id:
+            if data.get("defer_release"):
+                should_release_now = False
+            elif echo.recipient_id and not echo.guardian_id:
                 if not echo.release_date:
                     # No scheduled date → release immediately
                     should_release_now = True
@@ -431,14 +540,20 @@ class EchoService:
                             # Check if recipient is registered (has recipient_user_id)
                             is_registered = recipient.recipient_user_id is not None
 
+                            media_fields = await self.build_email_media_fields(
+                                echo, recipient.recipient_id
+                            )
                             await email_service.send_echo_notification(
                                 recipient_email=recipient.email,
                                 recipient_name=recipient.name,
-                                sender_name=user_id,  # TODO: fetch actual user name
+                                sender_name=await self._resolve_sender_name(user_id),
                                 echo_title=echo.title,
                                 echo_category=echo.category,
                                 echo_type=echo.echo_type.value,
                                 is_registered=is_registered,
+                                quote=echo.letter_to_recipient or echo.content,
+                                echo_date=echo.release_date or echo.updated_at,
+                                **media_fields,
                             )
                             logger.info(
                                 f"Sent auto-release notification for echo {echo.echo_id} (registered={is_registered})"
@@ -1023,6 +1138,25 @@ class EchoService:
             logger.error(f"Error deleting echo: {e}")
             return False
 
+    async def _resolve_sender_name(self, user_id: str) -> str:
+        """Display name for the echo email's 'from' line.
+
+        Used by BOTH release paths (manual release_echo + create_echo's
+        auto-release). NEVER returns the raw user_id UUID — falls back to a
+        friendly generic when the sender's profile has no name.
+        """
+        try:
+            profile = await self.dynamodb_service.get_user_profile(user_id)
+            if profile and profile.full_name:
+                return profile.full_name
+        except Exception as e:  # noqa: BLE001 - non-fatal enrichment
+            logger.warning(f"Could not resolve sender name for {user_id}: {e}")
+            return "Someone"
+        logger.warning(
+            f"No profile/name for sender {user_id}; using generic sender name."
+        )
+        return "Someone"
+
     async def release_echo(self, echo_id: str, user_id: str) -> Echo:
         """
         Directly release an echo to its recipient (no-guardian path).
@@ -1091,15 +1225,21 @@ class EchoService:
                 # Check if recipient is registered (has recipient_user_id)
                 is_registered = recipient.recipient_user_id is not None
 
+                media_fields = await self.build_email_media_fields(
+                    echo, recipient.recipient_id
+                )
+                sender_name = await self._resolve_sender_name(user_id)
                 await email_service.send_echo_notification(
                     recipient_email=recipient.email,
                     recipient_name=recipient.name,
-                    sender_name=user_id,  # Caller's display name not available here;
-                    # use user_id as fallback — routes layer can enrich if desired
+                    sender_name=sender_name,
                     echo_title=echo.title,
                     echo_category=echo.category,
                     echo_type=echo.echo_type.value,
                     is_registered=is_registered,
+                    quote=echo.letter_to_recipient or echo.content,
+                    echo_date=echo.release_date or echo.updated_at,
+                    **media_fields,
                 )
                 logger.info(
                     f"Sent echo notification for {echo_id} (registered={is_registered})"
@@ -1126,8 +1266,12 @@ class EchoService:
           GSI on `status` and switch this to a query.
         - Per-echo release calls are guarded so one failure does not abort
           the whole batch. Failures are counted and logged but not raised.
-        - Skips items where `release_date` is missing (no schedule = nothing
-          for the scheduler to act on; manual release path is unaffected).
+        - Also rescues "stranded" instant echoes: a DRAFT with a recipient,
+          no guardian and no release_date that's older than a 15-min grace
+          window — i.e. an instant echo whose client created it (defer_release)
+          but never reached the explicit release call (e.g. app force-quit
+          between upload and release). The grace window guarantees we never
+          race a live save.
         - The release_echo call enforces the standard preconditions
           (recipient required, no guardian, still DRAFT) — anything not
           eligible falls into the failed count and is logged.
@@ -1140,6 +1284,17 @@ class EchoService:
         from boto3.dynamodb.conditions import Attr
 
         now_iso = _current_timestamp()
+        # Grace window for stranded instant echoes: an instant echo (recipient,
+        # no lock date) is created with defer_release and released by the client
+        # right after uploading its attachments. If the app is force-quit between
+        # upload and release, it's left as a DRAFT with no release_date — the
+        # normal scan never catches it. Rescue such drafts once they're older
+        # than the grace window (long enough that we never race a live save).
+        instant_cutoff_iso = (
+            (datetime.now(timezone.utc) - timedelta(minutes=15))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         scanned = released = skipped = failed = 0
         errors: List[str] = []
 
@@ -1149,11 +1304,22 @@ class EchoService:
 
             # Page through scan results — DynamoDB caps single-page size
             # to 1MB, so we loop on ExclusiveStartKey for large tables.
+            # Matches EITHER a scheduled echo whose release_date has passed, OR a
+            # stranded instant draft (no release_date, has a recipient, no
+            # guardian, older than the grace window).
             scan_kwargs: Dict[str, Any] = {
                 "FilterExpression": (
                     Attr("status").eq(EchoStatus.DRAFT.value)
-                    & Attr("release_date").lte(now_iso)
                     & Attr("deleted_at").not_exists()
+                    & (
+                        Attr("release_date").lte(now_iso)
+                        | (
+                            Attr("release_date").not_exists()
+                            & Attr("recipient_id").exists()
+                            & Attr("guardian_id").not_exists()
+                            & Attr("created_at").lte(instant_cutoff_iso)
+                        )
+                    )
                 ),
             }
 
@@ -1328,6 +1494,13 @@ class EchoService:
         Raises:
             ValidationError: ``file_type`` is not on the upload allowlist.
         """
+        # The presigned PUT signs Content-Type, so the value we sign MUST equal
+        # the Content-Type header the client sends — otherwise S3 rejects the
+        # PUT with 403 SignatureDoesNotMatch. The client sends back the exact
+        # string it passed here, so sign THAT (requested_type). We normalize a
+        # separate copy only for the allowlist check + extension mapping.
+        requested_type = file_type
+        file_type = _normalize_mime(file_type)
         if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
             raise ValidationError(
                 f"Unsupported media type '{file_type}'. "
@@ -1347,32 +1520,9 @@ class EchoService:
             )
 
         try:
-            # Determine file extension from MIME type. Audio + image have
-            # multiple legitimate types, so use explicit maps; video is
-            # uniformly stored as .mp4 (camera roll exports).
-            audio_map = {
-                "audio/m4a": "m4a",
-                "audio/mp4": "m4a",
-                "audio/aac": "aac",
-                "audio/mpeg": "mp3",
-            }
-            image_map = {
-                "image/jpeg": "jpg",
-                "image/png": "png",
-                "image/webp": "webp",
-                "image/heic": "heic",
-            }
-            if file_type in audio_map:
-                extension = audio_map[file_type]
-            elif file_type in image_map:
-                extension = image_map[file_type]
-            elif "video" in file_type:
-                extension = "mp4"
-            else:
-                # Should never hit — allowlist check above already filtered
-                # everything that isn't audio/image/video. Default to mp4
-                # purely as defense.
-                extension = "mp4"
+            # Single source of truth for MIME → extension (audio/image/pdf
+            # explicit, video → mp4). See _upload_extension_for.
+            extension = _upload_extension_for(file_type)
 
             timestamp_iso = _current_timestamp()
             timestamp_compact = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -1410,7 +1560,9 @@ class EchoService:
             put_params: Dict[str, Any] = {
                 "Bucket": self.s3_bucket,
                 "Key": key,
-                "ContentType": file_type,
+                # Sign the client's exact Content-Type (not the normalized one)
+                # so the PUT header matches the signature — see requested_type.
+                "ContentType": requested_type,
                 "CacheControl": _PUT_CACHE_CONTROL,
                 "Tagging": tagging,
                 "Metadata": metadata,
@@ -1633,6 +1785,7 @@ class EchoService:
             ValidationError: ``file_type`` isn't allowlisted, or the echo
                 already has media attached.
         """
+        file_type = _normalize_mime(file_type)
         if file_type not in ALLOWED_UPLOAD_MIME_TYPES:
             raise ValidationError(
                 f"Unsupported media type '{file_type}'. "
@@ -1653,27 +1806,8 @@ class EchoService:
         if echo.media_url:
             raise ValidationError("Echo media has already been finalized")
 
-        # Determine extension — same logic as the single-PUT path.
-        audio_map = {
-            "audio/m4a": "m4a",
-            "audio/mp4": "m4a",
-            "audio/aac": "aac",
-            "audio/mpeg": "mp3",
-        }
-        image_map = {
-            "image/jpeg": "jpg",
-            "image/png": "png",
-            "image/webp": "webp",
-            "image/heic": "heic",
-        }
-        if file_type in audio_map:
-            extension = audio_map[file_type]
-        elif file_type in image_map:
-            extension = image_map[file_type]
-        elif "video" in file_type:
-            extension = "mp4"
-        else:
-            extension = "mp4"
+        # Same MIME → extension logic as the single-PUT path.
+        extension = _upload_extension_for(file_type)
 
         timestamp_iso = _current_timestamp()
         timestamp_compact = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -2146,6 +2280,660 @@ class EchoService:
 
         logger.info(f"Attached poster to echo {echo_id}: key={key!r}")
         return echo
+
+    # ========================================
+    # ATTACHMENTS (multiple media per echo)
+    # ========================================
+
+    def _canonical_url(self, key: str) -> str:
+        """Canonical (non-presigned) S3 URL for an object key."""
+        return f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
+
+    @staticmethod
+    def _attachment_type_for(content_type: Optional[str], key: str) -> AttachmentType:
+        """Classify an attachment from its content-type, falling back to ext."""
+        ct = (content_type or "").lower()
+        if ct.startswith("image/"):
+            return AttachmentType.IMAGE
+        if ct.startswith("video/"):
+            return AttachmentType.VIDEO
+        if ct.startswith("audio/"):
+            return AttachmentType.AUDIO
+        lowered = key.lower()
+        if lowered.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic")):
+            return AttachmentType.IMAGE
+        if lowered.endswith((".mp4", ".mov", ".m4v")):
+            return AttachmentType.VIDEO
+        if lowered.endswith((".m4a", ".mp3", ".aac", ".wav", ".ogg")):
+            return AttachmentType.AUDIO
+        return AttachmentType.FILE
+
+    async def _head_object_or_raise(
+        self, key: str, content_type: Optional[str], *, what: str
+    ) -> Dict[str, Any]:
+        """HeadObject with the same error posture as finalize_upload."""
+        try:
+            s3 = await self._get_s3_client()
+            return await s3.head_object(Bucket=self.s3_bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                raise NotFoundError(
+                    f"No uploaded {what} at s3://{self.s3_bucket}/{key}"
+                )
+            if code in ("403", "AccessDenied", "Forbidden"):
+                logger.error(f"HeadObject access denied for {what} {key}: {e}")
+                raise InternalServerError(f"Failed to verify uploaded {what}")
+            logger.error(f"HeadObject failed for {what} {key}: {e}")
+            raise InternalServerError(f"Failed to verify uploaded {what}")
+
+    async def _presign_get(
+        self, url: Optional[str], expires: int = 21600
+    ) -> Optional[str]:
+        """Presign a canonical S3 URL for GET. No-op for non-S3 / already-signed.
+
+        Guards against double-signing: a URL that already carries query params
+        (a presigned URL) is returned untouched, so callers can pass an echo
+        whose media has already been signed by ``get_echo`` without corrupting
+        the key.
+        """
+        if not url or "amazonaws.com" not in url:
+            return url
+        if "?" in url or "X-Amz-Signature" in url:
+            return url  # already presigned
+        try:
+            key = url.split("amazonaws.com/")[-1]
+            s3 = await self._get_s3_client()
+            return await s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.s3_bucket, "Key": key},
+                ExpiresIn=expires,
+            )
+        except Exception as e:
+            logger.error(f"Failed to presign URL {url!r}: {e}")
+            return url
+
+    # ========================================
+    # VIDEO TRANSCODING (AWS Elemental MediaConvert)
+    # ========================================
+
+    def _video_job_settings(self, input_key: str, output_prefix: str) -> Dict[str, Any]:
+        """Minimal H.264 (QVBR) + AAC MP4 job for broad browser playback."""
+        return {
+            "TimecodeConfig": {"Source": "ZEROBASED"},
+            "Inputs": [
+                {
+                    "FileInput": f"s3://{self.s3_bucket}/{input_key}",
+                    "TimecodeSource": "ZEROBASED",
+                    "VideoSelector": {"Rotate": "AUTO"},
+                    "AudioSelectors": {
+                        "Audio Selector 1": {"DefaultSelection": "DEFAULT"}
+                    },
+                }
+            ],
+            "OutputGroups": [
+                {
+                    "Name": "File Group",
+                    "OutputGroupSettings": {
+                        "Type": "FILE_GROUP_SETTINGS",
+                        "FileGroupSettings": {
+                            "Destination": f"s3://{self.s3_bucket}/{output_prefix}"
+                        },
+                    },
+                    "Outputs": [
+                        {
+                            "ContainerSettings": {
+                                "Container": "MP4",
+                                "Mp4Settings": {},
+                            },
+                            "VideoDescription": {
+                                "CodecSettings": {
+                                    "Codec": "H_264",
+                                    "H264Settings": {
+                                        "RateControlMode": "QVBR",
+                                        "MaxBitrate": 5000000,
+                                        "SceneChangeDetect": "TRANSITION_DETECTION",
+                                    },
+                                },
+                            },
+                            "AudioDescriptions": [
+                                {
+                                    "CodecSettings": {
+                                        "Codec": "AAC",
+                                        "AacSettings": {
+                                            "Bitrate": 96000,
+                                            "CodingMode": "CODING_MODE_2_0",
+                                            "SampleRate": 48000,
+                                        },
+                                    }
+                                }
+                            ],
+                            "NameModifier": "-web",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    async def _submit_video_transcode(
+        self, echo_id: str, attachment_id: str, input_key: str
+    ) -> None:
+        """Best-effort: kick off a MediaConvert job for one video attachment.
+
+        Output lands under ``transcode_output_prefix/<echo_id>/`` and the job
+        carries echo_id + attachment_id in UserMetadata so the completion
+        handler (transcode_complete_job) can write ``playable_url`` back onto the
+        attachment. Failures are logged, never raised — the upload still
+        succeeds and the viewer falls back to the original file.
+        """
+        if not self.mediaconvert_role_arn:
+            logger.warning(
+                "MEDIACONVERT_ROLE_ARN not set — skipping video transcode "
+                f"for echo {echo_id} attachment {attachment_id}"
+            )
+            return
+        try:
+            output_prefix = f"{self.transcode_output_prefix}{echo_id}/"
+            kwargs: Dict[str, Any] = {
+                "Role": self.mediaconvert_role_arn,
+                "Settings": self._video_job_settings(input_key, output_prefix),
+                "UserMetadata": {
+                    "echo_id": echo_id,
+                    "attachment_id": attachment_id,
+                },
+            }
+            if self.mediaconvert_queue:
+                kwargs["Queue"] = self.mediaconvert_queue
+            # MediaConvert requires the account/region endpoint; discover once.
+            if not self._mc_endpoint:
+                async with self.session.client(
+                    "mediaconvert", region_name=self.region
+                ) as mc_disco:
+                    eps = await mc_disco.describe_endpoints()
+                    self._mc_endpoint = eps["Endpoints"][0]["Url"]
+            async with self.session.client(
+                "mediaconvert",
+                region_name=self.region,
+                endpoint_url=self._mc_endpoint,
+            ) as mc:
+                job = await mc.create_job(**kwargs)
+            logger.info(
+                f"Submitted transcode job {job['Job']['Id']} for echo {echo_id} "
+                f"attachment {attachment_id}"
+            )
+        except Exception as e:  # noqa: BLE001 - transcode is best-effort
+            logger.warning(
+                f"Transcode submit failed (non-fatal) for echo {echo_id} "
+                f"attachment {attachment_id}: {e}"
+            )
+
+    async def set_attachment_playable_url(
+        self, echo_id: str, attachment_id: str, playable_url: str
+    ) -> bool:
+        """Persist the transcoded web rendition URL onto an attachment.
+
+        Called by the MediaConvert completion handler. Returns False if the
+        echo/attachment is gone (e.g. draft deleted before transcode finished).
+        """
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            resp = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading echo for playable_url: {e}")
+            return False
+        if "Item" not in resp:
+            logger.warning(f"playable_url: echo {echo_id} not found")
+            return False
+        echo = Echo.from_dynamodb_item(resp["Item"])
+        updated = False
+        for a in echo.attachments:
+            if a.attachment_id == attachment_id:
+                a.playable_url = playable_url
+                updated = True
+                break
+        if not updated:
+            logger.warning(
+                f"playable_url: attachment {attachment_id} not on echo {echo_id}"
+            )
+            return False
+        echo.updated_at = _current_timestamp()
+        try:
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed setting playable_url: {e}")
+            return False
+        logger.info(f"Set playable_url on echo {echo_id} attachment {attachment_id}")
+        return True
+
+    async def add_attachment(
+        self,
+        echo_id: str,
+        user_id: str,
+        key: str,
+        *,
+        content_type: Optional[str] = None,
+        duration: Optional[str] = None,
+        thumb_key: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> Echo:
+        """Verify an uploaded S3 object and APPEND it as an echo attachment.
+
+        Mirrors ``finalize_upload``'s server-side guarantees (owner-only,
+        tenancy prefix, HeadObject proof-of-life) but appends to
+        ``echo.attachments`` instead of the single ``media_url`` slot — so an
+        echo can carry a text message plus multiple photos/videos/voice notes.
+
+        The echo is loaded RAW (no URL signing) so existing attachments keep
+        their canonical URLs when we persist; signing happens only on read.
+
+        Args:
+            echo_id: Echo to attach to.
+            user_id: Caller (must own the echo).
+            key: S3 object key the client just PUT to.
+            content_type: Caller hint when HeadObject has none.
+            duration: Optional display duration ("2:32") for audio/video.
+            thumb_key: Optional poster/preview object key (same namespace).
+            filename: Optional original filename (for FILE attachments).
+
+        Returns:
+            The updated Echo (attachments carry canonical URLs).
+        """
+        # Raw load (no signing) + owner check.
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading echo for add_attachment: {e}")
+            raise InternalServerError(f"Failed to load echo: {str(e)}")
+        if "Item" not in response:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        echo = Echo.from_dynamodb_item(response["Item"])
+        if echo.user_id != user_id:
+            logger.warning(
+                f"add_attachment owner reject: caller={user_id} "
+                f"owner={echo.user_id} echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+
+        # Tenancy: object must live under this echo's namespace.
+        expected_prefix = f"echoes/{user_id}/{echo_id}_"
+        if not key.startswith(expected_prefix):
+            logger.warning(
+                f"add_attachment tenancy reject: user={user_id} echo={echo_id} "
+                f"key={key!r}"
+            )
+            raise ValidationError("Object key does not belong to this echo")
+
+        head = await self._head_object_or_raise(key, content_type, what="attachment")
+        s3_content_type = head.get("ContentType") or content_type
+        s3_size = int(head.get("ContentLength") or 0)
+
+        # Optional thumbnail (poster for video / preview for image).
+        thumb_url: Optional[str] = None
+        if thumb_key:
+            if not thumb_key.startswith(expected_prefix):
+                raise ValidationError("Thumbnail key does not belong to this echo")
+            await self._head_object_or_raise(thumb_key, None, what="thumbnail")
+            thumb_url = self._canonical_url(thumb_key)
+
+        att_type = self._attachment_type_for(s3_content_type, key)
+        media_url = self._canonical_url(key)
+        new_attachment = Attachment(
+            type=att_type,
+            media_url=media_url,
+            thumb_url=thumb_url,
+            mime_type=s3_content_type,
+            size_bytes=s3_size or None,
+            duration=duration,
+            filename=filename,
+        )
+        echo.attachments.append(new_attachment)
+
+        # Back-compat: mirror the first audio/video attachment into the legacy
+        # media_url/echo_type slot and the first poster/image into poster_url,
+        # so single-media readers and the email hero keep working unchanged.
+        if (
+            att_type in (AttachmentType.AUDIO, AttachmentType.VIDEO)
+            and not echo.media_url
+        ):
+            echo.media_url = media_url
+            echo.echo_type = (
+                EchoType.AUDIO if att_type == AttachmentType.AUDIO else EchoType.VIDEO
+            )
+        if not echo.poster_url:
+            if thumb_url:
+                echo.poster_url = thumb_url
+            elif att_type == AttachmentType.IMAGE:
+                echo.poster_url = media_url
+
+        echo.updated_at = _current_timestamp()
+        try:
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed during add_attachment: {e}")
+            raise InternalServerError(f"Failed to commit attachment: {str(e)}")
+
+        logger.info(
+            f"Added {att_type.value} attachment to echo {echo_id}: key={key} "
+            f"size={s3_size} content_type={s3_content_type}"
+        )
+
+        # Kick off a web-playable transcode for videos (best-effort; the
+        # completion handler writes playable_url back). Done after the DDB
+        # commit so the attachment_id is already persisted.
+        if att_type == AttachmentType.VIDEO:
+            await self._submit_video_transcode(
+                echo_id, new_attachment.attachment_id, key
+            )
+
+        return echo
+
+    async def remove_attachment(
+        self, echo_id: str, user_id: str, attachment_id: str
+    ) -> Echo:
+        """Remove an attachment from a DRAFT echo (owner-only).
+
+        Only editable while the echo is still a DRAFT (not yet sent). Hard-removes
+        the attachment from the list — the S3 object is left for lifecycle cleanup
+        (the echo was never delivered, so this isn't the soft-delete case). The
+        legacy media_url/poster_url/echo_type mirror fields are recomputed from
+        whatever attachments remain so single-media readers stay consistent.
+        """
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading echo for remove_attachment: {e}")
+            raise InternalServerError(f"Failed to load echo: {str(e)}")
+        if "Item" not in response:
+            raise NotFoundError(f"Echo {echo_id} not found")
+        echo = Echo.from_dynamodb_item(response["Item"])
+        if echo.user_id != user_id:
+            logger.warning(
+                f"remove_attachment owner reject: caller={user_id} "
+                f"owner={echo.user_id} echo={echo_id}"
+            )
+            raise NotFoundError(f"Echo {echo_id} not found")
+        if echo.status != EchoStatus.DRAFT:
+            raise ValidationError("Only draft echoes can be edited")
+
+        before = len(echo.attachments)
+        echo.attachments = [
+            a for a in echo.attachments if a.attachment_id != attachment_id
+        ]
+        if len(echo.attachments) == before:
+            raise NotFoundError(f"Attachment {attachment_id} not found")
+
+        # Recompute the legacy mirror fields from the remaining attachments.
+        first_av = next(
+            (
+                a
+                for a in echo.attachments
+                if a.type in (AttachmentType.AUDIO, AttachmentType.VIDEO)
+            ),
+            None,
+        )
+        if first_av:
+            echo.media_url = first_av.media_url
+            echo.echo_type = (
+                EchoType.AUDIO
+                if first_av.type == AttachmentType.AUDIO
+                else EchoType.VIDEO
+            )
+        else:
+            echo.media_url = None
+            echo.echo_type = EchoType.TEXT
+        echo.poster_url = next(
+            (a.thumb_url for a in echo.attachments if a.thumb_url),
+            next(
+                (
+                    a.media_url
+                    for a in echo.attachments
+                    if a.type == AttachmentType.IMAGE
+                ),
+                None,
+            ),
+        )
+
+        echo.updated_at = _current_timestamp()
+        try:
+            await table.put_item(Item=echo.to_dynamodb_item())
+        except ClientError as e:
+            logger.error(f"DynamoDB write failed during remove_attachment: {e}")
+            raise InternalServerError(f"Failed to commit removal: {str(e)}")
+
+        logger.info(f"Removed attachment {attachment_id} from echo {echo_id}")
+        return echo
+
+    async def sign_attachments(self, echo: Echo) -> Echo:
+        """Presign every attachment's media_url + thumb_url in place (6h TTL).
+
+        Call at the response boundary only — never before a persist, or signed
+        URLs get written back to DynamoDB.
+        """
+        for att in echo.attachments:
+            signed = await self._presign_get(att.media_url)
+            if signed:
+                att.media_url = signed
+            if att.thumb_url:
+                att.thumb_url = await self._presign_get(att.thumb_url)
+        return echo
+
+    async def build_email_media_fields(
+        self, echo: Echo, recipient_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Derive the email template's media fields from an echo's attachments.
+
+        Returns keys understood by ``email_service.send_echo_notification``:
+        ``attachment_count``, ``media_duration``, ``hero_image_url``,
+        ``attachment_thumb_url``, and (when ``recipient_id`` is given)
+        ``open_echo_url`` / ``attachment_url`` pointing at the tokenized public
+        share viewer so the recipient can play/download every attachment
+        without the app and without stale links.
+
+        When the echo has an image attachment, hero/thumb point at the durable
+        share-attachment endpoint (re-signs on every fetch, never expires) so the
+        email shows the recipient's actual attached image. A/V posters (no image
+        attachment) use a 7-day presigned URL; echoes with no image fall back to
+        the template's default asset.
+        """
+        atts = echo.attachments or []
+        fields: Dict[str, Any] = {"attachment_count": len(atts)}
+
+        token: Optional[str] = None
+        if recipient_id:
+            token = create_share_token(echo.echo_id, recipient_id)
+            share_url = build_share_url(echo.echo_id, token)
+            fields["open_echo_url"] = share_url
+            fields["attachment_url"] = share_url
+
+        primary_av = next(
+            (a for a in atts if a.type in (AttachmentType.AUDIO, AttachmentType.VIDEO)),
+            None,
+        )
+        if primary_av and primary_av.duration:
+            fields["media_duration"] = primary_av.duration
+
+        hero = next((a for a in atts if a.type == AttachmentType.IMAGE), None)
+        if hero and token:
+            # Hero/thumb show the recipient's ACTUAL attached image via the
+            # durable share-attachment endpoint (302 -> fresh presigned URL on
+            # every fetch), so the inline image never expires — unlike a one-shot
+            # 7-day presigned URL. The template's static default only renders
+            # when an echo has no image attachment at all.
+            img_url = build_share_attachment_url(
+                echo.echo_id, hero.attachment_id, token, mode="view"
+            )
+            fields["hero_image_url"] = img_url
+            fields["attachment_thumb_url"] = img_url
+        else:
+            # No image attachment (voice/video-only) — presign the A/V poster
+            # thumb if there is one; otherwise the template falls back to its
+            # default asset. (The redirect endpoint serves the media file, not a
+            # separate poster object, so posters still use a presigned URL.)
+            if primary_av and primary_av.thumb_url:
+                thumb_source: Optional[str] = primary_av.thumb_url
+            elif hero:
+                thumb_source = hero.thumb_url or hero.media_url
+            else:
+                thumb_source = echo.poster_url
+            if thumb_source:
+                signed = await self._presign_get(thumb_source, expires=604800)
+                fields["hero_image_url"] = signed
+                fields["attachment_thumb_url"] = signed
+
+        # Per-attachment blocks: the template renders EACH one in order
+        # (image / video / audio / file) — Figma 7539:4157. `link` is the share
+        # viewer so the recipient can play/download every item.
+        view_url = fields.get("open_echo_url", "")
+        media_blocks: List[Dict[str, Any]] = []
+        for a in atts:
+            name = a.filename or f"{a.type.value.lower()} attachment"
+            block: Dict[str, Any] = {
+                "name": name,
+                "duration": a.duration or "",
+                "link": view_url,
+                "image": "",
+            }
+            if a.type == AttachmentType.IMAGE:
+                block["kind"] = "IMAGE"
+                # Durable inline URL → the actual image, never expires.
+                block["image"] = (
+                    build_share_attachment_url(
+                        echo.echo_id, a.attachment_id, token, mode="view"
+                    )
+                    if token
+                    else (a.media_url or "")
+                )
+            elif a.type == AttachmentType.VIDEO:
+                block["kind"] = "VIDEO"
+                # Poster: re-presign the thumbnail with the 7-day max so the
+                # still renders in the email (template falls back to the default
+                # hero if there's no poster).
+                if a.thumb_url:
+                    block["image"] = await self._presign_get(
+                        a.thumb_url, expires=604800
+                    )
+            elif a.type == AttachmentType.AUDIO:
+                block["kind"] = "AUDIO"  # template draws the waveform asset
+            else:
+                block["kind"] = "FILE"  # template uses the default thumb asset
+            media_blocks.append(block)
+        fields["media_blocks"] = media_blocks
+        return fields
+
+    # ========================================
+    # PUBLIC SHARE (tokenized recipient viewer)
+    # ========================================
+
+    async def get_shared_echo(self, echo_id: str, recipient_id: str) -> Optional[Echo]:
+        """Load an echo for the public viewer (token already verified upstream).
+
+        No authenticated user — access is authorized by the share token, which
+        binds echo_id + recipient_id. Returns the echo with CANONICAL attachment
+        URLs (the viewer routes media through the redirect endpoint, not signed
+        URLs). Only RELEASED, non-deleted echoes addressed to this recipient are
+        shareable — never drafts.
+        """
+        try:
+            dynamodb = await self._get_dynamodb_resource()
+            table = await dynamodb.Table(self.echoes_table)
+            response = await table.get_item(Key={"echo_id": echo_id})
+        except ClientError as e:
+            logger.error(f"DynamoDB error loading shared echo {echo_id}: {e}")
+            return None
+        if "Item" not in response:
+            return None
+        echo = Echo.from_dynamodb_item(response["Item"])
+        if echo.recipient_id != recipient_id:
+            return None
+        if echo.deleted_at:
+            return None
+        if echo.status != EchoStatus.RELEASED:
+            return None
+        return echo
+
+    async def _presign_get_with_disposition(
+        self,
+        url: Optional[str],
+        *,
+        download: bool,
+        filename: Optional[str] = None,
+        content_type: Optional[str] = None,
+        expires: int = 21600,
+    ) -> Optional[str]:
+        """Presign a canonical S3 URL.
+
+        ``download`` forces a save via Content-Disposition; ``content_type``
+        overrides the object's stored Content-Type on the response so the share
+        viewer's <audio>/<video>/<img> treat it as playable media (S3 sometimes
+        stores a generic type that browsers won't play inline).
+        """
+        if not url or "amazonaws.com" not in url:
+            return url
+        key = url.split("amazonaws.com/")[-1]
+        params: Dict[str, Any] = {"Bucket": self.s3_bucket, "Key": key}
+        if content_type:
+            params["ResponseContentType"] = content_type
+        if download:
+            name = filename or key.split("/")[-1]
+            params["ResponseContentDisposition"] = f'attachment; filename="{name}"'
+        try:
+            s3 = await self._get_s3_client()
+            return await s3.generate_presigned_url(
+                "get_object", Params=params, ExpiresIn=expires
+            )
+        except Exception as e:
+            logger.error(f"Failed to presign shared URL {url!r}: {e}")
+            return None
+
+    async def presign_shared_attachment(
+        self,
+        echo_id: str,
+        recipient_id: str,
+        attachment_id: str,
+        *,
+        download: bool,
+    ) -> Optional[str]:
+        """Resolve a shared attachment to a fresh presigned URL.
+
+        ``attachment_id == "primary"`` resolves the legacy single ``media_url``
+        (echoes created before the attachments model). Returns None if the echo
+        isn't shareable or the attachment doesn't exist.
+        """
+        echo = await self.get_shared_echo(echo_id, recipient_id)
+        if not echo:
+            return None
+        mime: Optional[str] = None
+        if attachment_id == "primary":
+            url: Optional[str] = echo.media_url
+            filename: Optional[str] = None
+        else:
+            att = next(
+                (a for a in echo.attachments if a.attachment_id == attachment_id),
+                None,
+            )
+            if not att:
+                return None
+            url = att.media_url
+            filename = att.filename
+            mime = att.mime_type
+            # For inline viewing, prefer the transcoded web rendition so video
+            # plays in every browser (the original may be HEVC/.mov). Downloads
+            # keep the original. Falls back to the original if not transcoded yet.
+            if not download and att.type == AttachmentType.VIDEO and att.playable_url:
+                url = att.playable_url
+                mime = "video/mp4"
+        # Override the response Content-Type so browsers play the media inline
+        # even if S3 stored a generic/incorrect type (key fix for "video not
+        # playable" / "audio error" in the email-link viewer).
+        content_type = _playable_content_type(mime, filename or url)
+        return await self._presign_get_with_disposition(
+            url, download=download, filename=filename, content_type=content_type
+        )
 
     # ========================================
     # RECIPIENT CRUD OPERATIONS

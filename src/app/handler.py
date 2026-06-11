@@ -19,6 +19,7 @@ from .api.models import HealthResponse
 from .api.practice_routes import router as practice_router
 from .api.reflection_routes import router as reflection_router
 from .api.routes import router as api_router
+from .api.share_routes import router as share_router
 from .api.soul_ping_routes import router as soul_ping_router
 from .api.subscription_routes import router as subscription_router
 from .api.telemetry_routes import router as telemetry_router
@@ -221,6 +222,9 @@ app.include_router(practice_router, prefix="/api")
 app.include_router(me_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
 app.include_router(soul_ping_router, prefix="/api")
+
+# Public tokenized echo viewer (no /api prefix — recipient-facing share links).
+app.include_router(share_router)
 
 # lifespan="off" skips Starlette's startup/shutdown probe on every cold start.
 # We had no real lifespan handlers to run anyway (the previous on_event(startup)

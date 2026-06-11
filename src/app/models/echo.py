@@ -3,7 +3,7 @@ Echo Vault models for DynamoDB persistence.
 Includes Echo, Recipient, and Guardian entities.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -16,6 +16,15 @@ class EchoType(Enum):
     TEXT = "TEXT"
     AUDIO = "AUDIO"
     VIDEO = "VIDEO"
+
+
+class AttachmentType(Enum):
+    """Type of a single media attachment on an echo."""
+
+    IMAGE = "IMAGE"  # photo (jpg/png) — gallery or file
+    VIDEO = "VIDEO"  # recorded or picked video
+    AUDIO = "AUDIO"  # voice recording / audio file
+    FILE = "FILE"  # other documents (e.g. pdf)
 
 
 class EchoStatus(Enum):
@@ -51,6 +60,55 @@ def _current_timestamp() -> str:
 
 
 @dataclass
+class Attachment:
+    """A single media attachment on an echo.
+
+    An echo carries a text ``content`` plus zero or more attachments
+    (photo/video/voice/file). ``media_url`` holds the canonical (non-presigned)
+    S3 URL — the service signs it on read. ``duration`` is a display string
+    like ``"2:32"`` for audio/video.
+    """
+
+    attachment_id: str = field(default_factory=_generate_id)
+    type: AttachmentType = AttachmentType.FILE
+    media_url: str = ""  # canonical S3 URL; signed on read
+    # Web-playable H.264/AAC MP4 rendition (set by the MediaConvert pipeline
+    # once transcoding of an iOS .mov/HEVC video completes). The share viewer
+    # plays this so video works in every browser, not just Safari.
+    playable_url: Optional[str] = None
+    thumb_url: Optional[str] = None  # poster/thumbnail for video/image
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    duration: Optional[str] = None  # "2:32" for audio/video
+    filename: Optional[str] = None
+    created_at: str = field(default_factory=_current_timestamp)
+
+    def to_dynamodb_item(self) -> Dict[str, Any]:
+        """Serialize to a DynamoDB-safe map (enum -> str, drop Nones)."""
+        item = asdict(self)
+        item["type"] = self.type.value
+        return {k: v for k, v in item.items() if v is not None}
+
+    @classmethod
+    def from_dynamodb_item(cls, item: Dict[str, Any]) -> "Attachment":
+        """Build from a DynamoDB map, tolerant of unknown/extra keys."""
+        data = dict(item)
+        if "type" in data:
+            try:
+                data["type"] = AttachmentType(data["type"])
+            except ValueError:
+                data["type"] = AttachmentType.FILE
+        # DynamoDB returns numbers as Decimal — coerce size back to int.
+        if data.get("size_bytes") is not None:
+            try:
+                data["size_bytes"] = int(data["size_bytes"])
+            except (TypeError, ValueError):
+                data["size_bytes"] = None
+        allowed = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in allowed})
+
+
+@dataclass
 class Echo:
     """
     Echo model representing a vault item (legacy message).
@@ -74,6 +132,11 @@ class Echo:
     # POST /echoes/{id}/attach-poster after the video upload succeeds.
     poster_url: Optional[str] = None
     content: Optional[str] = None  # For text type only
+
+    # Media attachments (photo / video / voice / file). An echo now carries a
+    # text message PLUS zero or more attachments. media_url/poster_url above are
+    # retained for back-compat (they mirror the primary audio/video attachment).
+    attachments: List[Attachment] = field(default_factory=list)
 
     # Status and delivery
     status: EchoStatus = EchoStatus.DRAFT
@@ -111,12 +174,18 @@ class Echo:
         item["echo_type"] = self.echo_type.value
         item["status"] = self.status.value
 
-        # Filter out None values
+        # asdict() leaves nested AttachmentType enums unserialized — rebuild
+        # the list via each attachment's own serializer (enum -> str, no Nones).
+        item["attachments"] = [a.to_dynamodb_item() for a in self.attachments]
+
+        # Filter out None values (empty attachments list is kept, not dropped)
         return {k: v for k, v in item.items() if v is not None}
 
     @classmethod
     def from_dynamodb_item(cls, item: Dict[str, Any]) -> "Echo":
         """Create Echo from DynamoDB item"""
+        item = dict(item)  # don't mutate the caller's dict
+
         # Convert enum strings back to enums
         if "echo_type" in item:
             try:
@@ -129,6 +198,12 @@ class Echo:
                 item["status"] = EchoStatus(item["status"])
             except ValueError:
                 item["status"] = EchoStatus.DRAFT
+
+        # Rehydrate attachments (older rows have no attachments key -> []).
+        raw_attachments = item.get("attachments") or []
+        item["attachments"] = [
+            Attachment.from_dynamodb_item(a) for a in raw_attachments
+        ]
 
         return cls(**item)
 
