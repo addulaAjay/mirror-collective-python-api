@@ -183,6 +183,82 @@ async def test_viewer_route_renders_message_and_attachments():
     assert "clip.mp4" in body
 
 
+def test_format_date_ordinals_and_bad_input():
+    assert share_routes._format_date("2025-05-04T10:00:00Z") == "May 4th, 2025"
+    assert share_routes._format_date("2025-05-01T00:00:00Z") == "May 1st, 2025"
+    assert share_routes._format_date("2025-05-21T00:00:00Z") == "May 21st, 2025"
+    assert share_routes._format_date(None) == ""
+    assert share_routes._format_date("not-a-date") == ""
+
+
+@pytest.mark.asyncio
+async def test_viewer_matches_branding_and_plays_every_media_type_in_page():
+    """Image, video and audio all render as inline, in-page players (not just
+    links), each with a download affordance, inside the branded 7539:4157 shell."""
+    echo = Echo(
+        echo_id="e1",
+        recipient_id="r1",
+        status=EchoStatus.RELEASED,
+        content="A gentle note.",
+        release_date="2025-05-04T10:00:00Z",
+        attachments=[
+            Attachment(
+                attachment_id="img1",
+                type=AttachmentType.IMAGE,
+                media_url="x",
+                filename="photo.jpg",
+            ),
+            Attachment(
+                attachment_id="vid1",
+                type=AttachmentType.VIDEO,
+                media_url="x",
+                duration="1:25",
+                filename="clip.mp4",
+            ),
+            Attachment(
+                attachment_id="aud1",
+                type=AttachmentType.AUDIO,
+                media_url="x",
+                duration="2:32",
+                filename="voice.m4a",
+            ),
+        ],
+    )
+    tok = create_share_token("e1", "r1")
+    with (
+        patch.object(
+            share_routes.echo_service, "get_shared_echo", AsyncMock(return_value=echo)
+        ),
+        patch.object(
+            share_routes.echo_service,
+            "presign_shared_attachment",
+            AsyncMock(return_value="https://signed-s3/file"),
+        ),
+    ):
+        resp = await share_routes.shared_echo_viewer("e1", t=tok)
+
+    body = resp.body.decode()
+    # In-page players for every media type (play within the page).
+    assert '<img class="media"' in body
+    assert '<video class="media" controls playsinline' in body
+    assert '<audio class="audio" controls' in body
+    # Inline players use the direct presigned S3 src (range-friendly playback).
+    assert body.count("https://signed-s3/file") >= 3
+    # A download option per attachment (forced Content-Disposition).
+    assert body.count("mode=download") == 3
+    # Subtitle + formatted date (the design's "shared with you" line).
+    assert "A private message has been shared with you" in body
+    assert "May 4th, 2025" in body
+    # Branding from Figma 7539:4157: gold, Cormorant, blur cards, glow CTA,
+    # star divider, lock footer, starfield bg.
+    assert "#f2e1b0" in body and "Cormorant Garamond" in body
+    assert "backdrop-filter:blur(30px)" in body
+    assert "GET THE APP" in body
+    assert "divider-star.png" in body
+    assert "icon-lock.png" in body
+    assert "email-bg-starfield.png" in body
+
+
 @pytest.mark.asyncio
 async def test_viewer_route_bad_token():
     resp = await share_routes.shared_echo_viewer("e1", t="bad-token")

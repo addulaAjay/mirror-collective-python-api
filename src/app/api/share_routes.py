@@ -2,16 +2,23 @@
 Public, tokenized echo viewer for email recipients (no app, no login).
 
 The echo-share email links here with a signed share token. This module renders
-a branded HTML page showing the sender's message and every attachment with
-inline Play + Download, and a redirect endpoint that streams each attachment via
-a freshly-minted presigned S3 URL (so links never expire and access stays
-token-gated). See core/share_token.py.
+a branded HTML page — matching Figma "Dev Master File" node 7539:4157 (logo,
+"Your Echo" title, subtitle, translucent gold-bordered media cards, quote card
+with star divider, outlined GET THE APP button, lock footer) — showing the
+sender's message and every attachment with inline playback + Download. A
+redirect endpoint streams each attachment via a freshly-minted presigned S3 URL
+(so links never expire and access stays token-gated). See core/share_token.py.
+
+Unlike the email (which degrades in Outlook), the web page renders the real
+design: backdrop-blur, gradient card fills, web fonts, and inline <video>/
+<audio> players that play within the page.
 """
 
 import html
 import logging
 import os
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -35,6 +42,21 @@ _GET_APP_URL = os.getenv("APP_STORE_URL", _APP_URL)
 # resolves to a SHORT-LIVED presigned URL — a cached 302 would hand out an
 # expired/dead link. Defends against a misconfigured CDN/browser cache.
 _NO_STORE = {"Cache-Control": "no-store"}
+
+_DAY_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
+
+
+def _format_date(value: Optional[str]) -> str:
+    """Format an ISO date/datetime string as 'May 4th, 2025'; '' on failure."""
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return ""
+    day = dt.day
+    suffix = "th" if 11 <= (day % 100) <= 13 else _DAY_SUFFIXES.get(day % 10, "th")
+    return f"{dt.strftime('%B')} {day}{suffix}, {dt.year}"
 
 
 def _normalize_attachments(echo: Echo) -> List[Dict[str, Any]]:
@@ -91,16 +113,26 @@ def _render_attachment(att: Dict[str, Any], echo_id: str, token: str) -> str:
     else:
         media = '<div class="file-icon">📄</div>'
     dur = f" · {html.escape(str(att['duration']))}" if att.get("duration") else ""
+    # Download icon (inline SVG so it needs no hosted asset) + label, matching
+    # the design's gold download affordance.
+    dl_icon = (
+        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+        'stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>'
+    )
     return (
-        f'<div class="att">{media}'
+        f'<div class="att card">{media}'
         f'<div class="att-row"><span class="att-name">{name}{dur}</span>'
-        f'<a class="dl" href="{dl}">Download</a></div></div>'
+        f'<a class="dl" href="{dl}" download>{dl_icon}<span>Download</span></a>'
+        f"</div></div>"
     )
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
-    """Branded shell matching the echo emails: logo image, Cormorant headings,
-    gold-on-navy, GET THE APP button, lock footer."""
+    """Branded shell matching Figma 7539:4157: starfield navy, centered logo,
+    Cormorant gold headings, translucent gold-bordered cards, outlined GET THE
+    APP button with glow, lock footer."""
     doc = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8" />
@@ -108,47 +140,78 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
 <meta name="color-scheme" content="dark" />
 <title>{html.escape(title)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@300;400&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:ital,wght@0,300;0,400;1,400&display=swap" rel="stylesheet" />
 <style>
-  :root {{ color-scheme: dark; }}
+  :root {{
+    --navy:#0b1020; --gold:#f2e1b0; --white:#fdfdf9; --subtle:#a3b3cc;
+    --card-border:rgba(240,212,168,0.45);
+    color-scheme: dark;
+  }}
   * {{ box-sizing: border-box; }}
-  body {{ margin:0; background:#0b1020; color:#fdfdf9;
-    font-family:'Inter',-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }}
-  .wrap {{ max-width:600px; margin:0 auto; padding:32px 24px 40px; }}
-  .logo-img {{ display:block; width:220px; max-width:70%; height:auto;
-    margin:8px auto 20px; }}
-  h1 {{ font-family:'Cormorant Garamond',Georgia,serif; color:#f2e1b0;
-    text-align:center; font-weight:400; font-size:34px; margin:8px 0 6px;
-    text-shadow:0 0 10px rgba(240,212,168,0.3); }}
-  .msg {{ background:#131a2e; border:1px solid #2a3450; border-radius:12px;
-    padding:20px 22px; line-height:1.6; white-space:pre-wrap; margin-top:20px;
-    font-size:16px; }}
-  .section {{ color:#f2e1b0; text-align:center; margin:28px 0 14px;
-    font-family:'Cormorant Garamond',Georgia,serif; font-size:22px; }}
-  .att {{ background:#131a2e; border:1px solid #2a3450; border-radius:12px;
-    overflow:hidden; margin-bottom:16px; }}
-  .media {{ width:100%; display:block; background:#0b1020; }}
-  .audio {{ width:100%; display:block; padding:12px; }}
-  .file-icon {{ font-size:40px; text-align:center; padding:24px; }}
-  .hint {{ font-size:13px; color:#a3b3cc; margin-top:8px; }}
+  html, body {{ margin:0; }}
+  body {{
+    background:#0b1020 url("{_ASSET_BASE}/email-bg-starfield.png") center top / cover no-repeat fixed;
+    color:var(--white);
+    font-family:'Inter',-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    font-weight:300;
+    -webkit-font-smoothing:antialiased;
+  }}
+  .wrap {{ max-width:480px; margin:0 auto; padding:40px 24px 48px; }}
+  .logo-img {{ display:block; width:180px; max-width:60%; height:auto;
+    margin:0 auto 28px; }}
+  h1 {{ font-family:'Cormorant Garamond',Georgia,serif; color:var(--gold);
+    text-align:center; font-weight:400; font-size:32px; line-height:40px;
+    margin:0 0 12px; text-shadow:0 0 12px rgba(242,226,177,0.25); }}
+  .subtitle {{ text-align:center; font-size:14px; line-height:20px;
+    color:var(--white); margin:0 0 28px; }}
+  .subtitle .it {{ font-style:italic; }}
+  /* Translucent gold-bordered card — the design's backdrop-blur gradient.
+     navy shows through the near-transparent fill over the starfield. */
+  .card {{
+    background:linear-gradient(180deg, rgba(253,253,249,0.04), rgba(253,253,249,0));
+    -webkit-backdrop-filter:blur(30px); backdrop-filter:blur(30px);
+    border:1px solid var(--card-border); border-radius:12px;
+    margin:0 0 16px; overflow:hidden;
+  }}
+  .att .media {{ width:100%; display:block; background:#070b16; }}
+  .att .audio {{ width:100%; display:block; padding:14px 14px 4px; }}
+  .file-icon {{ font-size:40px; text-align:center; padding:26px 16px; }}
+  .hint {{ font-size:13px; color:var(--subtle); margin-top:8px; font-style:italic; }}
   .att-row {{ display:flex; align-items:center; justify-content:space-between;
     padding:12px 16px; gap:12px; }}
-  .att-name {{ color:#a3b3cc; font-size:14px; overflow:hidden;
+  .att-name {{ color:var(--white); font-size:14px; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }}
-  .dl {{ flex:none; color:#0b1020; background:#f2e1b0; text-decoration:none;
-    font-weight:600; padding:8px 16px; border-radius:8px; font-size:14px; }}
-  .cta {{ display:block; width:max-content; max-width:90%; margin:28px auto 0;
-    font-family:'Cormorant Garamond',Georgia,serif; font-size:20px;
-    color:#f2e1b0; text-decoration:none; text-align:center;
-    padding:12px 36px; border:1px solid #a3b3cc; border-radius:16px; }}
-  .footer {{ color:#a3b3cc; font-size:13px; text-align:center; margin-top:28px; }}
-  .empty {{ color:#a3b3cc; text-align:center; }}
+  .dl {{ flex:none; display:inline-flex; align-items:center; gap:6px;
+    color:var(--gold); text-decoration:none; font-size:14px; font-weight:400;
+    border:1px solid var(--card-border); border-radius:8px; padding:7px 14px; }}
+  .dl:hover {{ background:rgba(242,226,177,0.08); }}
+  /* Message / quote card: centered, with the gold star divider. */
+  .quote-card {{ padding:24px 22px 18px; text-align:center; }}
+  .quote {{ font-size:16px; line-height:24px; color:var(--white);
+    white-space:pre-wrap; }}
+  .quote::before {{ content:"\\201C"; }}
+  .quote::after {{ content:"\\201D"; }}
+  .divider {{ display:block; width:180px; max-width:70%; height:auto;
+    margin:16px auto 0; }}
+  .cta {{ display:block; width:max-content; max-width:90%;
+    margin:28px auto 0; font-family:'Cormorant Garamond',Georgia,serif;
+    font-size:24px; line-height:28px; color:var(--gold); text-decoration:none;
+    text-align:center; padding:12px 36px; border:1px solid var(--subtle);
+    border-radius:12px 16px 12px 12px;
+    background:linear-gradient(180deg, rgba(253,253,249,0.04), rgba(253,253,249,0));
+    -webkit-backdrop-filter:blur(30px); backdrop-filter:blur(30px);
+    text-shadow:0 0 15px rgba(242,226,177,0.25); }}
+  .footer {{ display:flex; align-items:center; justify-content:center; gap:8px;
+    color:var(--subtle); font-size:14px; line-height:20px; margin-top:28px; }}
+  .footer img {{ width:13px; height:auto; opacity:0.9; }}
+  .empty {{ color:var(--subtle); text-align:center; }}
 </style></head>
 <body><div class="wrap">
 <img class="logo-img" src="{_ASSET_BASE}/logo-mirror-collective.png" alt="The Mirror Collective" />
 {body}
 <a class="cta" href="{html.escape(_GET_APP_URL)}">GET THE APP</a>
-<div class="footer">Shared privately through Echo Vault.</div>
+<div class="footer"><img src="{_ASSET_BASE}/icon-lock.png" alt="" />Shared privately through Echo Vault</div>
 </div></body></html>"""
     return HTMLResponse(doc, status_code=status, headers=_NO_STORE)
 
@@ -160,7 +223,8 @@ def _error_page(message: str, status: int) -> HTMLResponse:
 
 @router.get("/share/echo/{echo_id}", response_class=HTMLResponse)
 async def shared_echo_viewer(echo_id: str, t: str = Query(...)):
-    """Render the recipient's echo: message + all attachments (play + download)."""
+    """Render the recipient's echo: subtitle + all attachments (play in-page +
+    download) + the sender's message, in the branded shell."""
     payload = verify_share_token(t, echo_id)
     if not payload:
         return _error_page("This link is invalid or has expired.", 403)
@@ -180,15 +244,26 @@ async def shared_echo_viewer(echo_id: str, t: str = Query(...)):
         except Exception as e:  # noqa: BLE001 - inline preview is best-effort
             logger.warning(f"Presign for inline view failed ({a['id']}): {e}")
             a["media_src"] = None
+
     message = echo.content or echo.letter_to_recipient or ""
+    date_str = _format_date(echo.release_date or echo.created_at)
+
     # Logo, GET THE APP and footer come from _page (the branded shell).
     parts = ["<h1>Your Echo</h1>"]
+    subtitle = "A private message has been shared with you"
+    if date_str:
+        subtitle += f' <span class="it">on {html.escape(date_str)}</span>'
+    parts.append(f'<p class="subtitle">{subtitle}</p>')
+    # Media first (play + download), then the sender's message as a quote card.
+    parts.extend(_render_attachment(a, echo_id, t) for a in atts)
     if message:
-        parts.append(f'<div class="msg">{html.escape(message)}</div>')
-    if atts:
-        parts.append('<div class="section">Attachments</div>')
-        parts.extend(_render_attachment(a, echo_id, t) for a in atts)
-    elif not message:
+        parts.append(
+            '<div class="card quote-card">'
+            f'<div class="quote">{html.escape(message)}</div>'
+            f'<img class="divider" src="{_ASSET_BASE}/divider-star.png" alt="" />'
+            "</div>"
+        )
+    elif not atts:
         parts.append('<p class="empty">This echo has no content.</p>')
     return _page("Your Echo", "".join(parts))
 

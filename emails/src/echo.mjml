@@ -1,0 +1,147 @@
+<!--
+  The Echo — single, generic recipient notification.
+  Figma: 5535:5144 (Design Master File — "Echo - Mobile").
+
+  ONE template for every echo type (written / voice / video / mixed). The email
+  is intentionally a *link*, not a player: it shows who shared an echo and a
+  short cover note, then sends the recipient into the app, which presents the
+  full echo (media, attachments, everything). No inline players, waveforms, or
+  attachment rows live here by design.
+
+  Jinja placeholders ({{ }}) are filled by EmailService.send_echo_share_email.
+  Self-contained: no includes or partials. After editing run `npm run build`
+  and `grep '{%' dist/echo.html` to confirm any control flow survived compile.
+-->
+<mjml>
+  <mj-head>
+    <mj-title>Your Echo from {{ sender_name }}</mj-title>
+    <mj-preview>A private message has been shared with you through Echo Vault.</mj-preview>
+
+    <!-- Dark-mode hints. Apple Mail / Gmail honour these; locks our palette. -->
+    <mj-raw>
+      <meta name="color-scheme" content="dark light" />
+      <meta name="supported-color-schemes" content="dark light" />
+    </mj-raw>
+
+    <!-- Web fonts (degrade to Georgia / Arial in Outlook & Gmail — by design). -->
+    <mj-font name="Cormorant Garamond" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&display=swap" />
+    <mj-font name="Inter" href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;1,400&display=swap" />
+
+    <mj-breakpoint width="480px" />
+
+    <mj-attributes>
+      <mj-all font-family="'Inter', Arial, Helvetica, sans-serif" />
+      <mj-text color="#fdfdf9" font-size="14px" line-height="20px" />
+      <mj-section background-color="#0b1020" padding="0" />
+      <mj-wrapper padding="0" />
+    </mj-attributes>
+
+    <mj-style>
+      /* Brand serif for headings, quote, and the button. Degrades to a serif. */
+      .echo-title  { font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif !important; }
+      .echo-quote  { font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif !important; }
+      .echo-cta a  { font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif !important; }
+      .echo-link   { font-style: italic; }
+      .muted       { color: #a3b3cc !important; }
+
+      /* Rounded corners — ignored by Outlook, fine elsewhere. */
+      .card { border-radius: 12px; }
+
+      @media (prefers-color-scheme: dark) {
+        /* Hold the brand palette; don't let clients auto-invert gold/navy. */
+        .echo-title, .echo-quote, .echo-cta a { color: #f2e1b0 !important; }
+      }
+    </mj-style>
+  </mj-head>
+
+  <!-- background-url paints the starfield where supported; the navy
+       background-color is the guaranteed fallback (Outlook strips the image,
+       a 404 degrades to the color — never a broken-image icon). -->
+  <mj-body background-color="#0b1020" width="600px">
+    <mj-wrapper background-color="#0b1020" background-url="{{ asset_base }}/email-bg-starfield.png" background-size="cover" background-repeat="no-repeat" padding="0">
+
+      <!-- Logo -->
+      <mj-section padding="40px 24px 24px">
+        <mj-column>
+          <mj-image src="{{ asset_base }}/logo-mirror-collective.png" alt="The Mirror Collective" width="180px" align="center" padding="0" />
+        </mj-column>
+      </mj-section>
+
+      <!-- Title + subtitle -->
+      <mj-section padding="8px 24px 0">
+        <mj-column>
+          <mj-text css-class="echo-title" color="#f2e1b0" font-size="32px" line-height="40px" align="center" padding="0 0 12px">
+            Your Echo
+          </mj-text>
+          <mj-text font-size="14px" line-height="20px" align="center" padding="0 0 24px">
+            A private message has been shared with you from
+            <span style="font-style:italic;">{{ sender_name }} on {{ echo_date }}</span>
+          </mj-text>
+        </mj-column>
+      </mj-section>
+
+      <!-- Primary action line — the whole sentence links into the app. -->
+      <mj-section padding="0 24px 24px">
+        <mj-column>
+          <mj-text css-class="echo-link" color="#f2e1b0" font-size="18px" line-height="24px" align="center" padding="0">
+            <a href="{{ open_echo_url }}" style="color:#f2e1b0;text-decoration:none;font-style:italic;">Click here to open your echo.</a>
+          </mj-text>
+        </mj-column>
+      </mj-section>
+
+      <!-- Quote card: sender's cover note (or a gentle default), + star divider. -->
+      <mj-section css-class="card" background-color="#131a2e" border="1px solid #f0d4a8" padding="24px 24px 16px" border-radius="12px">
+        <mj-column>
+          <mj-text css-class="echo-quote" font-size="20px" line-height="24px" align="center" padding="0 0 20px">
+            &ldquo;{{ quote_text }}&rdquo;
+          </mj-text>
+          <mj-image src="{{ asset_base }}/divider-star.png" alt="" width="180px" align="center" padding="0" />
+        </mj-column>
+      </mj-section>
+
+      <!-- GET THE APP — outlined gold button, links into the app. -->
+      <mj-section css-class="echo-cta" padding="24px 24px 8px">
+        <mj-column>
+          <mj-button
+            href="{{ open_echo_url }}"
+            background-color="#0b1020"
+            color="#f2e1b0"
+            border="1px solid #a3b3cc"
+            font-family="'Cormorant Garamond', Georgia, serif"
+            font-size="24px"
+            line-height="28px"
+            inner-padding="12px 24px"
+            border-radius="12px"
+            align="center">
+            GET THE APP
+          </mj-button>
+        </mj-column>
+      </mj-section>
+
+      <!-- Privacy line -->
+      <mj-section padding="16px 24px 8px">
+        <mj-group>
+          <mj-column width="28px" vertical-align="middle">
+            <mj-image src="{{ asset_base }}/icon-lock.png" alt="" width="14px" align="right" padding="0 6px 0 0" />
+          </mj-column>
+          <mj-column vertical-align="middle">
+            <mj-text css-class="muted" font-size="14px" line-height="20px" align="left" padding="0">
+              Shared privately through Echo Vault
+            </mj-text>
+          </mj-column>
+        </mj-group>
+      </mj-section>
+
+      <!-- Legal footer -->
+      <mj-section padding="8px 24px 40px">
+        <mj-column>
+          <mj-text css-class="muted" font-size="12px" line-height="18px" align="center" padding="0">
+            This is an automated message from {{ app_name }}.<br />
+            If you didn't expect this email, you can safely ignore it.
+          </mj-text>
+        </mj-column>
+      </mj-section>
+
+    </mj-wrapper>
+  </mj-body>
+</mjml>

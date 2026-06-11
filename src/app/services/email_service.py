@@ -32,34 +32,24 @@ _SES_CLIENT_CONFIG = Config(
 
 
 # ---------------------------------------------------------------------------
-# Rich Echo-share templates (Figma "Email Templates" -> MJML -> compiled HTML).
+# Echo-share email (Figma 5535:5144 -> MJML -> compiled HTML).
 #
-# Sources live in emails/src/*.mjml; `npm run build` compiles them to
-# emails/dist/*.html (committed + packaged with the Lambda — see
-# serverless.yml `package.patterns` and emails/README.md). At render time the
-# compiled HTML is a Jinja2 template; we fill the {{ }} placeholders here.
+# ONE generic template for every echo type. The email is a link, not a player:
+# it shows who shared an echo plus a short cover note, then sends the recipient
+# into the app (open_echo_url), which presents the full echo. Source lives in
+# emails/src/echo.mjml; `npm run build` compiles it to emails/dist/echo.html
+# (committed + packaged with the Lambda — see serverless.yml `package.patterns`
+# and emails/README.md). At render time the compiled HTML is a Jinja2 template;
+# we fill the {{ }} placeholders here.
 # ---------------------------------------------------------------------------
-_ECHO_TEMPLATE_BY_TYPE = {
-    "TEXT": "echo-written.html",
-    "AUDIO": "echo-voice.html",
-    "VIDEO": "echo-video.html",
-}
-
-_ECHO_TYPE_LABEL = {"TEXT": "Written", "AUDIO": "Voice", "VIDEO": "Video"}
+_ECHO_TEMPLATE = "echo.html"
 
 # Boilerplate used only when the sender left no cover note / message of their
-# own. Mirrors the sample copy in the Figma frames.
-_DEFAULT_QUOTE_BY_TYPE = {
-    "AUDIO": (
-        "Some things are meant to be heard, not just read. This voice echo was "
-        "shared with you as a private moment of presence, memory, and meaning."
-    ),
-    "VIDEO": (
-        "When words needed more presence, this message was recorded for you. "
-        "Open the echo to watch the full video and experience it as intended."
-    ),
-    "TEXT": "A private message has been shared with you through Echo Vault.",
-}
+# own. Mirrors the sample copy in the Figma frame, kept generic across types.
+_DEFAULT_QUOTE = (
+    "A private moment of presence, memory, and meaning has been shared with "
+    "you. Open your echo to experience it as it was meant to be."
+)
 
 _DAY_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
 
@@ -394,10 +384,7 @@ If you didn't expect this email, please contact us.
             recipient_email=recipient_email,
             sender_name=sender_name,
             echo_type=echo_type,
-            quote=quote
-            or _DEFAULT_QUOTE_BY_TYPE.get(
-                (echo_type or "TEXT").upper(), _DEFAULT_QUOTE_BY_TYPE["TEXT"]
-            ),
+            quote=quote or _DEFAULT_QUOTE,
             echo_date=echo_date,
             open_echo_url=open_echo_url,
             hero_image_url=hero_image_url,
@@ -413,10 +400,14 @@ If you didn't expect this email, please contact us.
         *,
         recipient_email: str,
         sender_name: str,
-        echo_type: str,
+        echo_type: str = "",
         quote: str,
         echo_date: Optional[str] = None,
         open_echo_url: Optional[str] = None,
+        # Back-compat: callers spread build_email_media_fields() in via
+        # **media_fields. The generic template is a link — it doesn't embed
+        # media — so these are accepted and ignored (open_echo_url is the one
+        # that matters; it deep-links into the app where the full echo lives).
         hero_image_url: Optional[str] = None,
         media_duration: Optional[str] = None,
         attachment_count: int = 0,
@@ -425,22 +416,23 @@ If you didn't expect this email, please contact us.
         media_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
         """
-        Render and send the rich echo-share email (Voice / Video / Written).
+        Render and send the generic echo-share email (one template, all types).
 
-        Renders the compiled MJML template for ``echo_type`` with Jinja2 and
-        sends it via SES with a plain-text alternative. On any template/render
-        failure, falls back to a minimal inline HTML so the notification still
-        goes out.
+        Renders the compiled MJML template (emails/dist/echo.html) with Jinja2
+        and sends it via SES with a plain-text alternative. On any template/
+        render failure, falls back to a minimal inline HTML so the notification
+        still goes out.
+
+        ``echo_type`` no longer selects a template (kept only for caller
+        back-compat). The email links to ``open_echo_url``; the app presents the
+        full echo — media, attachments, everything.
 
         Returns:
             True if email was sent successfully
         """
-        echo_type = (echo_type or "TEXT").upper()
-        template_name = _ECHO_TEMPLATE_BY_TYPE.get(echo_type, "echo-written.html")
-        type_label = _ECHO_TYPE_LABEL.get(echo_type, "Written")
         open_url = open_echo_url or self.app_url
         formatted_date = _format_echo_date(echo_date)
-        subject = f"Your {type_label} Echo from {sender_name}"
+        subject = f"Your Echo from {sender_name}"
 
         context: dict = {
             "app_name": self.app_name,
@@ -448,24 +440,10 @@ If you didn't expect this email, please contact us.
             "sender_name": sender_name,
             "echo_date": formatted_date,
             "open_echo_url": open_url,
-            "hero_image_url": hero_image_url or f"{self.asset_base}/hero-default.jpg",
-            "attachment_count": attachment_count or 0,
-            "attachment_url": attachment_url or open_url,
-            "attachment_thumb_url": attachment_thumb_url
-            or f"{self.asset_base}/attachment-thumb.png",
-            "audio_duration": media_duration or "",
-            "video_duration": media_duration or "",
-            # Per-attachment render list (image/video/audio/file), in order.
-            "media_blocks": media_blocks or [],
+            "quote_text": quote,
         }
-        # Written renders multi-paragraph; voice/video use a single block.
-        if echo_type == "TEXT":
-            context["quote_paragraphs"] = _split_paragraphs(quote)
-        else:
-            context["quote_text"] = quote
 
         text_body = self._echo_share_text(
-            type_label=type_label,
             sender_name=sender_name,
             echo_date=formatted_date,
             quote=quote,
@@ -473,15 +451,14 @@ If you didn't expect this email, please contact us.
         )
 
         try:
-            template = _template_env().get_template(template_name)
+            template = _template_env().get_template(_ECHO_TEMPLATE)
             html_body = template.render(**context)
         except (TemplateError, OSError) as e:
             logger.error(
-                f"Echo template render failed ({template_name}): {e}. "
+                f"Echo template render failed ({_ECHO_TEMPLATE}): {e}. "
                 "Falling back to plain notification."
             )
             html_body = self._echo_share_fallback_html(
-                type_label=type_label,
                 sender_name=sender_name,
                 echo_date=formatted_date,
                 quote=quote,
@@ -498,21 +475,20 @@ If you didn't expect this email, please contact us.
     def _echo_share_text(
         self,
         *,
-        type_label: str,
         sender_name: str,
         echo_date: str,
         quote: str,
         open_url: str,
     ) -> str:
-        """Plain-text alternative for the rich echo email (required by SES)."""
-        return f"""Your {type_label} Echo
+        """Plain-text alternative for the echo email (required by SES)."""
+        return f"""Your Echo
 
-A private {type_label.lower()} message has been shared with you
+A private message has been shared with you
 from {sender_name} on {echo_date}.
 
-"{quote}"
+Click here to open your echo: {open_url}
 
-Open your echo: {open_url}
+"{quote}"
 
 ---
 Shared privately through Echo Vault.
@@ -523,7 +499,6 @@ If you didn't expect this email, you can safely ignore it.
     def _echo_share_fallback_html(
         self,
         *,
-        type_label: str,
         sender_name: str,
         echo_date: str,
         quote: str,
@@ -540,17 +515,20 @@ If you didn't expect this email, you can safely ignore it.
 <html>
 <body style="margin:0;background:#0b1020;color:#fdfdf9;font-family:Arial,Helvetica,sans-serif;">
   <div style="max-width:600px;margin:0 auto;padding:40px 24px;background:#0b1020;">
-    <h1 style="color:#f2e1b0;font-family:Georgia,serif;text-align:center;">Your {type_label} Echo</h1>
+    <h1 style="color:#f2e1b0;font-family:Georgia,serif;text-align:center;">Your Echo</h1>
     <p style="color:#a3b3cc;text-align:center;">
-      A private {type_label.lower()} message has been shared with you from
+      A private message has been shared with you from
       {sender_name} on {echo_date}.
     </p>
-    <p style="background:#131a2e;border:1px solid #2a3450;border-radius:12px;padding:24px;text-align:center;">
+    <p style="text-align:center;font-style:italic;">
+      <a href="{open_url}" style="color:#f2e1b0;text-decoration:none;">Click here to open your echo.</a>
+    </p>
+    <p style="background:#131a2e;border:1px solid #f0d4a8;border-radius:12px;padding:24px;text-align:center;">
       &ldquo;{safe_quote}&rdquo;
     </p>
     <p style="text-align:center;">
-      <a href="{open_url}" style="display:inline-block;background:#f2e1b0;color:#0b1020;
-         padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:600;">GET THE APP</a>
+      <a href="{open_url}" style="display:inline-block;background:#0b1020;color:#f2e1b0;
+         border:1px solid #a3b3cc;padding:12px 24px;border-radius:12px;text-decoration:none;">GET THE APP</a>
     </p>
     <p style="color:#a3b3cc;font-size:12px;text-align:center;">
       Shared privately through Echo Vault. This is an automated message from {self.app_name}.
