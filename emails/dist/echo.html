@@ -72,16 +72,6 @@
         width: 100% !important;
         max-width: 100%;
       }
-
-      .mj-column-px-28 {
-        width: 28px !important;
-        max-width: 28px;
-      }
-
-      .mj-column-per-50 {
-        width: 50% !important;
-        max-width: 50%;
-      }
     }
 
   </style>
@@ -89,16 +79,6 @@
     .moz-text-html .mj-column-per-100 {
       width: 100% !important;
       max-width: 100%;
-    }
-
-    .moz-text-html .mj-column-px-28 {
-      width: 28px !important;
-      max-width: 28px;
-    }
-
-    .moz-text-html .mj-column-per-50 {
-      width: 50% !important;
-      max-width: 50%;
     }
 
   </style>
@@ -160,7 +140,7 @@
 
 <body style="word-spacing:normal;background-color:#0b1020;">
   <div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">A private message has been shared with you through Echo Vault.</div>
-  <div aria-label="Your Echo from {{ sender_name }}" aria-roledescription="email" style="background-color:#0b1020;" role="article" lang="und" dir="auto">
+  <div style="background-color:#0b1020;" lang="und" dir="auto">
     <!--[if mso | IE]><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><v:rect style="width:600px;" xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false"><v:fill origin="0, -0.5" position="0, -0.5" src="{{ asset_base }}/email-bg-starfield.png" color="#0b1020" type="frame" size="1,1" aspect="atleast" /><v:textbox style="mso-fit-shape-to-text:true" inset="0,0,0,0"><![endif]-->
     <div style="background:#0b1020 url('{{ asset_base }}/email-bg-starfield.png') center top / cover no-repeat;background-position:center top;background-repeat:no-repeat;background-size:cover;margin:0px auto;max-width:600px;">
       <div style="line-height:0;font-size:0;">
@@ -260,29 +240,40 @@
                   </table>
                 </div>
                 <!--[if mso | IE]></td></tr></table></td></tr><![endif]-->
-                <!-- Quote card: sender's cover note (or a gentle default), + star divider. -->
-                <!--[if mso | IE]><tr><td class="card-outlook" width="600px" ><table align="center" border="0" cellpadding="0" cellspacing="0" class="card-outlook" role="presentation" style="width:600px;" width="600" bgcolor="#131a2e" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
-                <div class="card" style="background:#131a2e;background-color:#131a2e;margin:0px auto;max-width:600px;border-radius:12px;overflow:hidden;">
-                  <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#131a2e;background-color:#131a2e;width:100%;border-collapse:separate;">
+                <!-- Quote card: sender's cover note (or a gentle default), + star divider.
+           The 24px side gutter lives on the SECTION (no background); the card
+           fill + gold border live on the COLUMN, so the card is inset from the
+           email edges instead of running edge-to-edge (matches the design). -->
+                <!--[if mso | IE]><tr><td class="" width="600px" ><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
+                <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
+                  <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
                     <tbody>
                       <tr>
-                        <td style="border:1px solid #f0d4a8;border-radius:12px;direction:ltr;font-size:0px;padding:24px 24px 16px;text-align:center;">
-                          <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:550px;" ><![endif]-->
-                          <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
-                            <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                        <td style="direction:ltr;font-size:0px;padding:0 24px;text-align:center;">
+                          <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="card-outlook" style="vertical-align:top;width:552px;" ><![endif]-->
+                          <div class="mj-column-per-100 mj-outlook-group-fix card" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                            <table border="0" cellpadding="0" cellspacing="0" role="presentation" width="100%">
                               <tbody>
                                 <tr>
-                                  <td align="center" class="echo-quote" style="font-size:0px;padding:0 0 20px;word-break:break-word;">
-                                    <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:20px;line-height:24px;text-align:center;color:#fdfdf9;">&ldquo;{{ quote_text }}&rdquo;</div>
-                                  </td>
-                                </tr>
-                                <tr>
-                                  <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
-                                    <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                                  <td style="background-color:#131a2e;border:1px solid #f0d4a8;border-radius:12px;vertical-align:top;padding:24px 20px 16px;">
+                                    <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="" width="100%">
                                       <tbody>
                                         <tr>
-                                          <td style="width:180px;">
-                                            <img alt="" src="{{ asset_base }}/divider-star.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="180" height="auto" />
+                                          <td align="center" class="echo-quote" style="font-size:0px;padding:0 0 20px;word-break:break-word;">
+                                            <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:20px;line-height:24px;text-align:center;color:#fdfdf9;">&ldquo;{{ quote_text }}&rdquo;</div>
+                                          </td>
+                                        </tr>
+                                        <tr>
+                                          <td align="center" style="font-size:0px;padding:0;word-break:break-word;">
+                                            <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
+                                              <tbody>
+                                                <tr>
+                                                  <td style="width:180px;">
+                                                    <img alt="" src="{{ asset_base }}/divider-star.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="180" height="auto" />
+                                                  </td>
+                                                </tr>
+                                              </tbody>
+                                            </table>
                                           </td>
                                         </tr>
                                       </tbody>
@@ -333,48 +324,26 @@
                   </table>
                 </div>
                 <!--[if mso | IE]></td></tr></table></td></tr><![endif]-->
-                <!-- Privacy line -->
+                <!-- Privacy line — lock + text centered on ONE line. An inline <img>
+           keeps them together; an mj-group splits into columns that wrap and
+           misalign on narrow mobile (the bug in the original). -->
                 <!--[if mso | IE]><tr><td class="" width="600px" ><table align="center" border="0" cellpadding="0" cellspacing="0" class="" role="presentation" style="width:600px;" width="600" bgcolor="#0b1020" ><tr><td style="line-height:0px;font-size:0px;mso-line-height-rule:exactly;"><![endif]-->
                 <div style="background:#0b1020;background-color:#0b1020;margin:0px auto;max-width:600px;">
                   <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#0b1020;background-color:#0b1020;width:100%;">
                     <tbody>
                       <tr>
                         <td style="direction:ltr;font-size:0px;padding:16px 24px 8px;text-align:center;">
-                          <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="width:552px;" ><![endif]-->
-                          <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0;line-height:0;text-align:left;display:inline-block;width:100%;direction:ltr;">
-                            <!--[if mso | IE]><table border="0" cellpadding="0" cellspacing="0" role="presentation" ><tr><td style="vertical-align:middle;width:28px;" ><![endif]-->
-                            <div class="mj-column-px-28 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:5.072463768115942%;">
-                              <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
-                                <tbody>
-                                  <tr>
-                                    <td align="right" style="font-size:0px;padding:0 6px 0 0;word-break:break-word;">
-                                      <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px;">
-                                        <tbody>
-                                          <tr>
-                                            <td style="width:14px;">
-                                              <img alt="" src="{{ asset_base }}/icon-lock.png" style="border:0;display:block;outline:none;text-decoration:none;height:auto;width:100%;font-size:13px;" width="14" height="auto" />
-                                            </td>
-                                          </tr>
-                                        </tbody>
-                                      </table>
-                                    </td>
-                                  </tr>
-                                </tbody>
-                              </table>
-                            </div>
-                            <!--[if mso | IE]></td><td style="vertical-align:middle;width:276px;" ><![endif]-->
-                            <div class="mj-column-per-50 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:middle;width:50%;">
-                              <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:middle;" width="100%">
-                                <tbody>
-                                  <tr>
-                                    <td align="left" class="muted" style="font-size:0px;padding:0;word-break:break-word;">
-                                      <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:14px;line-height:20px;text-align:left;color:#fdfdf9;">Shared privately through Echo Vault</div>
-                                    </td>
-                                  </tr>
-                                </tbody>
-                              </table>
-                            </div>
-                            <!--[if mso | IE]></td></tr></table><![endif]-->
+                          <!--[if mso | IE]><table role="presentation" border="0" cellpadding="0" cellspacing="0"><tr><td class="" style="vertical-align:top;width:552px;" ><![endif]-->
+                          <div class="mj-column-per-100 mj-outlook-group-fix" style="font-size:0px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%;">
+                            <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top;" width="100%">
+                              <tbody>
+                                <tr>
+                                  <td align="center" class="muted" style="font-size:0px;padding:0;word-break:break-word;">
+                                    <div style="font-family:'Inter', Arial, Helvetica, sans-serif;font-size:14px;line-height:20px;text-align:center;color:#fdfdf9;"><img src="{{ asset_base }}/icon-lock.png" alt="" width="13" height="16" style="vertical-align:middle;margin-right:6px;display:inline-block;" />Shared privately through Echo Vault</div>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
                           </div>
                           <!--[if mso | IE]></td></tr></table><![endif]-->
                         </td>
