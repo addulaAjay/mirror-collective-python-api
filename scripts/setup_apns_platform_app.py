@@ -18,7 +18,7 @@ Uses token-based APNs auth (.p8 signing key) — the modern, non-expiring option
 USAGE:
     export APNS_KEY_ID=ABC123DEFG
     export APNS_TEAM_ID=TEAMID1234
-    export APNS_BUNDLE_ID=com.mirrorcollective.app
+    export APNS_BUNDLE_ID=com.themirrorcollective.mirror
     python scripts/setup_apns_platform_app.py --stage staging --p8 ./AuthKey_ABC123DEFG.p8
     python scripts/setup_apns_platform_app.py --stage prod    --p8 ./AuthKey_ABC123DEFG.p8
 

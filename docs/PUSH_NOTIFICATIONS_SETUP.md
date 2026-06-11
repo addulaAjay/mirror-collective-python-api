@@ -37,7 +37,7 @@ Keys → create a key with **Apple Push Notifications service (APNs)** enabled).
 ```bash
 export APNS_KEY_ID=ABC123DEFG          # the key's Key ID
 export APNS_TEAM_ID=TEAMID1234         # Apple Developer Team ID
-export APNS_BUNDLE_ID=com.mirrorcollective.app   # the iOS bundle id
+export APNS_BUNDLE_ID=com.themirrorcollective.mirror   # the iOS bundle id
 
 # staging → APNS_SANDBOX
 python scripts/setup_apns_platform_app.py --stage staging --p8 ./AuthKey_ABC123DEFG.p8
