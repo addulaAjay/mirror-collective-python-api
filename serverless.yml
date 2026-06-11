@@ -20,6 +20,15 @@ provider:
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     # SNS/SES Notifications
     SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN, ''}
+    # APNs/FCM platform-application ARNs, resolved per-stage from SSM at deploy
+    # time (Serverless reads ${ssm:...} with the deployer's creds and bakes the
+    # value into the Lambda env — no runtime SSM access needed). Created once
+    # per environment by scripts/setup_apns_platform_app.py, which also maps the
+    # stage to the right APNs environment (staging → APNS_SANDBOX, prod → APNS)
+    # so device tokens (dev build = sandbox, TestFlight = production) match.
+    # Empty-string fallback keeps deploys working before the param exists.
+    SNS_IOS_APP_ARN: ${ssm:/mirror-collective/${self:provider.stage}/sns/ios-app-arn, ''}
+    SNS_ANDROID_APP_ARN: ${ssm:/mirror-collective/${self:provider.stage}/sns/android-app-arn, ''}
     SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'app@themirrorcollective.com'}
     APP_NAME: "Mirror Collective"
     APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
@@ -49,6 +58,7 @@ provider:
     DYNAMODB_QUIZ_RESULTS_TABLE: ${self:service}-quiz-results-${self:provider.stage}
     DYNAMODB_QUIZ_QUESTIONS_TABLE: ${self:service}-quiz-questions-${self:provider.stage}
     DYNAMODB_DEVICE_TOKENS_TABLE: ${self:service}-device-tokens-${self:provider.stage}
+    DYNAMODB_SOUL_PINGS_TABLE: ${self:service}-soul-pings-${self:provider.stage}
     # Echo Vault Tables
     DYNAMODB_ECHOES_TABLE: ${self:service}-echoes-${self:provider.stage}
     DYNAMODB_RECIPIENTS_TABLE: ${self:service}-recipients-${self:provider.stage}
@@ -136,6 +146,7 @@ provider:
                 - 'index/*'
             - Fn::GetAtt: [ QuizQuestionsTable, Arn ]
             - Fn::GetAtt: [ DeviceTokensTable, Arn ]
+            - Fn::GetAtt: [ SoulPingsTable, Arn ]
             # Echo Vault Tables
             - Fn::GetAtt: [ EchoVaultEchoesTable, Arn ]
             - Fn::Join:
@@ -360,6 +371,19 @@ functions:
       - schedule:
           rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
           description: Auto-release scheduled echoes
+
+  # Scheduled job: hourly Soul Ping dispatch (one proactive ping per user max,
+  # generated from recent mirror-chat history + summary). The service enforces
+  # the per-user one-per-hour throttle and per-user category config.
+  soulPingDispatch:
+    handler: src/app/jobs/soul_ping_job.lambda_handler
+    description: Hourly per-user Soul Ping generation + delivery
+    timeout: 600
+    memorySize: 512
+    events:
+      - schedule:
+          rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
+          description: Generate and send Soul Pings
 
   # Writes the web-playable MP4 url back onto an attachment when a MediaConvert
   # transcode finishes. Triggered by EventBridge on job-state COMPLETE.
@@ -646,6 +670,26 @@ resources:
           - AttributeName: user_id
             KeyType: HASH
           - AttributeName: device_token
+            KeyType: RANGE
+
+    # Soul Pings: one row per sent ping (PK user_id, SK sent_at desc) — source
+    # of truth for the one-per-hour throttle and a future in-app feed.
+    SoulPingsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-soul-pings-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: sent_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: sent_at
             KeyType: RANGE
 
     # Echo Vault Tables
