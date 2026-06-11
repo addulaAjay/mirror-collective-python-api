@@ -20,6 +20,15 @@ provider:
     OPENAI_API_KEY: ${env:OPENAI_API_KEY, ''}
     # SNS/SES Notifications
     SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN, ''}
+    # APNs/FCM platform-application ARNs, resolved per-stage from SSM at deploy
+    # time (Serverless reads ${ssm:...} with the deployer's creds and bakes the
+    # value into the Lambda env — no runtime SSM access needed). Created once
+    # per environment by scripts/setup-apns-platform-app.sh, which also maps the
+    # stage to the right APNs environment (staging → APNS_SANDBOX, prod → APNS)
+    # so device tokens (dev build = sandbox, TestFlight = production) match.
+    # Empty-string fallback keeps deploys working before the param exists.
+    SNS_IOS_APP_ARN: ${ssm:/mirror-collective/${self:provider.stage}/sns/ios-app-arn, ''}
+    SNS_ANDROID_APP_ARN: ${ssm:/mirror-collective/${self:provider.stage}/sns/android-app-arn, ''}
     SES_SENDER_EMAIL: ${env:SES_SENDER_EMAIL, 'noreply@mirrorcollective.com'}
     APP_NAME: "Mirror Collective"
     APP_URL: ${env:APP_URL, 'https://mirrorcollective.com'}
