@@ -173,6 +173,18 @@ jobs:
     - name: Install Serverless Framework
       run: npm install -g serverless@3.40.0
 
+    # AWS creds must be configured BEFORE `serverless print`: the YAML now
+    # references ${ssm:...} (SNS platform-app ARNs), which Serverless resolves
+    # against AWS even at print time. Without creds, print errors outright
+    # instead of using the empty-string fallback (that fallback only covers a
+    # *missing parameter*, not *missing credentials*).
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
     - name: Install plugins and verify setup
       run: |
         cd build
@@ -185,13 +197,6 @@ jobs:
         # must be present here too, not just in the deploy step.
         COGNITO_USER_POOL_ID: ${{ secrets.STAGING_COGNITO_USER_POOL_ID }}
         COGNITO_CLIENT_ID: ${{ secrets.STAGING_COGNITO_CLIENT_ID }}
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
     - name: Deploy to staging
       run: |
@@ -252,6 +257,18 @@ jobs:
     - name: Install Serverless Framework
       run: npm install -g serverless@3.40.0
 
+    # AWS creds must be configured BEFORE `serverless print` — the YAML now
+    # references ${ssm:...} (SNS platform-app ARNs), resolved against AWS even
+    # at print time. (Note: print uses --stage production while the deploy uses
+    # --stage production-v2; the SSM param lives under production-v2, so the
+    # production print falls back to '' via the param-missing default — fine.)
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
     - name: Install plugins and verify setup
       run: |
         cd build
@@ -264,13 +281,6 @@ jobs:
         # must be present here too, not just in the deploy step.
         COGNITO_USER_POOL_ID: ${{ secrets.PROD_COGNITO_USER_POOL_ID }}
         COGNITO_CLIENT_ID: ${{ secrets.PROD_COGNITO_CLIENT_ID }}
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
     - name: Deploy to production
       run: |
