@@ -257,6 +257,39 @@ async def test_viewer_matches_branding_and_plays_every_media_type_in_page():
     assert "divider-star.png" in body
     assert "icon-lock.png" in body
     assert "email-bg-starfield.png" in body
+    # The viewer MUST ship a CSP that permits its own resources. The global
+    # security-headers middleware sets `default-src 'self'` via setdefault,
+    # which would block the S3 images + <video>/<audio> media and the Google
+    # fonts (the live "media won't play / logo broken" bug). The page sets its
+    # own CSP so setdefault leaves it intact.
+    csp = resp.headers["content-security-policy"]
+    assert "img-src" in csp and "https://*.amazonaws.com" in csp
+    assert "media-src 'self' https://*.amazonaws.com" in csp
+    assert "fonts.googleapis.com" in csp and "fonts.gstatic.com" in csp
+
+
+@pytest.mark.asyncio
+async def test_viewer_csp_overrides_strict_global_default():
+    """Sanity: the viewer response carries a permissive, media-friendly CSP
+    (not the global `default-src 'self'`) so the browser loads S3 media."""
+    echo = Echo(
+        echo_id="e1",
+        recipient_id="r1",
+        status=EchoStatus.RELEASED,
+        content="hi",
+    )
+    tok = create_share_token("e1", "r1")
+    with patch.object(
+        share_routes.echo_service, "get_shared_echo", AsyncMock(return_value=echo)
+    ):
+        resp = await share_routes.shared_echo_viewer("e1", t=tok)
+    csp = resp.headers["content-security-policy"]
+    # Must NOT be the bare strict policy that blocks media/images.
+    assert csp != "default-src 'self'"
+    assert "media-src" in csp
+    # Error pages carry the CSP too (they also load fonts + logo).
+    err = share_routes._error_page("nope", 404)
+    assert "media-src" in err.headers["content-security-policy"]
 
 
 @pytest.mark.asyncio

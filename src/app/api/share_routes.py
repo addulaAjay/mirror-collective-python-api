@@ -43,6 +43,26 @@ _GET_APP_URL = os.getenv("APP_STORE_URL", _APP_URL)
 # expired/dead link. Defends against a misconfigured CDN/browser cache.
 _NO_STORE = {"Cache-Control": "no-store"}
 
+# Viewer-scoped Content-Security-Policy. The global security-headers middleware
+# (app/handler.py) sets a strict `default-src 'self'` CSP via `setdefault`,
+# which would block EVERYTHING this page needs — brand images + inline
+# <video>/<audio> served from S3, and the Google web fonts — so the browser
+# refuses to load the media (it 206s fine over the wire; CSP blocks it client
+# side). Because the middleware uses setdefault, setting our own CSP here wins.
+# Scope: images + media from any AWS S3 host (asset bucket + vault/accelerate
+# media), styles/fonts from Google, and no scripts at all.
+_VIEWER_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' https://*.amazonaws.com data:; "
+    "media-src 'self' https://*.amazonaws.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "script-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'"
+)
+_PAGE_HEADERS = {"Cache-Control": "no-store", "Content-Security-Policy": _VIEWER_CSP}
+
 _DAY_SUFFIXES = {1: "st", 2: "nd", 3: "rd"}
 
 
@@ -213,7 +233,7 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
 <a class="cta" href="{html.escape(_GET_APP_URL)}">GET THE APP</a>
 <div class="footer"><img src="{_ASSET_BASE}/icon-lock.png" alt="" />Shared privately through Echo Vault</div>
 </div></body></html>"""
-    return HTMLResponse(doc, status_code=status, headers=_NO_STORE)
+    return HTMLResponse(doc, status_code=status, headers=_PAGE_HEADERS)
 
 
 def _error_page(message: str, status: int) -> HTMLResponse:
