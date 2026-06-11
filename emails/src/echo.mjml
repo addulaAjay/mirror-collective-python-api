@@ -89,9 +89,12 @@
         </mj-column>
       </mj-section>
 
-      <!-- Quote card: sender's cover note (or a gentle default), + star divider. -->
-      <mj-section css-class="card" background-color="#131a2e" border="1px solid #f0d4a8" padding="24px 24px 16px" border-radius="12px">
-        <mj-column>
+      <!-- Quote card: sender's cover note (or a gentle default), + star divider.
+           The 24px side gutter lives on the SECTION (no background); the card
+           fill + gold border live on the COLUMN, so the card is inset from the
+           email edges instead of running edge-to-edge (matches the design). -->
+      <mj-section padding="0 24px">
+        <mj-column css-class="card" background-color="#131a2e" border="1px solid #f0d4a8" border-radius="12px" padding="24px 20px 16px">
           <mj-text css-class="echo-quote" font-size="20px" line-height="24px" align="center" padding="0 0 20px">
             &ldquo;{{ quote_text }}&rdquo;
           </mj-text>
@@ -118,18 +121,15 @@
         </mj-column>
       </mj-section>
 
-      <!-- Privacy line -->
+      <!-- Privacy line — lock + text centered on ONE line. An inline <img>
+           keeps them together; an mj-group splits into columns that wrap and
+           misalign on narrow mobile (the bug in the original). -->
       <mj-section padding="16px 24px 8px">
-        <mj-group>
-          <mj-column width="28px" vertical-align="middle">
-            <mj-image src="{{ asset_base }}/icon-lock.png" alt="" width="14px" align="right" padding="0 6px 0 0" />
-          </mj-column>
-          <mj-column vertical-align="middle">
-            <mj-text css-class="muted" font-size="14px" line-height="20px" align="left" padding="0">
-              Shared privately through Echo Vault
-            </mj-text>
-          </mj-column>
-        </mj-group>
+        <mj-column>
+          <mj-text css-class="muted" font-size="14px" line-height="20px" align="center" padding="0">
+            <img src="{{ asset_base }}/icon-lock.png" alt="" width="13" height="16" style="vertical-align:middle;margin-right:6px;display:inline-block;" />Shared privately through Echo Vault
+          </mj-text>
+        </mj-column>
       </mj-section>
 
       <!-- Legal footer -->

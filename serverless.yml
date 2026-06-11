@@ -35,11 +35,19 @@ provider:
     # Public brand-asset bucket for the rich echo-share emails. Email clients
     # (Gmail, etc.) fetch the <img> sources server-side with no auth, so this
     # bucket is public-read — unlike the presigned-only vault bucket. The MJML
-    # templates reference images as ${EMAIL_ASSET_BASE_URL}/<name>.png. Scoped
-    # per-stage (like ECHO_MEDIA_BUCKET) to avoid cross-stage name conflicts;
-    # override EMAIL_ASSET_BASE_URL to point all stages at one shared bucket.
+    # templates AND the share viewer reference images as
+    # ${EMAIL_ASSET_BASE_URL}/<name>.png.
+    #
+    # NOTE: the live brand assets (logo, divider-star, icon-lock, the email
+    # starfield bg, etc.) live in the SHARED bucket
+    # `mirror-collective-email-assets-production-v2` — note the `-v2` suffix,
+    # which the per-stage resource name below does NOT carry. The previous
+    # default (`...-${stage}`) resolved to a non-existent `...-production`
+    # bucket, so the share viewer's logo 404'd. Default all stages at the real
+    # shared bucket (matches "point all stages at one shared bucket"); override
+    # EMAIL_ASSET_BASE_URL via env for a stage-specific bucket.
     EMAIL_ASSETS_BUCKET: mirror-collective-email-assets-${self:provider.stage}
-    EMAIL_ASSET_BASE_URL: ${env:EMAIL_ASSET_BASE_URL, 'https://mirror-collective-email-assets-${self:provider.stage}.s3.${self:provider.region}.amazonaws.com'}
+    EMAIL_ASSET_BASE_URL: ${env:EMAIL_ASSET_BASE_URL, 'https://mirror-collective-email-assets-production-v2.s3.${self:provider.region}.amazonaws.com'}
     # Public tokenized echo viewer (email-recipient attachment playback).
     # SHARE_TOKEN_SECRET signs the share JWT — REQUIRED in every env (no default;
     # set per stage). SHARE_BASE_URL is the API's own public origin (where the
