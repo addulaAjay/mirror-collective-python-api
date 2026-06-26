@@ -14,6 +14,12 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from .exceptions import BaseAPIException
+from .request_context import (
+    reset_request_id,
+    reset_user_id,
+    set_request_id,
+    set_user_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +86,6 @@ async def base_api_exception_handler(request: Request, exc: Exception) -> Respon
     logger.error(
         f"API Exception: {exc.__class__.__name__}: {exc.message}",
         extra={
-            "request_id": request_id,
             "path": request.url.path,
             "method": request.method,
             "status_code": exc.status_code,
@@ -137,7 +142,6 @@ async def http_exception_handler(request: Request, exc: Exception) -> Response:
     logger.warning(
         f"HTTP Exception: {exc.status_code}: {exc.detail}",
         extra={
-            "request_id": request_id,
             "path": request.url.path,
             "method": request.method,
             "status_code": exc.status_code,
@@ -181,7 +185,6 @@ async def validation_exception_handler(request: Request, exc: Exception) -> Resp
         f"Validation Error on {request.method} {request.url.path}: "
         f"{len(validation_errors)} error(s) - {error_summary}",
         extra={
-            "request_id": request_id,
             "path": request.url.path,
             "method": request.method,
             "validation_errors": validation_errors,
@@ -210,7 +213,6 @@ async def general_exception_handler(request: Request, exc: Exception) -> Respons
     logger.exception(
         f"Unhandled Exception: {exc.__class__.__name__}: {str(exc)}",
         extra={
-            "request_id": request_id,
             "path": request.url.path,
             "method": request.method,
         },
@@ -247,27 +249,40 @@ def setup_error_handlers(app: FastAPI):
     # Add request ID middleware
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):
-        request_id = str(uuid.uuid4())
+        # Honor an inbound X-Request-ID so a trace can span services/clients;
+        # otherwise generate one. The id is bound into the logging context so
+        # every log line for this request carries it.
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         request.state.request_id = request_id
 
+        request_id_token = set_request_id(request_id)
+        # Reset user_id to default at request start; the auth dependency sets
+        # the real value once the token is decoded. Resetting here prevents a
+        # previous request's user from leaking into an unauthenticated one.
+        user_id_token = set_user_id(None)
+
         start_time = time.time()
-        response = await call_next(request)
-        process_time = (time.time() - start_time) * 1000
+        try:
+            response = await call_next(request)
+            process_time = (time.time() - start_time) * 1000
 
-        # Add request ID to response headers
-        response.headers["X-Request-ID"] = request_id
+            # Add request ID to response headers
+            response.headers["X-Request-ID"] = request_id
 
-        # Log request
-        logger.info(
-            f"{request.method} {request.url.path} - "
-            f"{response.status_code} - {process_time:.2f}ms",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "process_time_ms": process_time,
-            },
-        )
+            # Log request (still inside the bound context so the line carries
+            # this request's id/user).
+            logger.info(
+                f"{request.method} {request.url.path} - "
+                f"{response.status_code} - {process_time:.2f}ms",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "process_time_ms": process_time,
+                },
+            )
 
-        return response
+            return response
+        finally:
+            reset_user_id(user_id_token)
+            reset_request_id(request_id_token)

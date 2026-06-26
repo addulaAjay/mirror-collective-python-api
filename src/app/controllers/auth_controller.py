@@ -19,6 +19,7 @@ from ..api.models import (
     UserBasic,
     UserRegistrationRequest,
 )
+from ..core.log_sanitize import mask_email
 from ..services.cognito_service import get_cognito_service
 from ..services.dynamodb_service import get_dynamodb_service
 from ..services.echo_service import get_echo_service
@@ -322,7 +323,7 @@ class AuthController:
             if user_email:
                 try:
                     await self.cognito_service.admin_user_global_sign_out(user_email)
-                    logger.info(f"User signed out globally: {user_email}")
+                    logger.info(f"User signed out globally: {mask_email(user_email)}")
                 except Exception as e:
                     # Don't fail logout if global sign out fails
                     logger.warning(f"Failed to sign out user globally: {e}")
@@ -343,7 +344,7 @@ class AuthController:
         if user_email and user_id:
             try:
                 await self.cognito_service.admin_delete_user(user_email)
-                logger.info(f"Deleted user from Cognito: {user_email}")
+                logger.info(f"Deleted user from Cognito: {mask_email(user_email)}")
 
                 # Then delete from DynamoDB
                 await self.user_service.delete_user_account(user_id)
