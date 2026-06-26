@@ -174,9 +174,10 @@ class AuthController:
 
     async def refresh_token(self, payload: RefreshTokenRequest) -> AuthResponse:
         """Refresh access token using refresh token"""
-        # Refresh token with Cognito
+        # Refresh token with Cognito. Pass the username so SECRET_HASH can be
+        # computed when the app client has a secret.
         auth_result = await self.cognito_service.refresh_access_token(
-            payload.refreshToken
+            payload.refreshToken, username=payload.username
         )
 
         return AuthResponse(

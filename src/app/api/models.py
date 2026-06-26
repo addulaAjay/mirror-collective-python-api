@@ -86,6 +86,11 @@ class ResetPasswordRequest(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refreshToken: str = Field(min_length=1)
+    # Cognito username (the token's `username` claim). Required only when the
+    # app client has a secret, to compute SECRET_HASH for REFRESH_TOKEN_AUTH.
+    # Treated as untrusted: used solely to derive the HMAC, never for authz.
+    # Bounded to Cognito's 128-char username limit as defense-in-depth.
+    username: Optional[str] = Field(default=None, max_length=128)
 
 
 class EmailVerificationRequest(BaseModel):

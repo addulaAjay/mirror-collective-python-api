@@ -333,15 +333,22 @@ class CognitoService:
             logger.exception(f"Unexpected error during resend confirmation: {str(e)}")
             raise CognitoServiceError(f"Resend confirmation failed: {str(e)}")
 
-    async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
-        """Refresh access token using refresh token"""
+    async def refresh_access_token(
+        self, refresh_token: str, username: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Refresh access token using refresh token.
+
+        Args:
+            refresh_token: The Cognito refresh token (the validated credential).
+            username: The user's Cognito username (the token's ``username``
+                claim). When the app client has a secret, Cognito requires
+                SECRET_HASH on REFRESH_TOKEN_AUTH, computed from this username.
+                It is untrusted input used solely to derive the HMAC — never for
+                authorization. A wrong value only yields a Cognito rejection.
+        """
         try:
             logger.info("Starting refresh token operation")
 
-            # SECRET_HASH is NOT included for refresh token operations:
-            # 1. Cognito validates the refresh token itself without needing SECRET_HASH
-            # 2. Computing it with an empty username generates an invalid hash that
-            #    causes "SecretHash does not match" / NotAuthorizedException errors
             params: Dict[str, Any] = {
                 "ClientId": self.client_id,
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
@@ -349,6 +356,22 @@ class CognitoService:
                     "REFRESH_TOKEN": refresh_token,
                 },
             }
+
+            # Cognito requires SECRET_HASH for REFRESH_TOKEN_AUTH when the app
+            # client is configured with a secret. Without a username we cannot
+            # compute it; the caller is expected to supply one in that case.
+            if self.client_secret and username:
+                secret_hash = self._get_secret_hash(username)
+                if secret_hash:
+                    params["AuthParameters"]["SECRET_HASH"] = secret_hash
+            elif self.client_secret and not username:
+                # Cognito will reject this with "SECRET_HASH was not received".
+                # Log (without any PII) so the cause is obvious in CloudWatch.
+                logger.warning(
+                    "Refresh called without a username but the app client has a "
+                    "secret; SECRET_HASH cannot be computed and Cognito will "
+                    "reject the request."
+                )
 
             msg = (
                 "Refresh token params: "
