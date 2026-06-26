@@ -1,13 +1,25 @@
 import re
+import string
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
+
+# Characters accepted as a "special character" in passwords. This deliberately
+# mirrors the set the mobile SignUp form accepts (any common ASCII symbol) so the
+# client and server agree — a narrower server set silently rejected passwords the
+# app had already accepted, surfacing as "Registration Failed" (HTTP 422).
+PASSWORD_SPECIAL_CHARS = set(string.punctuation)
+
+# Characters allowed in a name in addition to letters: spaces, period (initials),
+# apostrophe and hyphen. Letters are matched via ``str.isalpha()`` which is
+# Unicode-aware, so accented and international names (e.g. "José García") are valid.
+NAME_EXTRA_CHARS = set(" .'-")
 
 
 class UserRegistrationRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
-    fullName: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z\s\'-]+$")
+    fullName: str = Field(min_length=2, max_length=100)
     phoneNumber: Optional[str] = None
     termsAcceptedAt: Optional[str] = None
     anonymousId: Optional[str] = None  # For linking anonymous quiz data
@@ -23,8 +35,22 @@ class UserRegistrationRequest(BaseModel):
             raise ValueError("Password must contain at least one uppercase letter")
         if not re.search(r"\d", v):
             raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[@$!%*?&]", v):
+        if not any(c in PASSWORD_SPECIAL_CHARS for c in v):
             raise ValueError("Password must contain at least one special character")
+        return v
+
+    @field_validator("fullName")
+    @classmethod
+    def validate_full_name(cls, v):
+        # Allow Unicode letters plus spaces, periods, apostrophes and hyphens.
+        # Reject digits and other symbols.
+        if not all(c.isalpha() or c in NAME_EXTRA_CHARS for c in v):
+            raise ValueError(
+                "Full name may only contain letters, spaces, periods, "
+                "apostrophes and hyphens"
+            )
+        if not any(c.isalpha() for c in v):
+            raise ValueError("Full name must contain at least one letter")
         return v
 
 

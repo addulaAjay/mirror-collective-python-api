@@ -172,8 +172,14 @@ async def validation_exception_handler(request: Request, exc: Exception) -> Resp
         )
         validation_errors.append({"field": field_path, "message": error["msg"]})
 
+    # Include the failing field(s) in the message itself so they are visible in
+    # log aggregators (e.g. CloudWatch) that don't render the structured `extra`.
+    error_summary = "; ".join(
+        f"{e['field']}: {e['message']}" for e in validation_errors
+    )
     logger.warning(
-        f"Validation Error: {len(validation_errors)} errors",
+        f"Validation Error on {request.method} {request.url.path}: "
+        f"{len(validation_errors)} error(s) - {error_summary}",
         extra={
             "request_id": request_id,
             "path": request.url.path,
