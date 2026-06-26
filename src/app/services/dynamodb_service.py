@@ -1689,12 +1689,14 @@ class DynamoDBService:
             dynamodb = await self._get_resource()
             table = await dynamodb.Table(self.quiz_results_table)
 
-            # Query by user_id. Based on create_mirrorgpt_tables.py,
-            # archetype_quiz_results has user-index
+            # Query by user_id via the GSI provisioned in serverless.yml:
+            # "user-quiz-index" (user_id HASH + completed_at RANGE). Order by
+            # completed_at descending so the most recent result is first.
             response = await table.query(
-                IndexName="user-index",
+                IndexName="user-quiz-index",
                 KeyConditionExpression="user_id = :uid",
                 ExpressionAttributeValues={":uid": user_id},
+                ScanIndexForward=False,
             )
 
             return [dict(item) for item in response.get("Items", [])]
