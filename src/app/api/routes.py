@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -37,6 +38,54 @@ sns_service = SNSService()
 dynamodb_service = get_dynamodb_service()
 user_service = UserService()
 echo_service = get_echo_service()
+
+# Device registration guards ------------------------------------------------
+# SNS rejects an APNs token that isn't hex or exceeds 400 chars. Older iOS app
+# builds sent the Firebase FCM token here, which SNS rejected with
+# InvalidParameter -> the route used to turn that into a 500. Validate at the
+# boundary instead so a bad client payload is a clean 400.
+SUPPORTED_PLATFORMS = {"ios", "android"}
+MAX_IOS_TOKEN_HEX_LENGTH = 400  # AWS SNS APNS limit
+_HEX_TOKEN_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def normalize_device_registration(device_token: str, platform: str) -> Tuple[str, str]:
+    """Validate and normalize a device registration payload.
+
+    Returns ``(normalized_token, normalized_platform)``.
+
+    Raises:
+        HTTPException: 400 for an unsupported platform, an empty token, or an
+            iOS token that is not a hexadecimal APNs token within the SNS limit.
+    """
+    normalized_platform = (platform or "").strip().lower()
+    if normalized_platform not in SUPPORTED_PLATFORMS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported platform '{platform}'. "
+                f"Expected one of: {sorted(SUPPORTED_PLATFORMS)}"
+            ),
+        )
+
+    # APNs tokens sometimes arrive wrapped like "<abcd 1234>"; unwrap before
+    # validating so a cosmetically-formatted-but-valid token isn't rejected.
+    token = (device_token or "").strip().strip("<>").replace(" ", "")
+    if not token:
+        raise HTTPException(status_code=400, detail="device_token must not be empty")
+
+    if normalized_platform == "ios":
+        if not _HEX_TOKEN_RE.match(token) or len(token) > MAX_IOS_TOKEN_HEX_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid iOS device token: expected a hexadecimal APNs token "
+                    f"of at most {MAX_IOS_TOKEN_HEX_LENGTH} characters. "
+                    "A Firebase/FCM token is not a valid APNs token."
+                ),
+            )
+
+    return token, normalized_platform
 
 
 class UpdateProfileRequest(BaseModel):
@@ -198,8 +247,13 @@ async def register_device(
 ):
     """Register a device for push notifications (Requires Auth)"""
     user_id = current_user["id"]
-    device_token = request.device_token
-    platform = request.platform
+
+    # Validate/normalize before any AWS call. A malformed token (e.g. an FCM
+    # token from an old iOS build) is a clean 400, not a 500. Raised here so it
+    # is not swallowed by the generic handler below.
+    device_token, platform = normalize_device_registration(
+        request.device_token, request.platform
+    )
 
     try:
         # Step 1: Check if we already have this registration in DB
@@ -219,10 +273,26 @@ async def register_device(
                 },
             }
 
-        # Step 2: Create new endpoint in SNS
-        endpoint_arn = sns_service.create_platform_endpoint(
-            token=device_token, platform=platform, user_id=user_id
-        )
+        # Step 2: Create new endpoint in SNS. Push registration is best-effort —
+        # if SNS rejects the token, don't fail the whole request (a 500 would
+        # break the calling flow). Return a soft result instead.
+        try:
+            endpoint_arn = sns_service.create_platform_endpoint(
+                token=device_token, platform=platform, user_id=user_id
+            )
+        except Exception as sns_error:
+            logger.error(
+                f"SNS endpoint creation failed for user {user_id} "
+                f"({platform}): {sns_error}"
+            )
+            return {
+                "success": True,
+                "data": {"status": "push_registration_failed"},
+                "message": (
+                    "Device accepted but push notifications could not be "
+                    "registered on this device."
+                ),
+            }
 
         # Step 3: Subscribe to the main topic
         try:
@@ -257,6 +327,8 @@ async def register_device(
             "message": "Device registered successfully",
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in register_device: {e}")
         raise HTTPException(status_code=500, detail=str(e))
