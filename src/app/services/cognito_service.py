@@ -22,6 +22,7 @@ from ..core.exceptions import (
     UserNotFoundError,
     ValidationError,
 )
+from ..core.log_sanitize import mask_email
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,10 @@ class CognitoService:
         error_code = error.response["Error"]["Code"]
         error_message = error.response["Error"]["Message"]
 
-        logger.error(f"Cognito {operation} error: {error_code} - {error_message}")
+        # Log only the (safe) error code at ERROR for alerting. The raw Cognito
+        # message can echo identifiers, so keep it at DEBUG.
+        logger.error(f"Cognito {operation} error: {error_code}")
+        logger.debug(f"Cognito {operation} error detail: {error_message}")
 
         error_mappings = {
             "UsernameExistsException": UserAlreadyExistsError(
@@ -166,7 +170,7 @@ class CognitoService:
 
             response = await asyncio.to_thread(self.client.sign_up, **params)
 
-            logger.info(f"User registered successfully: {email}")
+            logger.info(f"User registered successfully: {mask_email(email)}")
 
             return {
                 "userSub": response["UserSub"],
@@ -212,7 +216,7 @@ class CognitoService:
                     "Authentication failed - incomplete token response"
                 )
 
-            logger.info(f"User authenticated successfully: {email}")
+            logger.info(f"User authenticated successfully: {mask_email(email)}")
 
             return {
                 "accessToken": access_token,
@@ -238,7 +242,7 @@ class CognitoService:
 
             response = await asyncio.to_thread(self.client.forgot_password, **params)
 
-            logger.info(f"Password reset initiated for: {email}")
+            logger.info(f"Password reset initiated for: {mask_email(email)}")
 
             return response
 
@@ -269,7 +273,7 @@ class CognitoService:
                 self.client.confirm_forgot_password, **params
             )
 
-            logger.info(f"Password reset confirmed for: {email}")
+            logger.info(f"Password reset confirmed for: {mask_email(email)}")
 
             return response
 
@@ -299,7 +303,7 @@ class CognitoService:
 
             response = await asyncio.to_thread(self.client.confirm_sign_up, **params)
 
-            logger.info(f"Email confirmed for: {email}")
+            logger.info(f"Email confirmed for: {mask_email(email)}")
 
             return response
 
@@ -323,7 +327,7 @@ class CognitoService:
                 self.client.resend_confirmation_code, **params
             )
 
-            logger.info(f"Confirmation code resent for: {email}")
+            logger.info(f"Confirmation code resent for: {mask_email(email)}")
 
             return response
 
@@ -404,16 +408,13 @@ class CognitoService:
         except ClientError as e:
             # Custom error handling for refresh token operations
             error_code = e.response["Error"]["Code"]
-            error_message = e.response["Error"]["Message"]
 
-            logger.error(
-                f"Cognito refresh_token ClientError: {error_code} - {error_message}"
-            )
-            # Full response can carry user identifiers and Cognito-internal
-            # request IDs — keep at DEBUG so it doesn't leak into prod
-            # CloudWatch by default. Operators can raise log level when
-            # diagnosing a specific incident.
-            logger.debug(f"Full error response: {e.response}")
+            logger.error(f"Cognito refresh_token ClientError: {error_code}")
+            # The raw message and full response can carry user identifiers and
+            # Cognito-internal request IDs — keep at DEBUG so they don't leak
+            # into prod CloudWatch by default. Operators can raise the log level
+            # when diagnosing a specific incident.
+            logger.debug(f"Cognito refresh_token error detail: {e.response}")
 
             # Specific error mappings for refresh token flow
             if error_code == "NotAuthorizedException":
@@ -482,7 +483,7 @@ class CognitoService:
                 Username=email,
             )
 
-            logger.info(f"User account deleted successfully: {email}")
+            logger.info(f"User account deleted successfully: {mask_email(email)}")
 
             return response
 

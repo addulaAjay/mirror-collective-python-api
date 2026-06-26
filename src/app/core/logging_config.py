@@ -20,6 +20,7 @@ def get_logging_config() -> Dict[str, Any]:
             "detailed": {
                 "format": (
                     "%(asctime)s - %(name)s - %(levelname)s - "
+                    "[req:%(request_id)s user:%(user_id)s] "
                     "%(message)s - [%(filename)s:%(lineno)d]"
                 ),
                 "datefmt": "%Y-%m-%d %H:%M:%S",
@@ -29,6 +30,7 @@ def get_logging_config() -> Dict[str, Any]:
                 "format": (
                     '{"time":"%(asctime)s","name":"%(name)s",'
                     '"level":"%(levelname)s","message":"%(message)s",'
+                    '"request_id":"%(request_id)s","user_id":"%(user_id)s",'
                     '"file":"%(filename)s","line":%(lineno)d}'
                 ),
                 "datefmt": "%Y-%m-%dT%H:%M:%SZ",
@@ -81,6 +83,12 @@ def get_logging_config() -> Dict[str, Any]:
 
 def setup_logging():
     """Setup logging configuration"""
+    # Install the context record factory before configuring handlers so every
+    # record (including third-party loggers) carries request_id / user_id.
+    from .request_context import install_log_record_factory
+
+    install_log_record_factory()
+
     config = get_logging_config()
     logging.config.dictConfig(config)
 

@@ -10,6 +10,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 from .exceptions import AuthenticationError, InvalidTokenError, TokenExpiredError
+from .log_sanitize import mask_email
+from .request_context import set_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,12 @@ def map_claims_to_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
         "features": [],
     }
 
+    # Bind the user id into the logging context so every subsequent log line in
+    # this request is attributable to the user (greppable when they report an
+    # issue). All auth paths return through here.
+    sub = payload.get("sub")
+    set_user_id(sub if isinstance(sub, str) else None)
+
     return profile
 
 
@@ -306,11 +314,12 @@ async def get_current_user(
     if is_development:
         logger.info(
             f"🔧 Development: Decoded JWT token for user: "
-            f"{user_profile.get('email', 'unknown')}"
+            f"{mask_email(user_profile.get('email'))}"
         )
     else:
         logger.debug(
-            f"✅ Production: User authenticated: {user_profile.get('email', 'unknown')}"
+            f"✅ Production: User authenticated: "
+            f"{mask_email(user_profile.get('email'))}"
         )
 
     return user_profile
