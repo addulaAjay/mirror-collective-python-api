@@ -67,6 +67,70 @@ def test_user_registration_request_invalid_name():
     assert "fullName" in str(exc_info.value)
 
 
+def test_password_accepts_common_special_chars():
+    """Fix #1: backend must accept the same special characters the app allows.
+
+    The mobile SignUp form accepts any common ASCII symbol, but the API used to
+    allow only ``@$!%*?&`` — so passwords like ``Welcome#2024`` passed the form
+    and were rejected by the server (HTTP 422 -> "Registration Failed").
+    """
+    accepted = [
+        "Welcome#2024",  # hash
+        "MyPass_1234",  # underscore
+        "Hello.World1",  # period
+        "Strong-Pass1",  # hyphen
+        "Caret^Pass1",  # caret
+        "Tilde~Pass1",  # tilde
+        "Paren(Pass1)",  # parentheses
+    ]
+    for password in accepted:
+        request = UserRegistrationRequest(
+            email="test@example.com", password=password, fullName="Test User"
+        )
+        assert request.password == password
+
+
+def test_password_still_requires_a_special_char():
+    """A purely alphanumeric password is still rejected."""
+    with pytest.raises(ValidationError) as exc_info:
+        UserRegistrationRequest(
+            email="test@example.com", password="NoSpecial123", fullName="Test User"
+        )
+    assert "special character" in str(exc_info.value)
+
+
+def test_fullname_accepts_international_and_punctuation():
+    """Fix #2: accented / international names and initials must be accepted.
+
+    The old pattern ``^[a-zA-Z\\s'-]+$`` rejected accents and periods, blocking
+    valid users such as ``José García`` and ``John A. Smith``.
+    """
+    accepted = [
+        "José García",  # accents
+        "Müller",  # umlaut
+        "Renée Dubois",  # accent
+        "Anne-Marie O'Brien",  # hyphen + apostrophe
+        "John A. Smith",  # middle initial with period
+        "Sven Åkesson",  # ring
+    ]
+    for name in accepted:
+        request = UserRegistrationRequest(
+            email="test@example.com", password="ValidPass123!", fullName=name
+        )
+        assert request.fullName == name
+
+
+def test_fullname_rejects_digits_and_symbols():
+    """Names containing digits or non-name symbols are still rejected."""
+    rejected = ["John123", "Test@User", "name!!", "<script>"]
+    for name in rejected:
+        with pytest.raises(ValidationError) as exc_info:
+            UserRegistrationRequest(
+                email="test@example.com", password="ValidPass123!", fullName=name
+            )
+        assert "fullName" in str(exc_info.value)
+
+
 def test_login_request_valid():
     """Test valid login request"""
     data = {"email": "test@example.com", "password": "password123"}
