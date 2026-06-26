@@ -185,11 +185,16 @@ def create_mirrorgpt_tables():
             "AttributeDefinitions": [
                 {"AttributeName": "quiz_id", "AttributeType": "S"},
                 {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "completed_at", "AttributeType": "S"},
             ],
+            # Must match serverless.yml so dev tables mirror production.
             "GlobalSecondaryIndexes": [
                 {
-                    "IndexName": "user-index",
-                    "KeySchema": [{"AttributeName": "user_id", "KeyType": "HASH"}],
+                    "IndexName": "user-quiz-index",
+                    "KeySchema": [
+                        {"AttributeName": "user_id", "KeyType": "HASH"},
+                        {"AttributeName": "completed_at", "KeyType": "RANGE"},
+                    ],
                     "Projection": {"ProjectionType": "ALL"},
                 }
             ],
