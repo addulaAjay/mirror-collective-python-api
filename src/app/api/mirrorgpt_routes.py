@@ -578,8 +578,8 @@ async def submit_archetype_quiz(
     import os
     from pathlib import Path
 
-    from ..services.quiz_scoring import QuizAnswer as ScoringQuizAnswer
     from ..services.quiz_scoring import calculate_quiz_result
+    from ..services.quiz_submission import build_scoring_inputs
 
     try:
         # 1. Determine user ID
@@ -631,9 +631,12 @@ async def submit_archetype_quiz(
         # 3. Extract quiz config for dynamic scoring
         quiz_config = questions_json.get("config", {})
 
-        # Build list of core question IDs from question data (dynamic)
+        # Build list of core question IDs from question data (dynamic).
+        # Coerce to int (DynamoDB returns numbers as Decimal).
         core_question_ids = [
-            q.get("id") for q in questions_list if q.get("core", False)
+            int(q["id"])
+            for q in questions_list
+            if q.get("core", False) and q.get("id") is not None
         ]
         if not core_question_ids:
             # Fallback to default if no core questions specified
@@ -643,68 +646,15 @@ async def submit_archetype_quiz(
         if quiz_config and "coreQuestions" not in quiz_config:
             quiz_config["coreQuestions"] = core_question_ids
 
-        # 4. Build question ID to archetype mapping
-        # Map: {question_id: {answer_text: archetype}}
-        question_map = {}
-        for q in questions_list:
-            q_id = q.get("id")
-            options = q.get("options", [])
-            question_map[q_id] = {
-                opt.get("text") or opt.get("label"): opt.get("archetype")
-                for opt in options
-            }
+        # 4. Map + validate answers (dedupe, completeness, robust extraction).
+        #    Core flag follows the configured core questions, not a hardcoded set.
+        scoring_answers, quiz_answers_for_storage = build_scoring_inputs(
+            request.answers, questions_list, core_question_ids
+        )
 
-        # 5. Map user answers to archetypes using question data
-        scoring_answers: List[ScoringQuizAnswer] = []
-        quiz_answers_for_storage = []  # For DynamoDB storage
-
-        for answer in request.answers:
-            q_id = answer.questionId
-            answer_text = None
-
-            # Extract answer text based on type
-            if isinstance(answer.answer, dict):
-                answer_text = answer.answer.get("label", "")
-            else:
-                answer_text = str(answer.answer)
-
-            # Look up archetype from question options
-            if q_id not in question_map:
-                raise HTTPException(
-                    status_code=400, detail=f"Question {q_id} not found in quiz data"
-                )
-
-            archetype = question_map[q_id].get(answer_text)
-            if not archetype:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Answer '{answer_text}' not valid for question {q_id}",
-                )
-
-            # Create scoring answer
-            is_core = q_id in [1, 3, 5]  # Q1, Q3, Q5 are core
-            scoring_answer = ScoringQuizAnswer(
-                question_id=q_id,
-                question=answer.question,
-                archetype=archetype,
-                is_core=is_core,
-            )
-            scoring_answers.append(scoring_answer)
-
-            # Store for database
-            quiz_answers_for_storage.append(
-                {
-                    "question_id": q_id,
-                    "question": answer.question,
-                    "answer": answer_text,
-                    "archetype": archetype,
-                    "answered_at": answer.answeredAt,
-                    "type": answer.type,
-                }
-            )
-
-        # 5. Calculate quiz result using V1 weighted scoring
-        quiz_result = calculate_quiz_result(scoring_answers)
+        # 5. Calculate quiz result using the quiz's own config (weights, core
+        #    questions, tie-break order) rather than the hardcoded defaults.
+        quiz_result = calculate_quiz_result(scoring_answers, quiz_config)
 
         # 7. Create initial archetype profile with calculated result
         result = await orchestrator.create_initial_archetype_profile(
