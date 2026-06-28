@@ -299,6 +299,18 @@ functions:
     # (avg ~238MB used), so this buys CPU, not RAM. Shorter duration often makes
     # the per-ms cost increase close to net-neutral. Tune up/down as needed.
     memorySize: 1769
+    # Provisioned concurrency keeps 1 initialized instance warm so requests skip
+    # the ~5.6s cold-start init (the dominant p95 driver across all endpoints).
+    # Serverless publishes a version + alias and points the httpApi integration
+    # at the alias, so API Gateway invokes the warm pool. Unlike SnapStart, PC
+    # has no runtime (3.12) or ephemeral-storage (<=512MB) constraints, so it
+    # works on the current config as-is.
+    #
+    # Cost: 1 warm instance at 1769MB ≈ $19/mo. At our low, mostly-serial
+    # traffic, 1 covers the common case; a 2nd concurrent request can still cold
+    # start. Raise this, or add Application Auto Scaling scheduled actions to
+    # scale to 0 off-hours, if you want to trim cost.
+    provisionedConcurrency: 1
     events:
       # ---- Public routes (no authorizer) ----
       # Health checks (monitors / load balancers).
