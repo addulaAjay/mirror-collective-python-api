@@ -286,6 +286,13 @@ provider:
 functions:
   api:
     handler: src/app/handler.handler
+    # Lambda CPU scales with memory: ~1024MB ≈ 0.58 vCPU, 1769MB = 1 full vCPU.
+    # The API's cold-start init (~5.6s) and request work are CPU-bound (boto3 /
+    # openai imports, service construction), so 1769 roughly doubles CPU vs the
+    # 1024 default — faster cold starts and handlers. Memory headroom is large
+    # (avg ~238MB used), so this buys CPU, not RAM. Shorter duration often makes
+    # the per-ms cost increase close to net-neutral. Tune up/down as needed.
+    memorySize: 1769
     events:
       # ---- Public routes (no authorizer) ----
       # Health checks (monitors / load balancers).

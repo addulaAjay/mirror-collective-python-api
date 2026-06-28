@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Strict allow-list for names that get interpolated into LLM prompt text.
@@ -37,7 +38,11 @@ from ..services.dynamodb_service import (  # noqa: F401  (DynamoDBService patche
     get_dynamodb_service,
 )
 from ..services.mirror_orchestrator import MIRRORGPT_SYSTEM_PROMPT, MirrorOrchestrator
-from ..services.openai_service import ChatMessage, OpenAIService
+from ..services.openai_service import (  # noqa: F401  (OpenAIService patched in tests/conftest)
+    ChatMessage,
+    OpenAIService,
+    get_openai_service,
+)
 from ..services.quiz_questions_loader import (
     get_quiz_questions as load_bundled_quiz_questions,
 )
@@ -151,11 +156,16 @@ def generate_conversation_title(message: str, max_length: int = 50) -> str:
 router = APIRouter(prefix="/mirrorgpt", tags=["MirrorGPT"])
 
 
+@lru_cache(maxsize=1)
 def get_mirror_orchestrator() -> MirrorOrchestrator:
-    """Dependency injection for MirrorOrchestrator"""
-    dynamodb_service = get_dynamodb_service()
-    openai_service = OpenAIService()
-    return MirrorOrchestrator(dynamodb_service, openai_service)
+    """Dependency injection for MirrorOrchestrator.
+
+    Cached process-wide: the orchestrator is stateless (user/session data is
+    passed per call), and its deps — DynamoDBService, OpenAIService — are
+    themselves cached singletons. Caching avoids rebuilding the OpenAI httpx
+    clients and re-loading ArchetypeEngine definitions on every request.
+    """
+    return MirrorOrchestrator(get_dynamodb_service(), get_openai_service())
 
 
 def get_conversation_service() -> "ConversationService":
@@ -182,10 +192,9 @@ def _schedule_summary_refresh(
     async def _run() -> None:
         try:
             from ..services.conversation_summarizer import ConversationSummarizer
-            from ..services.openai_service import OpenAIService
 
             summarizer = ConversationSummarizer(
-                openai_service=OpenAIService(),
+                openai_service=get_openai_service(),
                 conversation_service=conversation_service,
             )
             # summarize_if_stale handles "do we need to" internally.
@@ -345,7 +354,6 @@ async def _try_lazy_summarize(
             DEFAULT_FIRST_SUMMARY_AT,
             ConversationSummarizer,
         )
-        from ..services.openai_service import OpenAIService
     except Exception as e:  # noqa: BLE001
         logger.warning(f"continuity: summarizer import failed: {e}")
         return
@@ -355,7 +363,7 @@ async def _try_lazy_summarize(
 
     try:
         summarizer = ConversationSummarizer(
-            openai_service=OpenAIService(),
+            openai_service=get_openai_service(),
             conversation_service=conversation_service,
         )
         await summarizer.summarize_if_stale(

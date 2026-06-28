@@ -28,7 +28,7 @@ from ..models.soul_ping import V1_CATEGORIES, SoulPing, SoulPingCategory
 from ..models.user_profile import UserProfile
 from .conversation_service import ConversationService
 from .dynamodb_service import DynamoDBService, get_dynamodb_service
-from .openai_service import ChatMessage, OpenAIService
+from .openai_service import ChatMessage, OpenAIService, get_openai_service
 from .sns_service import SNSService
 
 logger = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ class SoulPingService:
         sns_service: Optional[SNSService] = None,
     ):
         self.db = dynamodb_service or get_dynamodb_service()
-        self.openai = openai_service or OpenAIService()
+        self.openai = openai_service or get_openai_service()
         self.conversations = conversation_service or ConversationService()
         self.sns = sns_service or SNSService()
 
