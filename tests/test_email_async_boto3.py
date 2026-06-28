@@ -80,3 +80,66 @@ async def test_send_email_passes_config_to_session_client():
     assert send_kwargs["Source"] == service.sender_email
     assert send_kwargs["Destination"]["ToAddresses"] == ["u@example.com"]
     assert send_kwargs["Message"]["Subject"]["Data"] == "Subj"
+
+
+def _mock_ses_cm(send_email_mock):
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=AsyncMock(send_email=send_email_mock))
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return cm
+
+
+@pytest.mark.asyncio
+async def test_send_email_masks_recipient_on_success(caplog):
+    """The recipient address must be masked in the success log line (no PII)."""
+    import logging
+
+    from src.app.services.email_service import EmailService
+
+    service = EmailService()
+    send = AsyncMock(return_value={"MessageId": "abc-123"})
+
+    with patch.object(service.session, "client", return_value=_mock_ses_cm(send)):
+        with caplog.at_level(logging.INFO):
+            ok = await service._send_email(
+                to_email="john.doe@example.com",
+                subject="Subj",
+                html_body="<p>Hi</p>",
+                text_body="Hi",
+            )
+
+    assert ok is True
+    logs = " ".join(r.getMessage() for r in caplog.records)
+    assert "john.doe@example.com" not in logs
+    assert "j***@example.com" in logs
+
+
+@pytest.mark.asyncio
+async def test_send_email_masks_recipient_on_error(caplog):
+    """The recipient address must be masked in the error log line too."""
+    import logging
+
+    from botocore.exceptions import ClientError
+
+    from src.app.services.email_service import EmailService
+
+    service = EmailService()
+    send = AsyncMock(
+        side_effect=ClientError(
+            {"Error": {"Code": "MessageRejected", "Message": "bad"}}, "SendEmail"
+        )
+    )
+
+    with patch.object(service.session, "client", return_value=_mock_ses_cm(send)):
+        with caplog.at_level(logging.ERROR):
+            ok = await service._send_email(
+                to_email="john.doe@example.com",
+                subject="Subj",
+                html_body="<p>Hi</p>",
+                text_body="Hi",
+            )
+
+    assert ok is False
+    logs = " ".join(r.getMessage() for r in caplog.records)
+    assert "john.doe@example.com" not in logs
+    assert "j***@example.com" in logs

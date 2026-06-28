@@ -18,6 +18,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from jinja2 import Environment, FileSystemLoader, TemplateError, select_autoescape
 
+from ..core.log_sanitize import mask_email
+
 logger = logging.getLogger(__name__)
 
 
@@ -827,15 +829,21 @@ This is an automated message from {self.app_name}.
                 )
 
                 message_id = response.get("MessageId", "unknown")
-                logger.info(f"Email sent to {to_email}, MessageId: {message_id}")
+                logger.info(
+                    f"Email sent to {mask_email(to_email)}, MessageId: {message_id}"
+                )
                 return True
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"SES error sending email to {to_email}: {error_code} - {e}")
+            logger.error(
+                f"SES error sending email to {mask_email(to_email)}: {error_code}"
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error sending email to {to_email}: {e}")
+            logger.error(
+                f"Unexpected error sending email to {mask_email(to_email)}: {e}"
+            )
             return False
 
 
