@@ -31,24 +31,35 @@ def _warn_sync_sns_call(method_name: str) -> None:
 
 class SNSService:
     def __init__(self):
-        # Tune boto3 client for high-concurrency FastAPI/Lambda:
-        # - max_pool_connections=50 prevents pool exhaustion under push bursts
-        #   (e.g. broadcast topic publish + per-device direct publishes).
-        # - retries=adaptive backs off intelligently on SNS throttling.
-        self.sns = boto3.client(
-            "sns",
-            region_name=os.getenv("AWS_SNS_REGION", "us-east-1"),
-            config=Config(
-                max_pool_connections=50,
-                retries={"max_attempts": 5, "mode": "adaptive"},
-            ),
-        )
+        # The boto3 SNS client is built lazily (see `sns` property) — its
+        # construction resolves credentials/endpoints and is a measurable
+        # cold-start cost. Routers instantiate SNSService at import, but most
+        # requests never publish, so defer it to first use.
+        self._sns = None
         self.topic_arn = os.getenv("SNS_TOPIC_ARN")
         # Support both platform-specific and generic ARNs
         self.android_app_arn = os.getenv("SNS_ANDROID_APP_ARN") or os.getenv(
             "SNS_PLATFORM_APP_ARN"
         )
         self.ios_app_arn = os.getenv("SNS_IOS_APP_ARN")
+
+    @property
+    def sns(self) -> Any:
+        """Lazily build (and cache) the tuned boto3 SNS client on first use.
+
+        - max_pool_connections=50 prevents pool exhaustion under push bursts.
+        - retries=adaptive backs off intelligently on SNS throttling.
+        """
+        if self._sns is None:
+            self._sns = boto3.client(
+                "sns",
+                region_name=os.getenv("AWS_SNS_REGION", "us-east-1"),
+                config=Config(
+                    max_pool_connections=50,
+                    retries={"max_attempts": 5, "mode": "adaptive"},
+                ),
+            )
+        return self._sns
 
     def _get_platform_arn(self, platform: str) -> Optional[str]:
         """Get the appropriate Platform Application ARN based on platform."""
