@@ -3,10 +3,13 @@ frameworkVersion: '>=3.38.0 <4.0.0'
 
 provider:
   name: aws
-  # Python 3.12 is required for Lambda SnapStart (Python). The codebase already
-  # runs/tests on 3.12 locally; deps (fastapi/pydantic/boto3/openai/aioboto3/
-  # cryptography) all support it.
-  runtime: python3.12
+  # NOTE: python3.12 + SnapStart was reverted after a failed prod deploy — the
+  # installed Serverless Framework (3.40) rejects python3.12 in its schema, and
+  # SnapStart was refused because the api function uses 1024MB ephemeral storage
+  # (SnapStart requires <=512MB). Re-attempt only after (1) upgrading Serverless
+  # Framework to a version supporting python3.12, and (2) reducing the api
+  # function's ephemeral storage to 512MB (verify nothing relies on >512MB /tmp).
+  runtime: python3.11
   region: us-east-1
   stage: ${opt:stage, env:STAGE, 'staging'}
   memorySize: 1024
@@ -296,13 +299,6 @@ functions:
     # (avg ~238MB used), so this buys CPU, not RAM. Shorter duration often makes
     # the per-ms cost increase close to net-neutral. Tune up/down as needed.
     memorySize: 1769
-    # SnapStart restores a snapshot of the initialized container in ~200ms
-    # instead of the ~5.6s cold-start init, cutting p95 across every endpoint.
-    # Serverless sets SnapStart ApplyOn=PublishedVersions and wires an alias.
-    # Safe here: boto3/aioboto3/httpx clients connect lazily (post-restore), and
-    # nothing caches random seeds or unique IDs at import. (SnapStart is mutually
-    # exclusive with provisionedConcurrency.)
-    snapStart: true
     events:
       # ---- Public routes (no authorizer) ----
       # Health checks (monitors / load balancers).
