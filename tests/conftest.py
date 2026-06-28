@@ -36,11 +36,29 @@ mock_cognito.sign_up.return_value = {
     "UserConfirmed": False,
 }
 
+# Login now reads the ID token claims instead of a 2nd Cognito GetUser, so the
+# mocked IdToken must be a real (decodable) JWT. Signature is irrelevant — the
+# controller uses jwt.get_unverified_claims.
+from jose import jwt as _jose_jwt  # noqa: E402
+
+_TEST_ID_TOKEN = _jose_jwt.encode(
+    {
+        "cognito:username": "test@example.com",
+        "sub": "test-user-123",
+        "email": "test@example.com",
+        "given_name": "Test",
+        "family_name": "User",
+        "email_verified": True,
+    },
+    "test-secret",
+    algorithm="HS256",
+)
+
 mock_cognito.admin_initiate_auth.return_value = {
     "AuthenticationResult": {
         "AccessToken": "test-access-token",
         "RefreshToken": "test-refresh-token",
-        "IdToken": "test-id-token",
+        "IdToken": _TEST_ID_TOKEN,
     }
 }
 

@@ -59,6 +59,22 @@ def test_login_success(client: TestClient, mock_cognito_client, sample_login_dat
     assert "data" in data
     assert data["data"]["tokens"]["accessToken"] == "test-access-token"
     assert data["data"]["tokens"]["refreshToken"] == "test-refresh-token"
+    # User is built from the ID token claims, preserving the prior shape.
+    user = data["data"]["user"]
+    assert user["id"] == "test@example.com"  # cognito:username claim
+    assert user["email"] == "test@example.com"
+    assert user["fullName"] == "Test User"
+    assert user["isVerified"] is True
+
+
+def test_login_does_not_make_second_cognito_call(
+    client: TestClient, mock_cognito_client, sample_login_data
+):
+    """Login reads the ID token instead of a 2nd Cognito GetUser round-trip."""
+    mock_cognito_client.admin_get_user.reset_mock()
+    response = client.post("/api/auth/login", json=sample_login_data)
+    assert response.status_code == 200
+    mock_cognito_client.admin_get_user.assert_not_called()
 
 
 def test_login_invalid_credentials(

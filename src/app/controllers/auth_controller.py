@@ -2,8 +2,11 @@
 Authentication controller - handles all auth-related endpoints
 """
 
+import asyncio
 import logging
 from typing import Any, Dict
+
+from jose import jwt
 
 from ..api.models import (
     AuthResponse,
@@ -86,17 +89,20 @@ class AuthController:
             email=payload.email, password=payload.password
         )
 
-        # Get user profile from Cognito
-        user_profile = await self.cognito_service.get_user_by_email(payload.email)
-        user_attrs = user_profile["userAttributes"]
-        user_id = user_profile["username"]
+        # Build the user from the ID token we just received instead of a second
+        # Cognito GetUser round-trip (~150-250ms saved on a high-volume path).
+        # The token is trusted — Cognito issued it in the call above over TLS —
+        # so we read its claims directly. `cognito:username` preserves the exact
+        # user_id value the previous get_user_by_email().username returned.
+        claims = jwt.get_unverified_claims(auth_result["idToken"])
+        user_id = claims.get("cognito:username") or claims.get("sub", "")
 
         user = UserBasic(
             id=user_id,
-            email=user_attrs.get("email", payload.email),
-            fullName=f"{user_attrs.get('given_name', '')} "
-            f"{user_attrs.get('family_name', '')}".strip(),
-            isVerified=user_attrs.get("email_verified", "false").lower() == "true",
+            email=claims.get("email", payload.email),
+            fullName=f"{claims.get('given_name', '')} "
+            f"{claims.get('family_name', '')}".strip(),
+            isVerified=bool(claims.get("email_verified", False)),
         )
 
         # Just record login activity - don't create profiles during login
@@ -220,56 +226,60 @@ class AuthController:
                     f"Created user profile in DynamoDB for user: {user_profile.user_id}"
                 )
 
-                # Apply terms acceptance passed through from registration
-                if payload.termsAcceptedAt:
+                # These three post-profile steps are independent — run them
+                # concurrently instead of sequentially. Each owns its error
+                # handling (a failure must not fail confirmation or the others).
+                uid = user_profile.user_id
+
+                async def _apply_terms() -> None:
+                    if not payload.termsAcceptedAt:
+                        return
                     try:
                         await self.user_service.update_user_profile(
-                            user_profile.user_id,
+                            uid,
                             {
                                 "terms_accepted_at": payload.termsAcceptedAt,
                                 "terms_version": "1.0",
                             },
                         )
-                        logger.info(
-                            f"Applied terms to user profile: {user_profile.user_id}"
-                        )
+                        logger.info(f"Applied terms to user profile: {uid}")
                     except Exception as terms_error:
-                        logger.error(
-                            f"Failed to apply terms for {user_profile.user_id}: "
-                            f"{terms_error}"
-                        )
-                        # Don't fail confirmation if terms update fails
+                        logger.error(f"Failed to apply terms for {uid}: {terms_error}")
 
-                # Link anonymous quiz data if anonymousId was provided
-                if payload.anonymousId:
+                async def _link_anonymous() -> None:
+                    if not payload.anonymousId:
+                        return
                     try:
                         anon_id = f"anon_{payload.anonymousId}"
                         link_results = await self.linking_service.link_anonymous_data(
-                            anonymous_id=anon_id, user_id=user_profile.user_id
+                            anonymous_id=anon_id, user_id=uid
                         )
                         logger.info(
-                            f"Anonymous data linking completed for "
-                            f"{user_profile.user_id}: {link_results}"
+                            f"Anonymous data linking completed for {uid}: "
+                            f"{link_results}"
                         )
                     except Exception as link_error:
                         logger.error(f"Failed to link anonymous data: {link_error}")
-                        # Don't fail email confirmation if linking fails
 
-                # Back-link recipient rows that other users created with this
-                # email before this user signed up. Without this, their inbox
-                # is silent because the recipient row's recipient_user_id is None.
-                try:
-                    await self.echo_service.link_user_to_recipients(
-                        user_id=user_profile.user_id,
-                        email=user_profile.email,
-                    )
-                except Exception as backlink_error:
-                    logger.error(
-                        f"Failed to back-link recipients for "
-                        f"{user_profile.user_id}: {backlink_error}"
-                    )
-                    # Don't fail confirmation; the offline backfill script
-                    # (scripts/backfill_recipient_user_id.py) will recover.
+                async def _backlink_recipients() -> None:
+                    # Back-link recipient rows that other users created with this
+                    # email before this user signed up. Without this, their inbox
+                    # is silent (recipient row's recipient_user_id is None).
+                    try:
+                        await self.echo_service.link_user_to_recipients(
+                            user_id=uid, email=user_profile.email
+                        )
+                    except Exception as backlink_error:
+                        logger.error(
+                            f"Failed to back-link recipients for {uid}: "
+                            f"{backlink_error}"
+                        )
+                        # The offline backfill script recovers
+                        # (scripts/backfill_recipient_user_id.py).
+
+                await asyncio.gather(
+                    _apply_terms(), _link_anonymous(), _backlink_recipients()
+                )
 
             except Exception as e:
                 # Log the error but don't fail the email confirmation
