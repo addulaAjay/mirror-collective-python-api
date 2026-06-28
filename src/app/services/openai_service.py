@@ -5,6 +5,7 @@ OpenAI service for AI chat completions and conversation management
 import asyncio
 import logging
 import os
+from functools import lru_cache
 from typing import AsyncGenerator, Dict, List, Optional, cast
 
 from openai import AsyncOpenAI, OpenAI
@@ -384,3 +385,15 @@ class OpenAIService(IMirrorChatRepository):
         except Exception as e:
             logger.error(f"OpenAI API async error: {str(e)}")
             raise InternalServerError(f"Chat service unavailable: {str(e)}")
+
+
+@lru_cache(maxsize=1)
+def get_openai_service() -> "OpenAIService":
+    """Return a process-wide OpenAIService singleton.
+
+    OpenAIService.__init__ builds both a sync OpenAI and an AsyncOpenAI httpx
+    client. Constructing it per request (as several MirrorGPT call sites did)
+    rebuilds those clients every time. Caching it — like get_dynamodb_service /
+    get_echo_service — reuses the clients across warm-container invocations.
+    """
+    return OpenAIService()
