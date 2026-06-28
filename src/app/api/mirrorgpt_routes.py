@@ -32,9 +32,16 @@ if TYPE_CHECKING:
 
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user, get_current_user_optional
-from ..services.dynamodb_service import DynamoDBService, get_dynamodb_service
+from ..services.dynamodb_service import (  # noqa: F401  (DynamoDBService patched in tests/conftest)
+    DynamoDBService,
+    get_dynamodb_service,
+)
 from ..services.mirror_orchestrator import MIRRORGPT_SYSTEM_PROMPT, MirrorOrchestrator
 from ..services.openai_service import ChatMessage, OpenAIService
+from ..services.quiz_questions_loader import (
+    get_quiz_questions as load_bundled_quiz_questions,
+)
+from ..services.quiz_questions_loader import load_quiz_data
 from .models import (
     ArchetypeAnalysisData,
     ArchetypeAnalysisRequest,
@@ -538,17 +545,17 @@ async def analyze_archetype(
 
 
 @router.get("/quiz/questions")
-async def get_quiz_questions(
-    orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
-):
+async def get_quiz_questions():
     """
-    Get all active quiz questions
+    Get all active quiz questions.
+
+    Served from the bundled questions.json (static V1 content) instead of a
+    DynamoDB scan, so this is a fast, cold-start-friendly read. No orchestrator
+    dependency — avoids constructing an OpenAIService per request. Keep the
+    file in sync with the table via scripts/export_quiz_questions.py.
     """
     try:
-        # For now, we'll return the questions from DynamoDB
-        # If not found, we could fallback to a hardcoded list or return empty
-        questions = await orchestrator.dynamodb_service.get_quiz_questions()
-        return {"success": True, "data": questions}
+        return {"success": True, "data": load_bundled_quiz_questions()}
     except Exception as e:
         logger.error(f"Failed to get quiz questions: {str(e)}")
         raise HTTPException(
@@ -561,7 +568,6 @@ async def submit_archetype_quiz(
     request: ArchetypeQuizRequest,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
     orchestrator: MirrorOrchestrator = Depends(get_mirror_orchestrator),
-    dynamodb_service: DynamoDBService = Depends(get_dynamodb_service),
 ):
     """
     Submit archetype quiz and calculate results server-side (V1 Spec)
@@ -574,10 +580,6 @@ async def submit_archetype_quiz(
 
     Supports both authenticated users and anonymous submissions.
     """
-    import json
-    import os
-    from pathlib import Path
-
     from ..services.quiz_scoring import calculate_quiz_result
     from ..services.quiz_submission import build_scoring_inputs
 
@@ -594,39 +596,14 @@ async def submit_archetype_quiz(
                 detail="Authentication required or anonymousId must be provided",
             )
 
-        # 2. Load questions from DynamoDB or fallback to questions.json
-        questions_list = []
-        questions_json = {}
-
-        try:
-            questions_data = await dynamodb_service.get_quiz_questions()
-            questions_list = questions_data if isinstance(questions_data, list) else []
-        except Exception as e:
-            logger.warning(
-                f"Failed to load questions from DynamoDB: {e}, using fallback"
-            )
-
-        # Fallback to questions.json if DynamoDB didn't provide questions
-        if not questions_list:
-            questions_file = Path(__file__).parent.parent / "data" / "questions.json"
-            if questions_file.exists():
-                with open(questions_file, "r") as f:
-                    questions_json = json.load(f)
-                    questions_list = questions_json.get("questions", [])
-            else:
-                raise HTTPException(
-                    status_code=500, detail="Quiz questions not available"
-                )
+        # 2. Load questions + config from the bundled questions.json (static V1
+        #    content baked into the deploy — no DynamoDB scan on the request
+        #    path). Keep it in sync with the table via the export script.
+        questions_json = load_quiz_data()
+        questions_list = questions_json.get("questions", [])
 
         if not questions_list:
             raise HTTPException(status_code=500, detail="No quiz questions found")
-
-        # If we got questions from DynamoDB, we still need archetypes from file
-        if not questions_json:
-            questions_file = Path(__file__).parent.parent / "data" / "questions.json"
-            if questions_file.exists():
-                with open(questions_file, "r") as f:
-                    questions_json = json.load(f)
 
         # 3. Extract quiz config for dynamic scoring
         quiz_config = questions_json.get("config", {})
