@@ -28,7 +28,7 @@ def sns_service_with_mock_client():
         from src.app.services.sns_service import SNSService
 
         service = SNSService()
-        service.sns = mock_client
+        service._sns = mock_client  # inject the mock as the lazily-built client
         yield service, mock_client
 
 
@@ -40,7 +40,8 @@ def test_client_constructed_with_max_pool_connections():
         mock_boto3.return_value = MagicMock()
         from src.app.services.sns_service import SNSService
 
-        SNSService()
+        # The client is built lazily; access .sns to trigger construction.
+        _ = SNSService().sns
 
     args, kwargs = mock_boto3.call_args
     assert args[0] == "sns"
@@ -130,3 +131,18 @@ def test_sync_publish_to_topic_still_works(sns_service_with_mock_client):
 
     assert msg_id == "msg-sync"
     mock_client.publish.assert_called_once()
+
+
+def test_sns_client_is_lazy():
+    """The boto3 SNS client must not be built until first use (cold-start perf)."""
+    from unittest.mock import patch
+
+    from src.app.services.sns_service import SNSService
+
+    with patch("src.app.services.sns_service.boto3.client") as mock_client:
+        svc = SNSService()
+        assert mock_client.call_count == 0  # not built at construction
+        _ = svc.sns  # first access builds it
+        assert mock_client.call_count == 1
+        _ = svc.sns  # cached
+        assert mock_client.call_count == 1

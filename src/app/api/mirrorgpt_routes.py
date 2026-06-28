@@ -442,21 +442,25 @@ async def mirrorgpt_chat(
         # Save the user message and AI response to conversation
         if conversation_id:
             try:
-                # Save user message with MirrorGPT analysis
-                await conversation_service.add_message_with_mirrorgpt_analysis(
-                    conversation_id=conversation_id,
-                    user_id=current_user["id"],
-                    role="user",
-                    content=request.message,
-                    mirrorgpt_analysis=result.get("mirrorgpt_analysis"),
-                )
-
-                # Save AI response
-                await conversation_service.add_message(
-                    conversation_id=conversation_id,
-                    user_id=current_user["id"],
-                    role="assistant",
-                    content=result["response"],
+                # The user-message and assistant-message writes are independent
+                # DDB items — persist them concurrently (one round-trip instead
+                # of two). Both must complete before we return: on Lambda the
+                # container freezes after the response, so a fire-and-forget
+                # write would be lost.
+                await asyncio.gather(
+                    conversation_service.add_message_with_mirrorgpt_analysis(
+                        conversation_id=conversation_id,
+                        user_id=current_user["id"],
+                        role="user",
+                        content=request.message,
+                        mirrorgpt_analysis=result.get("mirrorgpt_analysis"),
+                    ),
+                    conversation_service.add_message(
+                        conversation_id=conversation_id,
+                        user_id=current_user["id"],
+                        role="assistant",
+                        content=result["response"],
+                    ),
                 )
 
                 logger.debug(f"Saved messages to conversation {conversation_id}")
@@ -1142,19 +1146,23 @@ async def get_session_greeting(
     """
 
     try:
-        # Get user's current profile and history
-        profile = await orchestrator._get_user_profile(current_user["id"])
-        recent_signals = await orchestrator._get_recent_signals_from_messages(
-            current_user["id"], limit=5
-        )
-        recent_moments = await orchestrator.dynamodb_service.get_user_mirror_moments(
-            current_user["id"], limit=3
-        )
-
-        # Load continuity memory (summaries of prior conversations).
-        continuity = await _load_continuity_context(
-            user_id=current_user["id"],
-            conversation_service=conversation_service,
+        # These four reads are independent — run them concurrently instead of
+        # sequentially (greeting was ~5 serial DDB round-trips on the read path).
+        (
+            profile,
+            recent_signals,
+            recent_moments,
+            continuity,
+        ) = await asyncio.gather(
+            orchestrator._get_user_profile(current_user["id"]),
+            orchestrator._get_recent_signals_from_messages(current_user["id"], limit=5),
+            orchestrator.dynamodb_service.get_user_mirror_moments(
+                current_user["id"], limit=3
+            ),
+            _load_continuity_context(
+                user_id=current_user["id"],
+                conversation_service=conversation_service,
+            ),
         )
 
         # Extract user context
