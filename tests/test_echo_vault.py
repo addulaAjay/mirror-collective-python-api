@@ -1606,14 +1606,9 @@ class TestEchoServiceLockEcho:
                 with patch.object(
                     service.session, "resource", return_value=mock_resource_ctx
                 ):
-                    with patch(
-                        "src.app.services.echo_service.email_service.send_echo_pending_notification",
-                        new_callable=AsyncMock,
-                        return_value=True,
-                    ):
-                        locked_echo = await service.lock_echo(
-                            echo_id="e-abc-123", user_id="u-001"
-                        )
+                    locked_echo = await service.lock_echo(
+                        echo_id="e-abc-123", user_id="u-001"
+                    )
 
         assert locked_echo.status == EchoStatus.LOCKED
 
@@ -1643,20 +1638,17 @@ class TestEchoServiceLockEcho:
                 with patch.object(
                     service.session, "resource", return_value=mock_resource_ctx
                 ):
-                    with patch(
-                        "src.app.services.echo_service.email_service.send_echo_pending_notification",
-                        new_callable=AsyncMock,
-                    ):
-                        locked_echo = await service.lock_echo(
-                            echo_id="e-abc-123", user_id="u-001"
-                        )
+                    locked_echo = await service.lock_echo(
+                        echo_id="e-abc-123", user_id="u-001"
+                    )
 
         assert locked_echo.lock_date is not None
 
     @pytest.mark.asyncio
-    async def test_lock_echo_fires_send_echo_pending_notification(self):
-        """lock_echo must call email_service.send_echo_pending_notification once."""
+    async def test_lock_echo_does_not_send_email(self):
+        """Echo-only email policy: lock_echo must NOT send any guardian email."""
         from src.app.services.echo_service import EchoService
+        from src.app.services.email_service import email_service
 
         service = EchoService()
         echo = self._make_echo()
@@ -1680,17 +1672,13 @@ class TestEchoServiceLockEcho:
                     service.session, "resource", return_value=mock_resource_ctx
                 ):
                     with patch(
-                        "src.app.services.echo_service.email_service.send_echo_pending_notification",
+                        "src.app.services.echo_service.email_service._send_email",
                         new_callable=AsyncMock,
-                    ) as mock_email:
+                    ) as mock_send:
                         await service.lock_echo(echo_id="e-abc-123", user_id="u-001")
 
-                        mock_email.assert_called_once()
-                # Verify the arguments passed
-                call_kwargs = mock_email.call_args[1]
-                assert call_kwargs["guardian_email"] == "alice@guardian.com"
-                assert call_kwargs["guardian_name"] == "Alice Guardian"
-                assert call_kwargs["echo_title"] == "Test Echo"
+        mock_send.assert_not_called()
+        assert not hasattr(email_service, "send_echo_pending_notification")
 
     @pytest.mark.asyncio
     async def test_lock_echo_raises_not_found_when_echo_missing(self):

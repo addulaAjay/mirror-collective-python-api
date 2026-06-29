@@ -1436,21 +1436,8 @@ class EchoService:
 
         logger.info(f"Echo {echo_id} locked with guardian {echo.guardian_id}")
 
-        # Fire-and-forget guardian notification email
-        try:
-            guardian = await self.get_guardian(echo.guardian_id, user_id)
-            if guardian:
-                await email_service.send_echo_pending_notification(
-                    guardian_email=guardian.email,
-                    guardian_name=guardian.name,
-                    owner_name=user_id,  # Fallback to user_id; routes layer can enrich
-                    echo_title=echo.title,
-                    echo_category=echo.category,
-                )
-        except Exception as e:
-            logger.warning(
-                f"Failed to send guardian notification for echo {echo_id}: {e}"
-            )
+        # Echo-only email policy: no guardian "echo pending" email is sent.
+        # Mail goes out only for echo delivery to recipients.
 
         return echo
 
