@@ -1383,7 +1383,7 @@ class EchoService:
 
     async def lock_echo(self, echo_id: str, user_id: str) -> Echo:
         """
-        Lock an echo with a guardian, preventing further edits and notifying the guardian.
+        Lock an echo with a guardian, preventing further edits.
 
         Rules
         -----
@@ -1394,7 +1394,8 @@ class EchoService:
         After validation:
         1. Call echo.lock() to set status = LOCKED and lock_date.
         2. Persist updated echo to DynamoDB.
-        3. Send guardian notification email (fire-and-forget).
+
+        No email is sent (echo-only email policy).
 
         Args:
             echo_id: ID of the echo to lock.
