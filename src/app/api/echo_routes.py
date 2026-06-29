@@ -12,7 +12,6 @@ from pydantic import BaseModel, EmailStr, validator
 from ..core.idempotency import idempotent
 from ..core.security import get_current_user
 from ..services.echo_service import get_echo_service
-from ..services.email_service import email_service
 
 logger = logging.getLogger(__name__)
 
@@ -1150,27 +1149,17 @@ async def create_recipient(
     request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Add a new recipient. Triggers invitation email.
+    """Add a new recipient.
 
-    Idempotent: the invitation email is a user-visible side effect.
-    A 429-driven retry without dedup would produce a duplicate
-    invitation. @idempotent caches the response so retries within
-    the 24h window are no-ops on the server side.
+    Idempotent: @idempotent caches the response so a 429-driven retry
+    within the 24h window is a no-op on the server side.
+
+    No invitation email is sent — per the echo-only email policy, mail
+    goes out only for echo delivery to registered recipients.
     """
     user_id = current_user["id"]
-    user_name = current_user.get("name", current_user.get("email", "Someone"))
 
     recipient = await echo_service.create_recipient(user_id, payload.model_dump())
-
-    # Send invitation email (fire-and-forget, don't block on failure)
-    try:
-        await email_service.send_recipient_invite(
-            recipient_email=recipient.email,
-            recipient_name=recipient.name,
-            inviter_name=user_name,
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send recipient invite email: {e}")
 
     return {
         "success": True,
@@ -1258,26 +1247,17 @@ async def create_guardian(
     request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Add a new guardian. Triggers invitation email.
+    """Add a new guardian.
 
-    Idempotent for the same reason as create_recipient — the
-    guardian-invite email shouldn't double-send on retry.
+    Idempotent: @idempotent caches the response so a retry within the
+    24h window is a no-op on the server side.
+
+    No invitation email is sent — per the echo-only email policy, mail
+    goes out only for echo delivery to recipients.
     """
     user_id = current_user["id"]
-    user_name = current_user.get("name", current_user.get("email", "Someone"))
 
     guardian = await echo_service.create_guardian(user_id, payload.model_dump())
-
-    # Send invitation email (fire-and-forget, don't block on failure)
-    try:
-        await email_service.send_guardian_invite(
-            guardian_email=guardian.email,
-            guardian_name=guardian.name,
-            inviter_name=user_name,
-            scope=guardian.scope.value,
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send guardian invite email: {e}")
 
     return {
         "success": True,
