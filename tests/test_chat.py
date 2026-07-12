@@ -233,12 +233,40 @@ def test_mirrorgpt_chat_special_characters():
     assert "response" in data["data"]
 
 
+def _install_fake_life_anchors(monkeypatch):
+    """Point the chat route's LifeAnchorRepo/Structurer at an in-memory table so
+    the Life-Anchors flag can be exercised without touching real DynamoDB.
+
+    Returns the FakeTable so callers can inspect persisted rows.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.app.api import mirrorgpt_routes
+    from src.app.repositories.life_anchor_repo import LifeAnchorRepo
+    from tests._fakes.fake_dynamodb import FakeAioSession, FakeTable
+
+    monkeypatch.setenv("DYNAMODB_LIFE_ANCHORS_TABLE", "mc_life_anchors-test")
+    table = FakeTable(
+        primary_key=["user_id", "anchor_id"],
+        indexes={"status-index": ["user_id", "status"]},
+    )
+    sess = FakeAioSession({"mc_life_anchors-test": table})
+    monkeypatch.setattr(
+        mirrorgpt_routes, "LifeAnchorRepo", lambda: LifeAnchorRepo(session=sess)
+    )
+    stub = MagicMock()
+    stub.structure = AsyncMock(return_value=None)
+    monkeypatch.setattr(mirrorgpt_routes, "LifeAnchorStructurer", lambda svc: stub)
+    return table
+
+
 def test_mirrorgpt_chat_surfaces_memory_prompt_when_enabled(monkeypatch):
     """Phase 2B: with the flag on, an anchor-worthy message yields a
     memory_prompt in the chat response (heuristic — no LLM in the path)."""
     from src.app.api import mirrorgpt_routes
 
     monkeypatch.setattr(mirrorgpt_routes, "_LIFE_ANCHORS_ENABLED", True)
+    _install_fake_life_anchors(monkeypatch)
     client = get_clean_test_client()
 
     response = client.post(
@@ -271,3 +299,62 @@ def test_mirrorgpt_chat_no_memory_prompt_when_disabled(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["data"]["memory_prompt"] is None
+
+
+def test_chat_inchat_confirm_flow(monkeypatch):
+    """Phase 2D: turn 1 appends the 'remember this?' ask + stages a pending;
+    turn 2's 'yes' saves the anchor and the reply acknowledges it — all in
+    chat, no client involvement."""
+    from src.app.api import mirrorgpt_routes
+
+    monkeypatch.setattr(mirrorgpt_routes, "_LIFE_ANCHORS_ENABLED", True)
+    _install_fake_life_anchors(monkeypatch)
+
+    client = get_clean_test_client()
+
+    # Turn 1 — anchor-worthy message.
+    r1 = client.post(
+        "/api/mirrorgpt/chat",
+        json={
+            "message": "My wife passed away last year and I still feel lost.",
+            "conversation_id": "conv-1",
+            "use_enhanced_response": True,
+        },
+    )
+    assert r1.status_code == 200
+    d1 = r1.json()["data"]
+    assert "Life Anchor" in d1["response"]  # the ask was appended to the reply
+    assert d1["memory_prompt"] is not None  # structured field also present
+
+    # Turn 2 — natural-language "yes".
+    r2 = client.post(
+        "/api/mirrorgpt/chat",
+        json={
+            "message": "yes, please remember that",
+            "conversation_id": "conv-1",
+            "use_enhanced_response": True,
+        },
+    )
+    assert r2.status_code == 200
+    d2 = r2.json()["data"]
+    assert "saved it as a Life Anchor" in d2["response"]  # inline acknowledgment
+    assert d2["memory_prompt"] is None  # no new prompt on the confirm turn
+
+
+def test_chat_no_ask_when_life_anchors_disabled(monkeypatch):
+    """Flag off → the reply is never mutated with an ask."""
+    from src.app.api import mirrorgpt_routes
+
+    monkeypatch.setattr(mirrorgpt_routes, "_LIFE_ANCHORS_ENABLED", False)
+    client = get_clean_test_client()
+
+    r = client.post(
+        "/api/mirrorgpt/chat",
+        json={
+            "message": "My wife passed away last year.",
+            "conversation_id": "conv-1",
+            "use_enhanced_response": True,
+        },
+    )
+    assert r.status_code == 200
+    assert "Life Anchor" not in r.json()["data"]["response"]
