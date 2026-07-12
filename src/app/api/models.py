@@ -247,6 +247,10 @@ class MirrorGPTChatData(BaseModel):
     archetype_analysis: Dict[str, Any]
     change_detection: Dict[str, Any]
     suggested_practice: Optional[str] = None
+    # Life Anchors (Phase 2B): when the turn looks worth remembering, the
+    # server surfaces a prompt the client renders as "Remember this?". Null on
+    # most turns. Populated by a cheap heuristic — no LLM in the chat path.
+    memory_prompt: Optional[Dict[str, Any]] = None
     confidence_breakdown: Dict[str, float]
     session_metadata: Dict[str, Any]
 

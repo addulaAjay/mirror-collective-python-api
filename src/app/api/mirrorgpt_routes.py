@@ -37,6 +37,7 @@ from ..services.dynamodb_service import (  # noqa: F401  (DynamoDBService patche
     DynamoDBService,
     get_dynamodb_service,
 )
+from ..services.life_anchor_detector import detect_life_anchor_candidate
 from ..services.mirror_orchestrator import MIRRORGPT_SYSTEM_PROMPT, MirrorOrchestrator
 from ..services.openai_service import (  # noqa: F401  (OpenAIService patched in tests/conftest)
     ChatMessage,
@@ -216,6 +217,10 @@ def _schedule_summary_refresh(
 
 # Bounded number of prior summaries we surface in the greeting prompt.
 _MAX_GREETING_CONTEXT = int(os.getenv("MIRRORGPT_SUMMARY_MAX_GREETING_CONTEXT", "3"))
+
+# Life Anchors (Phase 2B): gate the in-chat "remember this?" prompt. Detection
+# is a cheap heuristic (no LLM), but ship dark and enable per cohort.
+_LIFE_ANCHORS_ENABLED = os.getenv("MIRRORGPT_LIFE_ANCHORS", "false").lower() == "true"
 
 
 def _format_age_label(timestamp: Optional[str], now: Optional[datetime] = None) -> str:
@@ -482,6 +487,14 @@ async def mirrorgpt_chat(
             except Exception as e:
                 logger.warning(f"Failed to save messages to conversation: {e}")
 
+        # Life Anchors (Phase 2B): cheap heuristic over already-computed
+        # signals — no LLM, no I/O — so it adds no chat latency. Flag-gated.
+        memory_prompt = (
+            detect_life_anchor_candidate(request.message, result)
+            if _LIFE_ANCHORS_ENABLED
+            else None
+        )
+
         # Format response data
         chat_data = MirrorGPTChatData(
             message_id=str(uuid.uuid4()),
@@ -489,6 +502,7 @@ async def mirrorgpt_chat(
             archetype_analysis=result["archetype_analysis"],
             change_detection=result["change_detection"],
             suggested_practice=result.get("suggested_practice"),
+            memory_prompt=memory_prompt,
             confidence_breakdown=result["confidence_breakdown"],
             session_metadata={
                 **result["session_metadata"],

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Iterator
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from src.app.api.life_anchors_routes import get_life_anchor_repo
+from src.app.api.life_anchors_routes import (
+    get_life_anchor_repo,
+    get_life_anchor_structurer,
+)
 from src.app.core.security import get_current_user
 from src.app.handler import app
 from src.app.repositories.life_anchor_repo import LifeAnchorRepo
@@ -35,15 +39,25 @@ def repo(monkeypatch: pytest.MonkeyPatch) -> LifeAnchorRepo:
 
 
 @pytest.fixture
-def client(repo: LifeAnchorRepo) -> Iterator[TestClient]:
+def fake_structurer() -> AsyncMock:
+    """Structurer stub — tests set .structure.return_value. Default: no LLM data."""
+    stub = AsyncMock()
+    stub.structure = AsyncMock(return_value=None)
+    return stub
+
+
+@pytest.fixture
+def client(repo: LifeAnchorRepo, fake_structurer: AsyncMock) -> Iterator[TestClient]:
     app.dependency_overrides[get_current_user] = _fake_user
     app.dependency_overrides[get_life_anchor_repo] = lambda: repo
+    app.dependency_overrides[get_life_anchor_structurer] = lambda: fake_structurer
     try:
         with TestClient(app) as c:
             yield c
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_life_anchor_repo, None)
+        app.dependency_overrides.pop(get_life_anchor_structurer, None)
 
 
 def _create(client: TestClient, **overrides) -> Any:
@@ -125,3 +139,75 @@ class TestUpdatePauseDelete:
 
     def test_delete_missing_returns_404(self, client: TestClient):
         assert client.delete("/api/me/life-anchors/nope").status_code == 404
+
+
+class TestConfirm:
+    def test_remember_uses_structured_output(
+        self, client: TestClient, fake_structurer: AsyncMock
+    ):
+        fake_structurer.structure.return_value = {
+            "anchor_type": "loss",
+            "title": "User's wife passed away",
+            "relationship": "wife",
+            "emotional_weight": "sacred",
+            "tone_guidance": ["Do not say time heals everything."],
+        }
+        r = client.post(
+            "/api/me/life-anchors/confirm",
+            json={"candidate_text": "my wife died last year", "choice": "remember"},
+        )
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert data["anchor_type"] == "loss"
+        assert data["title"] == "User's wife passed away"
+        assert data["relationship"] == "wife"
+        assert data["emotional_weight"] == "sacred"
+        # Sacred anchors are always considered.
+        assert data["reflection_use"] == "always_consider"
+        assert data["created_from"] == "mirrorgpt"
+        # It is persisted — shows up in the list.
+        assert len(client.get("/api/me/life-anchors").json()["data"]) == 1
+
+    def test_remember_falls_back_when_structurer_returns_none(
+        self, client: TestClient, fake_structurer: AsyncMock
+    ):
+        fake_structurer.structure.return_value = None  # LLM failed
+        r = client.post(
+            "/api/me/life-anchors/confirm",
+            json={
+                "candidate_text": "I got a big promotion today",
+                "choice": "remember",
+                "anchor_type": "transition",
+                "emotional_weight": "medium",
+                "title": "Got a promotion",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert data["anchor_type"] == "transition"
+        assert data["title"] == "Got a promotion"
+        assert data["reflection_use"] == "when_relevant"
+
+    def test_not_now_writes_nothing(self, client: TestClient):
+        r = client.post(
+            "/api/me/life-anchors/confirm",
+            json={"candidate_text": "something", "choice": "not_now"},
+        )
+        assert r.status_code == 200
+        assert r.json()["data"] is None
+        assert client.get("/api/me/life-anchors").json()["data"] == []
+
+    def test_never_writes_nothing(self, client: TestClient):
+        r = client.post(
+            "/api/me/life-anchors/confirm",
+            json={"candidate_text": "something", "choice": "never"},
+        )
+        assert r.status_code == 200
+        assert client.get("/api/me/life-anchors").json()["data"] == []
+
+    def test_rejects_bad_choice(self, client: TestClient):
+        r = client.post(
+            "/api/me/life-anchors/confirm",
+            json={"candidate_text": "x", "choice": "maybe"},
+        )
+        assert r.status_code == 422
