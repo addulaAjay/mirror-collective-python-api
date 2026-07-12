@@ -6,6 +6,7 @@ response generation, and data persistence
 
 import asyncio
 import logging
+import os
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -22,6 +23,11 @@ logger = logging.getLogger(__name__)
 # Re-exported for backwards compatibility — callers should import from
 # mirrorgpt_prompts directly going forward.
 __all__ = ["MIRRORGPT_SYSTEM_PROMPT", "ResponseGenerator", "MirrorOrchestrator"]
+
+# Memory Preflight (Phase 1) — bounds for the pattern/summary packet injected
+# as a background system message. See docs/MIRRORGPT_MEMORY_PLAN.md Phase 1.
+_PREFLIGHT_MAX_LOOPS = int(os.getenv("MIRRORGPT_PREFLIGHT_MAX_LOOPS", "3"))
+_PREFLIGHT_MAX_CHARS = int(os.getenv("MIRRORGPT_PREFLIGHT_MAX_CHARS", "1200"))
 
 
 class ResponseGenerator:
@@ -223,6 +229,13 @@ class MirrorOrchestrator:
         self.dynamodb_service = dynamodb_service
         self.openai_service = openai_service
 
+        # Memory Preflight (Phase 1): inject a bounded Echo Map patterns +
+        # recent-summary packet as background context. Off by default; ship
+        # dark and enable per cohort. See docs/MIRRORGPT_MEMORY_PLAN.md.
+        self.enable_preflight_patterns = (
+            os.getenv("MIRRORGPT_PREFLIGHT_PATTERNS", "false").lower() == "true"
+        )
+
     async def process_mirror_chat(
         self,
         user_id: str,
@@ -238,12 +251,16 @@ class MirrorOrchestrator:
             # 1. Fetch profile, signals, and conversation history in parallel.
             # return_exceptions=True so a failure in any single leg degrades
             # gracefully (e.g., missing profile shouldn't break chat).
+            # The memory-preflight leg runs in parallel with the others so it
+            # adds no wall-clock; it returns None instantly when the flag is
+            # off (no DynamoDB call), and a rendered background packet when on.
             results = await asyncio.gather(
                 self._get_user_profile(user_id),
                 self._get_recent_signals_from_messages(
                     user_id, conversation_id, limit=5
                 ),
                 self._get_conversation_history(conversation_id, user_id, limit=10),
+                self._load_memory_preflight(user_id, conversation_id),
                 return_exceptions=True,
             )
             previous_profile = (
@@ -253,7 +270,10 @@ class MirrorOrchestrator:
                 results[1] if not isinstance(results[1], BaseException) else []
             )
             history = results[2] if not isinstance(results[2], BaseException) else []
-            for idx, label in enumerate(("profile", "signals", "history")):
+            preflight_packet = (
+                results[3] if not isinstance(results[3], BaseException) else None
+            )
+            for idx, label in enumerate(("profile", "signals", "history", "preflight")):
                 if isinstance(results[idx], BaseException):
                     logger.warning(
                         f"process_mirror_chat: {label} fetch failed for "
@@ -273,6 +293,13 @@ class MirrorOrchestrator:
                 )
                 if carrier is not None:
                     history = [carrier]
+
+            # Memory Preflight (Phase 1): prepend the pattern/summary packet as
+            # a background system message on EVERY turn (the carrier only fires
+            # on a fresh conversation's first turn). Order becomes
+            # [system_prompt, preflight_packet, carrier?/history…, user].
+            if preflight_packet is not None:
+                history = [preflight_packet] + history
 
             # 2. Analyze current message (all 5 signals)
             analysis_result = self.archetype_engine.analyze_message(
@@ -467,6 +494,137 @@ class MirrorOrchestrator:
                 f"conversation_id={conversation_id} user_id={user_id}: {e}"
             )
             return []
+
+    async def _load_memory_preflight(
+        self,
+        user_id: str,
+        current_conversation_id: Optional[str],
+    ) -> Optional[ChatMessage]:
+        """Build the Memory Preflight packet (Phase 1) — Echo Map patterns +
+        recent reflection summary — as one bounded background system message.
+
+        Returns None instantly when the feature flag is off (no DynamoDB
+        call), so it's free to include as a parallel gather leg. Never raises
+        — any failure degrades to None so chat is unaffected.
+        """
+        if not self.enable_preflight_patterns:
+            return None
+
+        try:
+            loops, prior = await asyncio.gather(
+                self._fetch_active_loops(user_id),
+                self._fetch_recent_summary(user_id, current_conversation_id),
+                return_exceptions=True,
+            )
+            if isinstance(loops, BaseException):
+                logger.warning(
+                    f"preflight: loop fetch failed for user_id={user_id}: {loops}"
+                )
+                loops = []
+            if isinstance(prior, BaseException):
+                logger.warning(
+                    f"preflight: recent-summary fetch failed for "
+                    f"user_id={user_id}: {prior}"
+                )
+                prior = None
+            return self._render_preflight_packet(loops, prior)
+        except Exception as e:  # noqa: BLE001 — never break chat
+            logger.warning(f"preflight: build failed for user_id={user_id}: {e}")
+            return None
+
+    async def _fetch_active_loops(self, user_id: str) -> List[Any]:
+        """Top-N active Echo Map loops (intensity > 0), highest intensity first.
+
+        Reads the loop-state store directly via query_by_user rather than
+        build_snapshot(), which would couple chat to reflection-session
+        expiry (raises SessionExpired). See docs/MIRRORGPT_MEMORY_PLAN.md.
+        """
+        from ..repositories.echo_loop_state_repo import EchoLoopStateRepo
+
+        repo = EchoLoopStateRepo()
+        rows = await repo.query_by_user(user_id)
+        active = [r for r in rows if float(r.intensity_score or 0) > 0]
+        active.sort(key=lambda r: float(r.intensity_score or 0), reverse=True)
+        return active[:_PREFLIGHT_MAX_LOOPS]
+
+    async def _fetch_recent_summary(
+        self, user_id: str, current_conversation_id: Optional[str]
+    ):
+        """Most-recent OTHER conversation that already has a summary (Tier 2).
+
+        Read-only reuse of the continuity data; does not trigger
+        summarization (kept off the hot path). Returns the Conversation or
+        None.
+        """
+        from .conversation_service import ConversationService
+
+        conversation_service = ConversationService()
+        recent = await conversation_service.get_recent_conversations(
+            user_id=user_id, limit=4
+        )
+        return next(
+            (
+                c
+                for c in recent
+                if c.conversation_id != current_conversation_id and c.summary
+            ),
+            None,
+        )
+
+    def _render_preflight_packet(
+        self, loops: List[Any], prior: Optional[Any]
+    ) -> Optional[ChatMessage]:
+        """Render loops + recent summary into one bounded system ChatMessage.
+
+        Returns None when there's nothing to say. Output is hard-capped at
+        _PREFLIGHT_MAX_CHARS to bound token cost.
+        """
+        summary_text = getattr(prior, "summary", None) if prior is not None else None
+        if not loops and not summary_text:
+            return None
+
+        lines: List[str] = [
+            "Memory preflight (background only — do NOT quote, do NOT treat as "
+            "the user's current message). Reflect patterns as context, not "
+            "identity. Obey the anti-oracle / safety / banned-language rules "
+            "in the system prompt."
+        ]
+
+        if loops:
+            tone_library = None
+            try:
+                from .echo.tone_library_loader import load_tone_library
+
+                tone_library = load_tone_library()
+            except Exception as e:  # noqa: BLE001 — guidance is optional
+                logger.warning(f"preflight: tone library load failed: {e}")
+
+            lines.append("Active emotional patterns:")
+            for lp in loops:
+                guidance = ""
+                if tone_library is not None:
+                    try:
+                        guidance = (
+                            " "
+                            + tone_library.lookup(
+                                lp.loop_id, lp.tone_state
+                            ).reflection_line
+                        )
+                    except Exception:  # noqa: BLE001 — skip missing entries
+                        guidance = ""
+                lines.append(
+                    f"- {lp.loop_id}: {lp.tone_state}, "
+                    f"{lp.intensity_label} intensity.{guidance}"
+                )
+
+        if summary_text:
+            lines.append(f"Recent reflection: {summary_text}")
+            threads = getattr(prior, "open_threads", None) or []
+            if threads:
+                lines.append(f"Open thread: {threads[0]}")
+
+        text = "\n".join(lines)[:_PREFLIGHT_MAX_CHARS]
+        return ChatMessage(role="system", content=text)
 
     async def _load_prior_continuity_carrier(
         self,
