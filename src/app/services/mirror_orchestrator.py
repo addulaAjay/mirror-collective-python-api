@@ -539,7 +539,10 @@ class MirrorOrchestrator:
         # (too short to summarize on the fly, or summarize failed), use the
         # most-recent OTHER conversation that already has one instead of
         # dropping continuity entirely. Reuses the already-fetched `recent`
-        # list — no extra DynamoDB or model calls.
+        # list — no extra DynamoDB or model calls. Note: this scans the
+        # pre-lazy-summarize `recent`, so in the rare read-after-write lag
+        # where a just-generated summary isn't yet reflected, we may fall
+        # back to an older summary; bounded and self-heals next request.
         if not prior.summary:
             prior = next(
                 (

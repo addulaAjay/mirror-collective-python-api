@@ -224,9 +224,10 @@ class ConversationService:
 
             # Update conversation metadata with an ATOMIC counter bump. The
             # chat path writes the user and assistant messages concurrently;
-            # a read-modify-write (update_activity + update_conversation) let
-            # both writes read the same count and drop one increment, starving
-            # the summary threshold. ADD applies each increment independently.
+            # the old read-modify-write (read count, +1 in memory, blind SET)
+            # let both writes read the same count and drop one increment,
+            # starving the summary threshold. ADD applies each increment
+            # independently.
             title = (
                 conversation.generate_title_from_content(content)
                 if not conversation.title
