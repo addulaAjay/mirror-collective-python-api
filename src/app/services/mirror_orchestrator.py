@@ -27,6 +27,7 @@ __all__ = ["MIRRORGPT_SYSTEM_PROMPT", "ResponseGenerator", "MirrorOrchestrator"]
 # Memory Preflight (Phase 1) — bounds for the pattern/summary packet injected
 # as a background system message. See docs/MIRRORGPT_MEMORY_PLAN.md Phase 1.
 _PREFLIGHT_MAX_LOOPS = int(os.getenv("MIRRORGPT_PREFLIGHT_MAX_LOOPS", "3"))
+_PREFLIGHT_MAX_ANCHORS = int(os.getenv("MIRRORGPT_PREFLIGHT_MAX_ANCHORS", "3"))
 _PREFLIGHT_MAX_CHARS = int(os.getenv("MIRRORGPT_PREFLIGHT_MAX_CHARS", "1200"))
 
 
@@ -235,6 +236,12 @@ class MirrorOrchestrator:
         self.enable_preflight_patterns = (
             os.getenv("MIRRORGPT_PREFLIGHT_PATTERNS", "false").lower() == "true"
         )
+        # Life Anchors (Phase 2C): inject the user's active, MirrorGPT-scoped
+        # Life Anchors into the same preflight packet. Separate flag so anchors
+        # and Echo-Map patterns can be rolled out independently.
+        self.enable_life_anchors = (
+            os.getenv("MIRRORGPT_LIFE_ANCHORS", "false").lower() == "true"
+        )
 
     async def process_mirror_chat(
         self,
@@ -303,9 +310,9 @@ class MirrorOrchestrator:
             # is never injected twice. Order becomes
             # [system_prompt, preflight_packet, carrier?/history…, user].
             if preflight_data is not None:
-                loops, prior = preflight_data
+                loops, prior, anchors = preflight_data
                 preflight_packet = self._render_preflight_packet(
-                    loops, None if carrier_fired else prior
+                    loops, None if carrier_fired else prior, anchors
                 )
                 if preflight_packet is not None:
                     history = [preflight_packet] + history
@@ -509,22 +516,24 @@ class MirrorOrchestrator:
         user_id: str,
         current_conversation_id: Optional[str],
     ) -> Optional[tuple]:
-        """Fetch the Memory Preflight inputs (Phase 1) — Echo Map patterns
-        (Tier 3) and the recent reflection summary (Tier 2) — concurrently.
+        """Fetch the Memory Preflight inputs concurrently: Echo Map patterns
+        (Tier 3) + recent reflection summary (Tier 2) + Life Anchors (Tier 4).
 
-        Returns ``(loops, prior)`` for the caller to render after the carrier
-        decision (so the Tier-2 summary can be suppressed when the carrier
-        already injected it). Returns None instantly when the flag is off (no
-        DynamoDB call), so it's free to include as a parallel gather leg.
+        Returns ``(loops, prior, anchors)`` for the caller to render after the
+        carrier decision (so the Tier-2 summary can be suppressed when the
+        carrier already injected it). Returns None instantly when both feature
+        flags are off (no DynamoDB call), so it's free to include as a parallel
+        gather leg. Each leg self-gates on its flag and returns empty when off.
         Never raises — any failure degrades so chat is unaffected.
         """
-        if not self.enable_preflight_patterns:
+        if not (self.enable_preflight_patterns or self.enable_life_anchors):
             return None
 
         try:
-            loops, prior = await asyncio.gather(
+            loops, prior, anchors = await asyncio.gather(
                 self._fetch_active_loops(user_id),
                 self._fetch_recent_summary(user_id, current_conversation_id),
+                self._fetch_active_anchors(user_id),
                 return_exceptions=True,
             )
             if isinstance(loops, BaseException):
@@ -538,7 +547,12 @@ class MirrorOrchestrator:
                     f"user_id={user_id}: {prior}"
                 )
                 prior = None
-            return (loops, prior)
+            if isinstance(anchors, BaseException):
+                logger.warning(
+                    f"preflight: anchor fetch failed for user_id={user_id}: {anchors}"
+                )
+                anchors = []
+            return (loops, prior, anchors)
         except Exception as e:  # noqa: BLE001 — never break chat
             logger.warning(f"preflight: build failed for user_id={user_id}: {e}")
             return None
@@ -549,7 +563,10 @@ class MirrorOrchestrator:
         Reads the loop-state store directly via query_by_user rather than
         build_snapshot(), which would couple chat to reflection-session
         expiry (raises SessionExpired). See docs/MIRRORGPT_MEMORY_PLAN.md.
+        Empty when the patterns flag is off.
         """
+        if not self.enable_preflight_patterns:
+            return []
         from ..repositories.echo_loop_state_repo import EchoLoopStateRepo
 
         repo = EchoLoopStateRepo()
@@ -557,6 +574,23 @@ class MirrorOrchestrator:
         active = [r for r in rows if float(r.intensity_score or 0) > 0]
         active.sort(key=lambda r: float(r.intensity_score or 0), reverse=True)
         return active[:_PREFLIGHT_MAX_LOOPS]
+
+    async def _fetch_active_anchors(self, user_id: str) -> List[Any]:
+        """The user's active, MirrorGPT-scoped Life Anchors (Tier 4).
+
+        ``list_active_for_user`` already filters status==active and
+        scopes.mirrorgpt. Here we drop reflection_use=="never", order
+        always_consider first, and cap. Empty when the anchors flag is off.
+        """
+        if not self.enable_life_anchors:
+            return []
+        from ..repositories.life_anchor_repo import LifeAnchorRepo
+
+        repo = LifeAnchorRepo()
+        anchors = await repo.list_active_for_user(user_id)
+        usable = [a for a in anchors if a.reflection_use != "never"]
+        usable.sort(key=lambda a: 0 if a.reflection_use == "always_consider" else 1)
+        return usable[:_PREFLIGHT_MAX_ANCHORS]
 
     async def _fetch_recent_summary(
         self, user_id: str, current_conversation_id: Optional[str]
@@ -583,15 +617,21 @@ class MirrorOrchestrator:
         )
 
     def _render_preflight_packet(
-        self, loops: List[Any], prior: Optional[Any]
+        self,
+        loops: List[Any],
+        prior: Optional[Any],
+        anchors: Optional[List[Any]] = None,
     ) -> Optional[ChatMessage]:
-        """Render loops + recent summary into one bounded system ChatMessage.
+        """Render Life Anchors + loops + recent summary into one bounded
+        system ChatMessage.
 
-        Returns None when there's nothing to say. Output is hard-capped at
-        _PREFLIGHT_MAX_CHARS to bound token cost.
+        Life Anchors come first — they're the highest-priority durable
+        context. Returns None when there's nothing to say. Output is
+        hard-capped at _PREFLIGHT_MAX_CHARS to bound token cost.
         """
+        anchors = anchors or []
         summary_text = getattr(prior, "summary", None) if prior is not None else None
-        if not loops and not summary_text:
+        if not loops and not summary_text and not anchors:
             return None
 
         lines: List[str] = [
@@ -600,6 +640,22 @@ class MirrorOrchestrator:
             "identity. Obey the anti-oracle / safety / banned-language rules "
             "in the system prompt."
         ]
+
+        if anchors:
+            lines.append(
+                "Life anchors the user asked to be remembered (hold with care):"
+            )
+            for a in anchors:
+                line = f"- {a.anchor_type}: {a.title}"
+                relationship = getattr(a, "relationship", None)
+                if relationship:
+                    line += f" (relationship: {relationship})"
+                weight = getattr(a, "emotional_weight", None)
+                if weight:
+                    line += f" [{weight}]"
+                lines.append(line + ".")
+                for guidance in (getattr(a, "tone_guidance", None) or [])[:2]:
+                    lines.append(f"  Guidance: {guidance}")
 
         if loops:
             tone_library = None
