@@ -260,7 +260,7 @@ class MirrorOrchestrator:
                     user_id, conversation_id, limit=5
                 ),
                 self._get_conversation_history(conversation_id, user_id, limit=10),
-                self._load_memory_preflight(user_id, conversation_id),
+                self._load_preflight_data(user_id, conversation_id),
                 return_exceptions=True,
             )
             previous_profile = (
@@ -270,7 +270,7 @@ class MirrorOrchestrator:
                 results[1] if not isinstance(results[1], BaseException) else []
             )
             history = results[2] if not isinstance(results[2], BaseException) else []
-            preflight_packet = (
+            preflight_data = (
                 results[3] if not isinstance(results[3], BaseException) else None
             )
             for idx, label in enumerate(("profile", "signals", "history", "preflight")):
@@ -286,6 +286,7 @@ class MirrorOrchestrator:
             # the thread across the boundary. Falls back silently if no
             # prior context is available. See
             # docs/MIRRORGPT_CONTINUITY_MEMORY.md.
+            carrier_fired = False
             if not history:
                 carrier = await self._load_prior_continuity_carrier(
                     user_id=user_id,
@@ -293,13 +294,21 @@ class MirrorOrchestrator:
                 )
                 if carrier is not None:
                     history = [carrier]
+                    carrier_fired = True
 
             # Memory Preflight (Phase 1): prepend the pattern/summary packet as
-            # a background system message on EVERY turn (the carrier only fires
-            # on a fresh conversation's first turn). Order becomes
+            # a background system message on EVERY turn. The recent-summary
+            # (Tier 2) block is suppressed when the carrier already fired this
+            # turn — the carrier covers exactly that case — so the same summary
+            # is never injected twice. Order becomes
             # [system_prompt, preflight_packet, carrier?/history…, user].
-            if preflight_packet is not None:
-                history = [preflight_packet] + history
+            if preflight_data is not None:
+                loops, prior = preflight_data
+                preflight_packet = self._render_preflight_packet(
+                    loops, None if carrier_fired else prior
+                )
+                if preflight_packet is not None:
+                    history = [preflight_packet] + history
 
             # 2. Analyze current message (all 5 signals)
             analysis_result = self.archetype_engine.analyze_message(
@@ -495,17 +504,19 @@ class MirrorOrchestrator:
             )
             return []
 
-    async def _load_memory_preflight(
+    async def _load_preflight_data(
         self,
         user_id: str,
         current_conversation_id: Optional[str],
-    ) -> Optional[ChatMessage]:
-        """Build the Memory Preflight packet (Phase 1) — Echo Map patterns +
-        recent reflection summary — as one bounded background system message.
+    ) -> Optional[tuple]:
+        """Fetch the Memory Preflight inputs (Phase 1) — Echo Map patterns
+        (Tier 3) and the recent reflection summary (Tier 2) — concurrently.
 
-        Returns None instantly when the feature flag is off (no DynamoDB
-        call), so it's free to include as a parallel gather leg. Never raises
-        — any failure degrades to None so chat is unaffected.
+        Returns ``(loops, prior)`` for the caller to render after the carrier
+        decision (so the Tier-2 summary can be suppressed when the carrier
+        already injected it). Returns None instantly when the flag is off (no
+        DynamoDB call), so it's free to include as a parallel gather leg.
+        Never raises — any failure degrades so chat is unaffected.
         """
         if not self.enable_preflight_patterns:
             return None
@@ -527,7 +538,7 @@ class MirrorOrchestrator:
                     f"user_id={user_id}: {prior}"
                 )
                 prior = None
-            return self._render_preflight_packet(loops, prior)
+            return (loops, prior)
         except Exception as e:  # noqa: BLE001 — never break chat
             logger.warning(f"preflight: build failed for user_id={user_id}: {e}")
             return None

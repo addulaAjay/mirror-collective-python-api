@@ -77,7 +77,7 @@ async def test_preflight_none_and_no_db_when_flag_off():
     with patch(
         "src.app.repositories.echo_loop_state_repo.EchoLoopStateRepo"
     ) as repo_cls:
-        result = await orch._load_memory_preflight("user-1", "c-1")
+        result = await orch._load_preflight_data("user-1", "c-1")
 
     assert result is None
     repo_cls.assert_not_called()
@@ -111,7 +111,11 @@ async def test_preflight_packet_includes_patterns_and_summary():
         cs.get_recent_conversations.return_value = [prior]
         cs_cls.return_value = cs
 
-        result = await orch._load_memory_preflight("user-1", "c-current")
+        data = await orch._load_preflight_data("user-1", "c-current")
+
+    assert data is not None
+    loops_out, prior_out = data
+    result = orch._render_preflight_packet(loops_out, prior_out)
 
     assert isinstance(result, ChatMessage)
     assert result.role == "system"
@@ -148,7 +152,12 @@ async def test_preflight_degrades_to_summary_when_loops_fail():
         cs.get_recent_conversations.return_value = [prior]
         cs_cls.return_value = cs
 
-        result = await orch._load_memory_preflight("user-1", "c-current")
+        data = await orch._load_preflight_data("user-1", "c-current")
+
+    assert data is not None
+    loops_out, prior_out = data
+    assert loops_out == []  # loop fetch failed → empty, not raised
+    result = orch._render_preflight_packet(loops_out, prior_out)
 
     assert result is not None
     assert "Recent reflection about change." in result.content
@@ -172,9 +181,10 @@ async def test_preflight_none_when_no_patterns_and_no_summary():
         cs.get_recent_conversations.return_value = []
         cs_cls.return_value = cs
 
-        result = await orch._load_memory_preflight("user-1", "c-current")
+        data = await orch._load_preflight_data("user-1", "c-current")
 
-    assert result is None
+    assert data == ([], None)
+    assert orch._render_preflight_packet(*data) is None
 
 
 # --------------------------------------------------------------------------
@@ -247,9 +257,9 @@ async def test_process_mirror_chat_prepends_packet_even_with_history():
         return_value={}
     )
 
-    packet = ChatMessage(role="system", content="Memory preflight: grief rising.")
-    orch._load_memory_preflight = AsyncMock(  # type: ignore[method-assign]
-        return_value=packet
+    # Non-empty history → carrier does NOT fire → Tier 2 is not suppressed.
+    orch._load_preflight_data = AsyncMock(  # type: ignore[method-assign]
+        return_value=([_loop("grief", tone="rising")], None)
     )
 
     existing_turns = [
@@ -301,9 +311,76 @@ async def test_process_mirror_chat_prepends_packet_even_with_history():
     history = captured["history"]
     # Packet is first, then the real turns.
     assert history[0].role == "system"
-    assert history[0].content == "Memory preflight: grief rising."
+    assert "grief" in history[0].content
     assert len(history) == 3
     assert history[1].content == "earlier user msg"
+
+
+@pytest.mark.asyncio
+async def test_process_mirror_chat_suppresses_tier2_summary_when_carrier_fires():
+    """On an empty-history turn the carrier injects the recent summary; the
+    preflight packet must then carry patterns ONLY (no duplicate summary)."""
+    orch = _make_orchestrator(preflight=True)
+    orch.dynamodb_service.get_user_archetype_profile = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
+    orch.dynamodb_service.save_user_archetype_profile = AsyncMock(  # type: ignore[method-assign]
+        return_value={}
+    )
+
+    prior = _conv(
+        "c-prior",
+        summary="Working through a job change.",
+        threads=["hasn't told the manager"],
+    )
+
+    captured: dict = {}
+
+    async def fake_generate_enhanced(
+        *, user_message, analysis_result, change_analysis, user_context, history
+    ):
+        captured["history"] = history
+        return "generated reply"
+
+    orch.response_generator.generate_enhanced_response = AsyncMock(  # type: ignore[method-assign]
+        side_effect=fake_generate_enhanced
+    )
+
+    with (
+        patch(
+            "src.app.services.conversation_service.ConversationService"
+        ) as mock_cs_class,
+        patch(
+            "src.app.repositories.echo_loop_state_repo.EchoLoopStateRepo"
+        ) as repo_cls,
+    ):
+        mock_cs = AsyncMock()
+        mock_cs_class.return_value = mock_cs
+        mock_cs.get_conversation_history.return_value = []  # empty → carrier fires
+        mock_cs.get_user_mirrorgpt_signals.return_value = []
+        mock_cs.get_recent_conversations.return_value = [prior]
+        repo = AsyncMock()
+        repo.query_by_user.return_value = [_loop("grief", tone="rising")]
+        repo_cls.return_value = repo
+
+        result = await orch.process_mirror_chat(
+            user_id="user-1",
+            message="thinking about that job thing again",
+            session_id="sess-1",
+            conversation_id="c-new",
+            use_enhanced_response=True,
+        )
+
+    assert result["success"] is True
+    history = captured["history"]
+    # [preflight_packet(patterns only), carrier(summary)]
+    packet, carrier = history[0], history[1]
+    assert "grief" in packet.content
+    assert "Recent reflection" not in packet.content  # Tier 2 suppressed
+    assert "Working through a job change." in carrier.content
+    # The summary text appears exactly once across the whole context.
+    combined = packet.content + carrier.content
+    assert combined.count("Working through a job change.") == 1
 
 
 @pytest.mark.asyncio
