@@ -102,6 +102,13 @@ provider:
     DYNAMODB_USER_PERSONALIZATION_TABLE: ${self:service}-user-personalization-${self:provider.stage}
     # MirrorGPT Memory — Life Anchors (Phase 2)
     DYNAMODB_LIFE_ANCHORS_TABLE: ${self:service}-life-anchors-${self:provider.stage}
+    # Feature flags for the MirrorGPT Memory feature. ENABLED by default; set the
+    # env var to "false" for a stage to kill-switch without a code change.
+    # LIFE_ANCHORS gates in-chat detection, the confirm flow, and preflight
+    # injection of anchors. PREFLIGHT_PATTERNS gates the Echo Map patterns +
+    # recent-summary preflight (Phase 1) — left off by default here.
+    MIRRORGPT_LIFE_ANCHORS: ${env:MIRRORGPT_LIFE_ANCHORS, 'true'}
+    MIRRORGPT_PREFLIGHT_PATTERNS: ${env:MIRRORGPT_PREFLIGHT_PATTERNS, 'false'}
     # Reflection Room V1 — config + tz
     REFLECTION_DEFAULT_USER_TZ: ${env:REFLECTION_DEFAULT_USER_TZ, 'America/New_York'}
     # Apple/Google IAP credentials
