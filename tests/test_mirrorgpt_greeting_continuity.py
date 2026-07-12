@@ -23,6 +23,7 @@ import pytest
 
 from src.app.api import mirrorgpt_routes
 from src.app.models.conversation import Conversation
+from src.app.services.conversation_summarizer import SummaryResult
 from src.app.services.openai_service import ChatMessage
 
 # --------------------------------------------------------------------------
@@ -199,11 +200,10 @@ async def test_try_lazy_summarize_delegates_staleness_to_summarize_if_stale():
 
 
 @pytest.mark.asyncio
-async def test_load_continuity_lazy_summarizes_unsummarized_most_recent():
-    """Most-recent conversation has no summary → triggers lazy summarize.
-
-    After the summarizer runs and persists, the second fetch picks up the
-    new summary and it appears in context_lines.
+async def test_load_continuity_applies_lazy_summary_in_place():
+    """Most-recent conversation has no summary → _try_lazy_summarize returns a
+    fresh SummaryResult, which is applied in place and appears in
+    context_lines — without a second DynamoDB read (perf: one query, not two).
     """
     unsummarized = _conv(
         conv_id="c1",
@@ -211,29 +211,28 @@ async def test_load_continuity_lazy_summarizes_unsummarized_most_recent():
         message_count=6,
         last_message_at=_iso(datetime.now(timezone.utc) - timedelta(hours=3)),
     )
-    summarized_after = _conv(
-        conv_id="c1",
-        summary="Lazy-generated summary about a recent reflection.",
-        message_count=6,
-        last_message_at=unsummarized.last_message_at,
-    )
     conv_service = MagicMock()
-    # First call returns unsummarized, second call (after lazy summarize)
-    # returns the populated version.
-    conv_service.get_recent_conversations = AsyncMock(
-        side_effect=[[unsummarized], [summarized_after]]
-    )
+    conv_service.get_recent_conversations = AsyncMock(return_value=[unsummarized])
 
+    fresh = SummaryResult(
+        summary="Lazy-generated summary about a recent reflection.",
+        key_themes=["reflection"],
+        open_threads=["still deciding"],
+        summarized_through_message_id="m-9",
+        summarized_at="2026-07-12T00:00:00Z",
+    )
     with patch.object(
         mirrorgpt_routes,
         "_try_lazy_summarize",
-        new=AsyncMock(return_value=None),
+        new=AsyncMock(return_value=fresh),
     ) as mock_lazy:
         result = await mirrorgpt_routes._load_continuity_context(
             user_id="user-1", conversation_service=conv_service
         )
 
     mock_lazy.assert_awaited_once()
+    # Applied in place — no second get_recent_conversations round-trip.
+    conv_service.get_recent_conversations.assert_awaited_once()
     assert result["resume_conversation_id"] == "c1"
     assert result["has_prior_context"] is True
     assert "Lazy-generated summary" in result["context_lines"][0]

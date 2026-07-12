@@ -535,7 +535,22 @@ class MirrorOrchestrator:
                     f"prior_id={prior.conversation_id}: {e}"
                 )
 
+        # Fall-through: if the most-recent prior still has no usable summary
+        # (too short to summarize on the fly, or summarize failed), use the
+        # most-recent OTHER conversation that already has one instead of
+        # dropping continuity entirely. Reuses the already-fetched `recent`
+        # list — no extra DynamoDB or model calls.
         if not prior.summary:
+            prior = next(
+                (
+                    c
+                    for c in recent
+                    if c.conversation_id != current_conversation_id and c.summary
+                ),
+                None,
+            )
+
+        if not prior or not prior.summary:
             return None
 
         # Render the carrier. Labeled clearly as background so the model

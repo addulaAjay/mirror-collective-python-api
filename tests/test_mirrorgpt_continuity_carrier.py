@@ -125,10 +125,11 @@ async def test_carrier_built_when_prior_summarized():
 
 @pytest.mark.asyncio
 async def test_carrier_none_when_prior_unsummarized_and_too_few_messages():
-    """Prior is fresh enough to be the candidate but has < 4 messages and
-    no summary → can't summarize on the fly → no carrier."""
+    """Prior is the candidate but has fewer than the summary threshold's
+    messages and no summary → can't summarize on the fly, and there is no
+    other summarized conversation to fall through to → no carrier."""
     orchestrator = _make_orchestrator()
-    prior = _conv(conv_id="c-prior", summary=None, message_count=2)
+    prior = _conv(conv_id="c-prior", summary=None, message_count=1)
 
     with patch(
         "src.app.services.conversation_service.ConversationService"
@@ -403,3 +404,41 @@ async def test_process_mirror_chat_history_empty_and_no_prior_yields_empty_histo
 
     assert result["success"] is True
     assert captured["history"] == []
+
+
+@pytest.mark.asyncio
+async def test_carrier_falls_through_to_older_summarized_conversation():
+    """Most-recent prior has no summary and is too short to summarize on the
+    fly, but an older conversation already has one → the carrier uses the
+    older summary instead of dropping continuity (no extra fetch/model call).
+    """
+    orchestrator = _make_orchestrator()
+    recent_no_summary = _conv(conv_id="c-recent", summary=None, message_count=1)
+    older_summarized = _conv(
+        conv_id="c-old",
+        summary="Earlier work on setting boundaries with family.",
+        threads=["hasn't raised it at dinner yet"],
+        message_count=8,
+    )
+
+    with patch(
+        "src.app.services.conversation_service.ConversationService"
+    ) as mock_cs_class:
+        mock_cs = AsyncMock()
+        mock_cs_class.return_value = mock_cs
+        # Most-recent first (no summary), older summarized second.
+        mock_cs.get_recent_conversations.return_value = [
+            recent_no_summary,
+            older_summarized,
+        ]
+
+        result = await orchestrator._load_prior_continuity_carrier(
+            user_id="user-1", current_conversation_id="c-new"
+        )
+
+    assert result is not None
+    assert result.role == "system"
+    assert "setting boundaries with family" in result.content
+    assert "hasn't raised it at dinner yet" in result.content
+    # Fall-through must not require a second recent-conversations read.
+    mock_cs.get_recent_conversations.assert_awaited_once()

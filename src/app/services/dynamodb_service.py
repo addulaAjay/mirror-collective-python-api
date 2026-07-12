@@ -597,6 +597,82 @@ class DynamoDBService:
             logger.error(f"Unexpected error updating conversation: {e}")
             raise InternalServerError(f"Unexpected error: {str(e)}")
 
+    async def increment_conversation_activity(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        message_delta: int = 1,
+        token_delta: int = 0,
+        title: Optional[str] = None,
+    ) -> None:
+        """Atomically bump a conversation's activity counters.
+
+        Uses DynamoDB ``ADD`` for ``message_count``/``total_tokens`` so the
+        concurrent user- and assistant-message writes in the chat path each
+        apply their own increment. The previous ``SET message_count = :v``
+        (read-modify-write against an in-memory value) let two concurrent
+        turns both read N and both write N+1, silently dropping one — which
+        starved the summary threshold and made cross-session recall
+        inconsistent.
+
+        Timestamps are SET to now. ``title`` is written with
+        ``if_not_exists`` so the first message's title is never clobbered by
+        a later concurrent write (and is a no-op when a title already exists,
+        as it does for MirrorGPT conversations created with a title).
+
+        One round-trip, same cost as the old SET — correctness win, no added
+        latency.
+        """
+        try:
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.conversations_table)
+
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            set_parts = [
+                "updated_at = :updated_at",
+                "last_message_at = :last_message_at",
+            ]
+            expression_attribute_names: Dict[str, str] = {}
+            expression_attribute_values: Dict[str, Any] = {
+                ":updated_at": now,
+                ":last_message_at": now,
+                ":mc": message_delta,
+                ":tk": token_delta,
+            }
+            if title:
+                set_parts.append("#title = if_not_exists(#title, :title)")
+                expression_attribute_names["#title"] = "title"
+                expression_attribute_values[":title"] = title
+
+            update_expression = (
+                "SET "
+                + ", ".join(set_parts)
+                + " ADD message_count :mc, total_tokens :tk"
+            )
+
+            kwargs: Dict[str, Any] = {
+                "Key": {
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                },
+                "UpdateExpression": update_expression,
+                "ExpressionAttributeValues": expression_attribute_values,
+            }
+            if expression_attribute_names:
+                kwargs["ExpressionAttributeNames"] = expression_attribute_names
+
+            await table.update_item(**kwargs)
+
+        except ClientError as e:
+            logger.error(f"DynamoDB error incrementing conversation activity: {e}")
+            raise InternalServerError(
+                f"Failed to increment conversation activity: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error incrementing conversation activity: {e}")
+            raise InternalServerError(f"Unexpected error: {str(e)}")
+
     async def update_conversation_summary(
         self, conversation: Conversation
     ) -> Conversation:

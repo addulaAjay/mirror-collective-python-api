@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 # Defaults — overridable via env. Kept here (not in a central config module)
 # to match the project's existing per-service env-read pattern.
-DEFAULT_FIRST_SUMMARY_AT = int(os.getenv("MIRRORGPT_SUMMARY_FIRST_AT", "4"))
+# Summarize after a single full exchange (1 user + 1 assistant = 2 messages)
+# so even short prior chats are recalled. Was 4 (two exchanges), which — with
+# the pre-fix message_count undercount — often meant short chats never
+# summarized and were never recalled. Overridable via env.
+DEFAULT_FIRST_SUMMARY_AT = int(os.getenv("MIRRORGPT_SUMMARY_FIRST_AT", "2"))
 DEFAULT_REFRESH_THRESHOLD = int(os.getenv("MIRRORGPT_SUMMARY_REFRESH_THRESHOLD", "6"))
 DEFAULT_MODEL = os.getenv("MIRRORGPT_SUMMARY_MODEL", "gpt-4o-mini")
 DEFAULT_TEMPERATURE = float(os.getenv("MIRRORGPT_SUMMARY_TEMPERATURE", "0.2"))

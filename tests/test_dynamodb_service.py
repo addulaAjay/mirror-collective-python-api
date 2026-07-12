@@ -289,3 +289,77 @@ async def test_quiz_questions_failure_is_not_cached(dynamodb_service_cls):
     second = await service.get_quiz_questions()
     assert second == [{"id": "q1"}]
     assert call_count["n"] == 2
+
+
+# ---------------------------------------------------------------------------
+# C) Atomic conversation-activity increment (recall reliability, Phase 0.1)
+# ---------------------------------------------------------------------------
+
+
+def _install_update_item_capture(service: Any) -> Dict[str, Any]:
+    """Wire a fake DDB resource whose table.update_item records its kwargs."""
+    captured: Dict[str, Any] = {}
+
+    async def _update_item(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    fake_table = MagicMock()
+    fake_table.update_item = AsyncMock(side_effect=_update_item)
+    fake_resource = MagicMock()
+    fake_resource.Table = AsyncMock(return_value=fake_table)
+
+    async def _get_resource():
+        return fake_resource
+
+    service._get_resource = _get_resource  # type: ignore[assignment]
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_increment_conversation_activity_uses_atomic_add(dynamodb_service_cls):
+    """Counters bump via DynamoDB ADD (not SET) so concurrent user+assistant
+    writes each apply their own increment instead of dropping one."""
+    DynamoDBService, _ = dynamodb_service_cls
+    service = DynamoDBService()
+    captured = _install_update_item_capture(service)
+
+    await service.increment_conversation_activity(
+        conversation_id="conv-1",
+        user_id="user-1",
+        message_delta=1,
+        token_delta=12,
+    )
+
+    expr = captured["UpdateExpression"]
+    assert "ADD message_count :mc, total_tokens :tk" in expr
+    # The counter must NOT be a SET assignment (the old racy path).
+    assert "message_count = :" not in expr
+    vals = captured["ExpressionAttributeValues"]
+    assert vals[":mc"] == 1
+    assert vals[":tk"] == 12
+    assert captured["Key"] == {"conversation_id": "conv-1", "user_id": "user-1"}
+    # No title provided → no title clause / names.
+    assert "ExpressionAttributeNames" not in captured
+
+
+@pytest.mark.asyncio
+async def test_increment_conversation_activity_sets_title_if_not_exists(
+    dynamodb_service_cls,
+):
+    """A provided title is written with if_not_exists so a later concurrent
+    write can't clobber the first message's title."""
+    DynamoDBService, _ = dynamodb_service_cls
+    service = DynamoDBService()
+    captured = _install_update_item_capture(service)
+
+    await service.increment_conversation_activity(
+        conversation_id="conv-1",
+        user_id="user-1",
+        title="First message title",
+    )
+
+    expr = captured["UpdateExpression"]
+    assert "#title = if_not_exists(#title, :title)" in expr
+    assert captured["ExpressionAttributeNames"]["#title"] == "title"
+    assert captured["ExpressionAttributeValues"][":title"] == "First message title"
