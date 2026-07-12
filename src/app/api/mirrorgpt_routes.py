@@ -33,11 +33,19 @@ if TYPE_CHECKING:
 
 from ..core.enhanced_auth import get_user_with_profile
 from ..core.security import get_current_user, get_current_user_optional
+from ..repositories.life_anchor_repo import LifeAnchorRepo
 from ..services.dynamodb_service import (  # noqa: F401  (DynamoDBService patched in tests/conftest)
     DynamoDBService,
     get_dynamodb_service,
 )
+from ..services.life_anchor_confirmation import (
+    ANCHOR_SAVED_ACK,
+    classify_reply,
+    resolve_pending,
+    store_pending,
+)
 from ..services.life_anchor_detector import detect_life_anchor_candidate
+from ..services.life_anchor_structurer import LifeAnchorStructurer
 from ..services.mirror_orchestrator import MIRRORGPT_SYSTEM_PROMPT, MirrorOrchestrator
 from ..services.openai_service import (  # noqa: F401  (OpenAIService patched in tests/conftest)
     ChatMessage,
@@ -432,6 +440,23 @@ async def mirrorgpt_chat(
             "email": current_user.get("email"),
         }
 
+        # Life Anchors (Phase 2D): if the previous turn asked "remember this?"
+        # and this message is a yes/no, resolve it BEFORE generating — so an
+        # affirmative creates the anchor first and this turn's reflection
+        # already carries it. The lookup only runs for yes/no-looking messages,
+        # so normal turns pay nothing. No LLM on the hot path.
+        just_saved_anchor = False
+        if _LIFE_ANCHORS_ENABLED and conversation_id:
+            verdict = classify_reply(request.message)
+            if verdict in ("affirmative", "negative"):
+                just_saved_anchor = await resolve_pending(
+                    LifeAnchorRepo(),
+                    LifeAnchorStructurer(get_openai_service()),
+                    user_id=current_user["id"],
+                    conversation_id=conversation_id,
+                    verdict=verdict,
+                )
+
         result = await orchestrator.process_mirror_chat(
             user_id=current_user["id"],
             message=request.message,
@@ -448,6 +473,28 @@ async def mirrorgpt_chat(
                 result.get("error"),
             )
             raise HTTPException(status_code=500, detail="Chat processing failed")
+
+        # Life Anchors (Phase 2D): mutate the reply BEFORE persisting it, so
+        # the saved assistant message matches exactly what the user sees.
+        memory_prompt = None
+        if _LIFE_ANCHORS_ENABLED and conversation_id:
+            if just_saved_anchor:
+                # This turn confirmed a pending candidate — acknowledge inline.
+                result["response"] = f"{ANCHOR_SAVED_ACK}\n\n{result['response']}"
+            else:
+                # Detect a NEW candidate; append the ask and stage it so the
+                # next turn's yes/no can resolve it.
+                memory_prompt = detect_life_anchor_candidate(request.message, result)
+                if memory_prompt:
+                    result["response"] = (
+                        f"{result['response']}\n\n{memory_prompt['prompt']}"
+                    )
+                    await store_pending(
+                        LifeAnchorRepo(),
+                        user_id=current_user["id"],
+                        conversation_id=conversation_id,
+                        candidate=memory_prompt,
+                    )
 
         # Save the user message and AI response to conversation
         if conversation_id:
@@ -487,15 +534,7 @@ async def mirrorgpt_chat(
             except Exception as e:
                 logger.warning(f"Failed to save messages to conversation: {e}")
 
-        # Life Anchors (Phase 2B): cheap heuristic over already-computed
-        # signals — no LLM, no I/O — so it adds no chat latency. Flag-gated.
-        memory_prompt = (
-            detect_life_anchor_candidate(request.message, result)
-            if _LIFE_ANCHORS_ENABLED
-            else None
-        )
-
-        # Format response data
+        # Format response data (memory_prompt was computed above, before save).
         chat_data = MirrorGPTChatData(
             message_id=str(uuid.uuid4()),
             response=result["response"],

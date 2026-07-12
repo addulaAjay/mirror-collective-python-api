@@ -34,7 +34,9 @@ ANCHOR_TYPES = (
 )
 EMOTIONAL_WEIGHTS = ("sacred", "high", "medium")
 REFLECTION_USES = ("always_consider", "when_relevant", "never")
-STATUSES = ("active", "paused")
+# "pending" is an internal staging status for the in-chat confirm flow (2D) —
+# not user-settable and never injected (list_active_for_user requires "active").
+STATUSES = ("active", "paused", "pending")
 
 
 @dataclass
