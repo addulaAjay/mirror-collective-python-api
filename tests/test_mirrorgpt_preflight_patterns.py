@@ -15,6 +15,7 @@ import pytest
 
 from src.app.models.conversation import Conversation
 from src.app.models.echo_loop_state import EchoLoopState
+from src.app.models.life_anchor import LifeAnchor
 from src.app.services.mirror_orchestrator import (
     _PREFLIGHT_MAX_CHARS,
     MirrorOrchestrator,
@@ -26,11 +27,36 @@ from src.app.services.openai_service import ChatMessage
 # --------------------------------------------------------------------------
 
 
-def _make_orchestrator(*, preflight: bool = True) -> MirrorOrchestrator:
+def _make_orchestrator(
+    *, preflight: bool = True, life_anchors: bool = False
+) -> MirrorOrchestrator:
     orch = MirrorOrchestrator(dynamodb_service=AsyncMock(), openai_service=MagicMock())
-    # Flag is read from env in __init__; set explicitly for deterministic tests.
+    # Flags are read from env in __init__; set explicitly for deterministic tests.
     orch.enable_preflight_patterns = preflight
+    orch.enable_life_anchors = life_anchors
     return orch
+
+
+def _anchor(
+    anchor_id: str = "a1",
+    *,
+    anchor_type: str = "loss",
+    title: str = "User's wife passed away",
+    reflection_use: str = "when_relevant",
+    emotional_weight: str = "sacred",
+    relationship: Optional[str] = "wife",
+    tone_guidance: Optional[list] = None,
+) -> LifeAnchor:
+    return LifeAnchor(
+        user_id="user-1",
+        anchor_id=anchor_id,
+        anchor_type=anchor_type,
+        title=title,
+        reflection_use=reflection_use,
+        emotional_weight=emotional_weight,
+        relationship=relationship,
+        tone_guidance=tone_guidance or [],
+    )
 
 
 def _loop(
@@ -114,7 +140,7 @@ async def test_preflight_packet_includes_patterns_and_summary():
         data = await orch._load_preflight_data("user-1", "c-current")
 
     assert data is not None
-    loops_out, prior_out = data
+    loops_out, prior_out, _ = data
     result = orch._render_preflight_packet(loops_out, prior_out)
 
     assert isinstance(result, ChatMessage)
@@ -155,7 +181,7 @@ async def test_preflight_degrades_to_summary_when_loops_fail():
         data = await orch._load_preflight_data("user-1", "c-current")
 
     assert data is not None
-    loops_out, prior_out = data
+    loops_out, prior_out, _ = data
     assert loops_out == []  # loop fetch failed → empty, not raised
     result = orch._render_preflight_packet(loops_out, prior_out)
 
@@ -183,7 +209,7 @@ async def test_preflight_none_when_no_patterns_and_no_summary():
 
         data = await orch._load_preflight_data("user-1", "c-current")
 
-    assert data == ([], None)
+    assert data == ([], None, [])
     assert orch._render_preflight_packet(*data) is None
 
 
@@ -259,7 +285,7 @@ async def test_process_mirror_chat_prepends_packet_even_with_history():
 
     # Non-empty history → carrier does NOT fire → Tier 2 is not suppressed.
     orch._load_preflight_data = AsyncMock(  # type: ignore[method-assign]
-        return_value=([_loop("grief", tone="rising")], None)
+        return_value=([_loop("grief", tone="rising")], None, [])
     )
 
     existing_turns = [
@@ -425,3 +451,136 @@ async def test_process_mirror_chat_no_packet_when_flag_off():
 
     assert result["success"] is True
     assert captured["history"] == []
+
+
+# --------------------------------------------------------------------------
+# Life Anchors injection (Phase 2C)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_active_anchors_empty_when_flag_off():
+    orch = _make_orchestrator(preflight=True, life_anchors=False)
+    with patch("src.app.repositories.life_anchor_repo.LifeAnchorRepo") as repo_cls:
+        out = await orch._fetch_active_anchors("user-1")
+    assert out == []
+    repo_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_active_anchors_drops_never_and_orders_always_first():
+    orch = _make_orchestrator(preflight=False, life_anchors=True)
+    anchors = [
+        _anchor("a-when", reflection_use="when_relevant"),
+        _anchor("a-never", reflection_use="never"),
+        _anchor("a-always", reflection_use="always_consider"),
+    ]
+    with patch("src.app.repositories.life_anchor_repo.LifeAnchorRepo") as repo_cls:
+        repo = AsyncMock()
+        repo.list_active_for_user.return_value = anchors
+        repo_cls.return_value = repo
+        out = await orch._fetch_active_anchors("user-1")
+
+    ids = [a.anchor_id for a in out]
+    assert "a-never" not in ids
+    assert ids[0] == "a-always"  # always_consider ranked first
+    assert set(ids) == {"a-always", "a-when"}
+
+
+def test_render_packet_puts_anchors_first_with_guidance():
+    orch = _make_orchestrator(life_anchors=True)
+    anchors = [
+        _anchor(
+            "a1",
+            anchor_type="loss",
+            title="User's wife passed away",
+            relationship="wife",
+            emotional_weight="sacred",
+            tone_guidance=["Do not say time heals everything."],
+        )
+    ]
+    packet = orch._render_preflight_packet([], None, anchors)
+    assert packet is not None
+    assert "Life anchors" in packet.content
+    assert "User's wife passed away" in packet.content
+    assert "relationship: wife" in packet.content
+    assert "sacred" in packet.content
+    assert "Do not say time heals everything." in packet.content
+
+
+@pytest.mark.asyncio
+async def test_load_preflight_runs_when_only_life_anchors_flag_on():
+    orch = _make_orchestrator(preflight=False, life_anchors=True)
+    with (
+        patch("src.app.repositories.life_anchor_repo.LifeAnchorRepo") as la_cls,
+        patch(
+            "src.app.repositories.echo_loop_state_repo.EchoLoopStateRepo"
+        ) as loop_cls,
+    ):
+        la = AsyncMock()
+        la.list_active_for_user.return_value = [_anchor("a1")]
+        la_cls.return_value = la
+
+        data = await orch._load_preflight_data("user-1", "c-current")
+
+    assert data is not None
+    loops, prior, anchors = data
+    assert loops == []  # patterns flag off → loops not fetched
+    assert [a.anchor_id for a in anchors] == ["a1"]
+    loop_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_mirror_chat_injects_anchors_when_enabled():
+    from src.app.models.conversation import ConversationMessage
+
+    orch = _make_orchestrator(preflight=False, life_anchors=True)
+    orch.dynamodb_service.get_user_archetype_profile = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
+    orch.dynamodb_service.save_user_archetype_profile = AsyncMock(  # type: ignore[method-assign]
+        return_value={}
+    )
+    orch._load_preflight_data = AsyncMock(  # type: ignore[method-assign]
+        return_value=([], None, [_anchor("a1", title="User's wife passed away")])
+    )
+
+    existing = [
+        ConversationMessage(
+            message_id="m1",
+            conversation_id="c1",
+            role="user",
+            content="earlier message",
+            timestamp="2026-05-09T00:00:00Z",
+        ),
+    ]
+    captured: dict = {}
+
+    async def fake_gen(
+        *, user_message, analysis_result, change_analysis, user_context, history
+    ):
+        captured["history"] = history
+        return "reply"
+
+    orch.response_generator.generate_enhanced_response = AsyncMock(  # type: ignore[method-assign]
+        side_effect=fake_gen
+    )
+
+    with patch("src.app.services.conversation_service.ConversationService") as cs_cls:
+        cs = AsyncMock()
+        cs_cls.return_value = cs
+        cs.get_conversation_history.return_value = existing
+        cs.get_user_mirrorgpt_signals.return_value = []
+
+        result = await orch.process_mirror_chat(
+            user_id="user-1",
+            message="hi",
+            session_id="s1",
+            conversation_id="c1",
+            use_enhanced_response=True,
+        )
+
+    assert result["success"] is True
+    history = captured["history"]
+    assert history[0].role == "system"
+    assert "User's wife passed away" in history[0].content
