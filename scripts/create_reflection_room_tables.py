@@ -149,6 +149,46 @@ def _table_definitions() -> List[Dict[str, Any]]:
                 {"Key": "Environment", "Value": ENV},
             ],
         },
+        {
+            "TableName": os.getenv(
+                "DYNAMODB_LIFE_ANCHORS_TABLE",
+                f"mc_life_anchors-{ENV}",
+            ),
+            "KeySchema": [
+                {"AttributeName": "user_id", "KeyType": "HASH"},
+                {"AttributeName": "anchor_id", "KeyType": "RANGE"},
+            ],
+            "AttributeDefinitions": [
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "anchor_id", "AttributeType": "S"},
+                {"AttributeName": "status", "AttributeType": "S"},
+                {"AttributeName": "created_at", "AttributeType": "S"},
+            ],
+            "GlobalSecondaryIndexes": [
+                {
+                    "IndexName": "status-index",
+                    "KeySchema": [
+                        {"AttributeName": "user_id", "KeyType": "HASH"},
+                        {"AttributeName": "status", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "created-at-index",
+                    "KeySchema": [
+                        {"AttributeName": "user_id", "KeyType": "HASH"},
+                        {"AttributeName": "created_at", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+            "Tags": [
+                {"Key": "Service", "Value": "MirrorGPT"},
+                {"Key": "Component", "Value": "LifeAnchors"},
+                {"Key": "Environment", "Value": ENV},
+            ],
+        },
     ]
 
 

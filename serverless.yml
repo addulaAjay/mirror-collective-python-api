@@ -100,6 +100,8 @@ provider:
     DYNAMODB_ECHO_LOOP_STATE_TABLE: ${self:service}-echo-loop-state-${self:provider.stage}
     DYNAMODB_PRACTICE_COMPLETIONS_TABLE: ${self:service}-practice-completions-${self:provider.stage}
     DYNAMODB_USER_PERSONALIZATION_TABLE: ${self:service}-user-personalization-${self:provider.stage}
+    # MirrorGPT Memory — Life Anchors (Phase 2)
+    DYNAMODB_LIFE_ANCHORS_TABLE: ${self:service}-life-anchors-${self:provider.stage}
     # Reflection Room V1 — config + tz
     REFLECTION_DEFAULT_USER_TZ: ${env:REFLECTION_DEFAULT_USER_TZ, 'America/New_York'}
     # Apple/Google IAP credentials
@@ -203,6 +205,12 @@ provider:
               - - Fn::GetAtt: [ PracticeCompletionsTable, Arn ]
                 - 'index/*'
             - Fn::GetAtt: [ UserPersonalizationTable, Arn ]
+            # MirrorGPT Memory — Life Anchors (Phase 2)
+            - Fn::GetAtt: [ LifeAnchorsTable, Arn ]
+            - Fn::Join:
+              - '/'
+              - - Fn::GetAtt: [ LifeAnchorsTable, Arn ]
+                - 'index/*'
         - Effect: Allow
           Action:
             - s3:PutObject
@@ -1135,6 +1143,48 @@ resources:
         KeySchema:
           - AttributeName: user_id
             KeyType: HASH
+
+    # mc_life_anchors: user-declared durable memory (MirrorGPT Memory Phase 2).
+    # PK=user_id, SK=anchor_id. GSIs let us list by status / recency at scale;
+    # the V1 repo filters in-app, but the indexes are defined for future use.
+    LifeAnchorsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_LIFE_ANCHORS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: anchor_id
+            AttributeType: S
+          - AttributeName: status
+            AttributeType: S
+          - AttributeName: created_at
+            AttributeType: S
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: anchor_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: status-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: status
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: created-at-index
+            KeySchema:
+              - AttributeName: user_id
+                KeyType: HASH
+              - AttributeName: created_at
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
 
 plugins:
   - serverless-python-requirements
