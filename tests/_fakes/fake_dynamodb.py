@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 
-def _condition_op_and_kvs(condition: Any) -> Tuple[str, List[Any]]:
+def _condition_op_and_kvs(condition: Any) -> Tuple[Optional[str], List[Any]]:
     """Return (operator, [values]) for a boto ConditionBase.
 
     boto3.dynamodb.conditions.ConditionBase exposes ``.expression_operator``

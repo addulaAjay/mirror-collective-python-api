@@ -13,6 +13,7 @@ from mangum import Mangum
 
 from .api.echo_routes import router as echo_router
 from .api.echo_v1_routes import router as echo_v1_router
+from .api.life_anchors_routes import router as life_anchors_router
 from .api.me_routes import router as me_router
 from .api.mirrorgpt_routes import router as mirrorgpt_router
 from .api.models import HealthResponse
@@ -220,6 +221,7 @@ app.include_router(reflection_router, prefix="/api")
 app.include_router(echo_v1_router, prefix="/api")
 app.include_router(practice_router, prefix="/api")
 app.include_router(me_router, prefix="/api")
+app.include_router(life_anchors_router, prefix="/api")
 app.include_router(telemetry_router, prefix="/api")
 app.include_router(soul_ping_router, prefix="/api")
 
