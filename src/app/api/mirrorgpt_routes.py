@@ -300,22 +300,21 @@ async def _load_continuity_context(
     # complete on Lambda before the environment freezes, so without this the
     # greeting can recap a summary that's several sessions out of date.
     most_recent = recent[0]
-    await _try_lazy_summarize(
+    summary_result = await _try_lazy_summarize(
         conversation_service=conversation_service,
         conversation=most_recent,
         user_id=user_id,
     )
 
-    # Re-read summaries for the most-recent (in case lazy summarize ran).
-    # Cheap second fetch keeps the data model honest.
-    try:
-        refreshed = await conversation_service.get_recent_conversations(
-            user_id=user_id, limit=limit
-        )
-        if refreshed:
-            recent = refreshed
-    except Exception:  # noqa: BLE001
-        pass
+    # Apply a freshly-generated (or refreshed) summary in place rather than
+    # re-querying all recent conversations from DynamoDB. Lazy summarize only
+    # ever touches `most_recent`, which is `recent[0]` — the same object we
+    # render below — so mutating it is equivalent to the old re-read but saves
+    # one DynamoDB round-trip on every greeting.
+    if summary_result is not None:
+        most_recent.summary = summary_result.summary
+        most_recent.key_themes = summary_result.key_themes
+        most_recent.open_threads = summary_result.open_threads
 
     context_lines: List[str] = []
     for conv in recent:
@@ -342,12 +341,17 @@ async def _try_lazy_summarize(
     conversation_service: "ConversationService",
     conversation,
     user_id: str,
-) -> None:
+) -> Optional[Any]:
     """Best-effort lazy summarization for the most-recent conversation.
 
     Cheap pre-check on the first-summary threshold, then delegates the
     missing-vs-stale-vs-fresh decision to summarize_if_stale so a stale
     summary gets refreshed too. Errors are swallowed.
+
+    Returns the resulting SummaryResult (freshly generated or the existing
+    one when still fresh) so the caller can apply it without re-reading from
+    DynamoDB; returns None when nothing was produced (below threshold or
+    error).
     """
     try:
         from ..services.conversation_summarizer import (
@@ -356,17 +360,17 @@ async def _try_lazy_summarize(
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"continuity: summarizer import failed: {e}")
-        return
+        return None
 
     if conversation.message_count < DEFAULT_FIRST_SUMMARY_AT:
-        return
+        return None
 
     try:
         summarizer = ConversationSummarizer(
             openai_service=get_openai_service(),
             conversation_service=conversation_service,
         )
-        await summarizer.summarize_if_stale(
+        return await summarizer.summarize_if_stale(
             conversation_id=conversation.conversation_id,
             user_id=user_id,
         )
@@ -375,6 +379,7 @@ async def _try_lazy_summarize(
             f"continuity: lazy summarize failed for "
             f"conversation_id={conversation.conversation_id}: {e}"
         )
+        return None
 
 
 @router.post("/chat", response_model=MirrorGPTChatResponse)

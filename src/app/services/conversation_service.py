@@ -222,9 +222,24 @@ class ConversationService:
             # Save message
             created_message = await self.dynamodb_service.create_message(message)
 
-            # Update conversation metadata
-            conversation.update_activity(content, token_count or 0)
-            await self.dynamodb_service.update_conversation(conversation)
+            # Update conversation metadata with an ATOMIC counter bump. The
+            # chat path writes the user and assistant messages concurrently;
+            # the old read-modify-write (read count, +1 in memory, blind SET)
+            # let both writes read the same count and drop one increment,
+            # starving the summary threshold. ADD applies each increment
+            # independently.
+            title = (
+                conversation.generate_title_from_content(content)
+                if not conversation.title
+                else None
+            )
+            await self.dynamodb_service.increment_conversation_activity(
+                conversation_id=conversation.conversation_id,
+                user_id=conversation.user_id,
+                message_delta=1,
+                token_delta=token_count or 0,
+                title=title,
+            )
 
             logger.debug(f"Added {role} message to conversation {conversation_id}")
             return created_message

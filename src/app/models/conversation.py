@@ -238,18 +238,6 @@ class Conversation:
             title = title[:57] + "..."
         return title or "New Conversation"
 
-    def update_activity(self, message_content: str, token_count: int = 0):
-        """Update conversation activity metadata"""
-        current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        self.updated_at = current_time
-        self.last_message_at = current_time
-        self.message_count += 1
-        self.total_tokens += token_count
-
-        # Auto-generate title from first user message if not set
-        if not self.title and self.message_count == 1:
-            self.title = self.generate_title_from_content(message_content)
-
 
 @dataclass
 class ConversationSummary:
