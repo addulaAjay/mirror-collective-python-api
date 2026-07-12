@@ -44,6 +44,22 @@ Two concrete bugs make #3/#4 worse:
 
 **Highest-impact levers:** (a) does the **client reuse `conversation_id`** (if it starts fresh each session, in-context history is always empty); (b) does the **summary reliably get written**.
 
+### 2a. CONFIRMED (2026-07-12 trace): the client starts fresh every session — a client/server contract mismatch
+
+End-to-end trace of both repos settles lever (a): **the server is built for resume; the RN client never wired it up and actively wipes the id.** This is the primary cause of the beta complaint.
+
+**Server side — resume is ready and offered:**
+- `/session/greeting` returns `"conversation_id": continuity.get("resume_conversation_id")` (the user's most-recent prior conversation) plus `has_prior_context`. In-code comment: *"the client should echo conversation_id back on /chat so the same thread continues."* (`src/app/api/mirrorgpt_routes.py:1200–1204`, resume id computed ~L335)
+- `/chat` with a null `conversation_id` **creates a brand-new conversation** (`mirrorgpt_routes.py:400–416`); `get_recent_messages` queries strictly by `conversation_id` PK (`dynamodb_service.py:904–906`) → new conversation = empty history.
+
+**Client side — drops the resume id and wipes stored state:**
+1. `SessionGreetingResponse` type declares only `greeting_message, session_id, timestamp, user_archetype, archetype_confidence` — **no `conversation_id` field**, so the server's resume id is structurally invisible to the client. (`mirror_collective_app/.../src/types/api.ts:125–131`)
+2. Every chat-screen mount runs `initializeSession()` → `SessionManager.generateNewSession()` → `AsyncStorage.removeItem(CONVERSATION_STORAGE_KEY)` — **wipes** any stored id. (`src/hooks/useChat/useChat.ts:56` → `src/services/sessionManager.ts:22`)
+3. First `sendMessage` reads `getConversationId()` (now `null`) and sends `conversation_id: null`. (`useChat.ts:105,122`)
+4. → server creates a fresh conversation → **in-context history is empty at the start of every real session** (app cold-start or screen unmount/remount).
+
+Net: the *only* surviving cross-session bridge is the server-side continuity carrier (the fragile 5-condition summary hand-off above) — which is exactly why recall works for *some* users *sometimes*. Fixing the client contract restores deterministic single-thread continuity and takes the carrier off the critical path.
+
 ---
 
 ## 3. Target architecture — Memory Preflight + 4 tiers
@@ -80,7 +96,14 @@ Directly fixes the beta complaint. Ship first.
 - **0.2 Reliable summary write.** Stop relying on fire-and-forget. Options (pick one): `await` the summary within the request when the threshold is crossed; OR summarize on session end / greeting open (lazy-on-read already exists — extend it); OR a DynamoDB Streams/queue trigger. Guarantee at-least-once.
 - **0.3 Loosen the summary threshold.** Lower `MIRRORGPT_SUMMARY_FIRST_AT` (e.g. 4 → 2) or summarize any conversation with ≥1 user turn on session close, so short prior chats are recalled.
 - **0.4 Carrier robustness.** (a) Re-inject the carrier beyond turn 1 (keep it in context for the whole new conversation, not just the first turn); (b) fall through to the most-recent **summarized** conversation if the immediately-prior one has no summary.
-- **0.5 Client `conversation_id` reuse (likely the #1 fix).** Confirm the RN client passes back the prior `conversation_id` for a continued session; if the product intent is "continue where I left off," either fix the client OR make the server resume the user's most-recent open conversation instead of always creating a new one. Decide product semantics: continue vs. fresh-session-with-memory.
+- **0.5 Client `conversation_id` reuse — CONFIRMED as the #1 fix (see §2a).** Root cause is a client/server contract mismatch, not a server gap: the server already offers a resume id via `/session/greeting`; the RN client can't see it (type omits the field) and wipes any stored id on mount. **Fix is client-side, no server change required:**
+  1. Extend `SessionGreetingResponse` with `conversation_id?: string | null` and `has_prior_context?: boolean` (`src/types/api.ts`).
+  2. In `initializeSession` (`src/hooks/useChat/useChat.ts`): **stop wiping** the conversation id on mount, and when the greeting response carries a `conversation_id`, store it via `SessionManager.setConversationId(...)` so the first `/chat` message echoes it back and the prior thread continues. (Adjust `generateNewSession()` so it no longer removes `CONVERSATION_STORAGE_KEY`, or split "new session id" from "clear conversation".)
+  3. Add client tests: greeting with a resume id → next `/chat` sends that id; greeting without one → sends `null` (new conversation).
+
+  **Product semantics decided:** *continue the most-recent thread* on re-entry (full in-context recall of that chat). This restores single-thread continuity immediately. Recall across **multiple distinct** prior chats ("last 1–2 chats") is delivered by the Memory Preflight recent-summary + patterns legs (Phase 1) — the two are complementary, not alternatives.
+
+  **Server-side backstop (optional, defense-in-depth):** if `/chat` receives a null `conversation_id`, it *could* resume the user's most-recent open conversation instead of always creating a new one — hardens recall against any future client that forgets to echo the id. Lower priority than the client fix; gate behind a flag if added.
 
 **Exit criteria:** a scripted 2-session test (chat → new session → reference prior topic) recalls reliably across Lambda cold starts, for both short and long prior chats.
 
