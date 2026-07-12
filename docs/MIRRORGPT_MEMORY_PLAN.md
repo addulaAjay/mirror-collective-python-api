@@ -152,7 +152,14 @@ After the existing carrier logic, prepend the packet to `history`: `if packet: h
 **Exit criteria:** chat responses demonstrably reference active patterns and recent context; added tokens < ~600/turn; one extra (parallel) DynamoDB query; feature-flagged (`MIRRORGPT_PREFLIGHT_PATTERNS`); no p50 latency change with flag off; suite green.
 
 ### Phase 2 — Life Anchors (Tier 4) — the new feature
-Build as an owned, user-scoped, **permissioned** entity following the modern repository pattern (`user_personalization` is the template).
+Build as an owned, user-scoped, **permissioned** entity. Scope grounded in a full code trace (2026-07-12). Conventions confirmed against `user_personalization` (permissioned template), `_RepoBase`, `me_routes.py`, and the `FakeAioSession`/`FakeTable` test shim. Stacks on the Phase 1 preflight for injection.
+
+#### 🔑 Key design decision — detection must NOT put an LLM call in the chat hot path
+The obvious implementation (run a `gpt-4o-mini` classifier synchronously inside `process_mirror_chat` before returning) adds ~1–2s to every qualifying reply — a latency regression we've avoided throughout Phase 0/1. Instead:
+- **Gate = cheap heuristic in the hot path, reusing signals the orchestrator ALREADY computes** — `change_analysis.mirror_moment_triggered`, high `signal_1_emotional_resonance` / `significance_score`, plus a small keyword set (loss, died, divorce, diagnosis, sober, "remember this"). Zero new latency, zero new model call. When it trips, the chat response carries an immediate `memory_prompt`.
+- **LLM only AFTER the user opts in.** When the user taps "Remember," the confirm endpoint runs the cheap `gpt-4o-mini` pass (reusing the `conversation_summarizer` call pattern — `send_with_overrides_async`, temp ~0.1, bounded `max_tokens`, JSON parse) to structure the anchor (`anchor_type`, `relationship`, `tone_guidance`). This is off the chat hot path; the user has already committed. **No anchor is ever stored without explicit confirmation.**
+
+This keeps the headline feature perf-neutral for chat while still using an LLM where it adds value (structuring a confirmed anchor).
 
 **2.1 Data model** — `src/app/models/life_anchor.py` (new):
 
@@ -181,22 +188,36 @@ Build as an owned, user-scoped, **permissioned** entity following the modern rep
 }
 ```
 
-**2.2 Files to add/edit** (mirrors the Reflection-Room convention):
-- `src/app/models/life_anchor.py` — dataclass + `to_dynamodb_item`/`from_dynamodb_item`.
-- `src/app/repositories/life_anchor_repo.py` — subclass `_RepoBase`; `os.getenv("DYNAMODB_LIFE_ANCHORS_TABLE", …)`; CRUD + `list_active_for_user(user_id)`; injectable `session` for tests.
-- `src/app/api/life_anchor_routes.py` — CRUD (create / list / update / pause / delete), `get_current_user` dep, `success/data/message` envelope; register in `src/app/handler.py`.
-- `scripts/create_reflection_room_tables.py` (or new script) — table config block (PK `user_id`, SK `anchor_id`; optional GSI by `status`).
-- `serverless.yml` — env var (`provider.environment`), IAM `Fn::GetAtt` grant, and `LifeAnchorsTable` resource (`DeletionPolicy: Retain`).
-- `.env.example` / `.env.*` — `DYNAMODB_LIFE_ANCHORS_TABLE`.
-- `tests/` — repo + route tests using the in-memory `fake_dynamodb` shim.
+Ship as three stacked sub-PRs so each is reviewable and independently valuable:
 
-**2.3 Permissions / user control** — reuse `user_personalization` privacy-flags mechanism + per-anchor `status`/`scopes`. User can edit, pause, delete; control where each anchor is used. Ownership = `user_id`-as-PK, same as all user-scoped reads (Cognito claim).
+#### Phase 2A — Entity + CRUD + infra (no chat coupling)
+The permissioned store and user-facing management endpoints. Follows the confirmed conventions exactly:
+- `src/app/models/life_anchor.py` — `@dataclass LifeAnchor` with `to_dynamodb_item`/`from_dynamodb_item` (pattern: `models/user_personalization.py`, `models/echo_loop_state.py`). Nested `scopes`/`tone_guidance` handled in `from_dynamodb_item` like `UserFlags`.
+- `src/app/repositories/life_anchor_repo.py` — subclass `_RepoBase` (`repositories/_base.py`); `self.table_name = os.getenv("DYNAMODB_LIFE_ANCHORS_TABLE", "mc_life_anchors-development")`; `query_by_user`, `get`, `upsert`, `delete`, `list_active_for_user` (GSI `status-index`); injectable `session` for tests. Serialize via `_serializers.to_ddb`/`from_ddb`.
+- `src/app/api/life_anchors_routes.py` — `APIRouter(tags=["Life Anchors"])`; `get_life_anchor_repo()` `Depends` factory; routes `GET/POST /api/me/life-anchors`, `PUT/DELETE /api/me/life-anchors/{anchor_id}`, `POST .../{id}/pause`; `get_current_user` dep + `_user_id_or_401`; `success/data/message` envelope; Pydantic request/response models with `Field` constraints. Register in `src/app/handler.py` via `app.include_router(life_anchors_router, prefix="/api")`.
+- **Infra:** `serverless.yml` — `LifeAnchorsTable` (PK `user_id` / SK `anchor_id`; GSIs `status-index`, `created-at-index`; `BillingMode: PAY_PER_REQUEST`; `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain`), `provider.environment.DYNAMODB_LIFE_ANCHORS_TABLE`, and an IAM `Fn::GetAtt` grant incl. `index/*` (mirror `MirrorMomentsTable`). Add a table block to `scripts/create_reflection_room_tables.py` and the env var to `.env.example`.
+- **Tests:** `tests/test_life_anchor_repo.py` (repo via `FakeAioSession`/`FakeTable` — `FakeTable(primary_key=["user_id","anchor_id"], indexes={"status-index":["user_id","status"]})`), `tests/test_life_anchors_routes.py` (`TestClient` + `app.dependency_overrides` for `get_current_user` and `get_life_anchor_repo`).
 
-**2.4 Anchor creation (detection flow)** — after a response, run a cheap classifier (reuse `gpt-4o-mini`, like the summarizer) or rule/keyword heuristics on high emotional-weight turns. If a candidate is detected, the reply includes a memory prompt: *"This feels like more than a passing reflection — would you like The Mirror to remember this as a Life Anchor?"* Options: Remember / Save to Echo Vault / Not now / Never. On confirm → write the anchor. **No anchor is stored without explicit user confirmation.**
+**Exit 2A:** full CRUD + pause/delete over the real conventions; ownership enforced by `user_id` PK; anchors round-trip through the fake DDB; suite green.
 
-**2.5 Injection** — add a Life Anchors leg to the preflight `asyncio.gather`; render `always_consider` + relevant `when_relevant` anchors into the background system packet, filtered by `status==active` and `scopes.mirrorgpt==true`. Include `tone_guidance`/`do_not_use`.
+#### Phase 2B — Detection → confirm flow (perf-neutral)
+- `src/app/api/models.py` — add `memory_prompt: Optional[Dict[str, Any]] = None` to `MirrorGPTChatData` (rides the same flow as the existing `suggested_practice`).
+- **Heuristic gate** (new small module, e.g. `src/app/services/life_anchor_detector.py`): pure function over the orchestrator `result` (`mirror_moment_triggered`, emotional-resonance/significance, keyword set). Returns an optional `memory_prompt` dict `{prompt, candidate_text, anchor_type_guess, emotional_weight_guess}`. Wired in `mirror_orchestrator.process_mirror_chat` (or the route) with **no LLM call** — pure signal reuse. Surfaced via `result["memory_prompt"]` → `MirrorGPTChatData`.
+- **Confirm endpoint** `POST /api/me/life-anchors/confirm` — accepts the candidate + user choice (Remember / Save-to-Echo-Vault / Not-now / Never); on Remember, runs the `gpt-4o-mini` structuring pass (reuse `conversation_summarizer` call/parse pattern) to fill `anchor_type`/`relationship`/`tone_guidance`, then `upsert`. "Never" records a suppression so we don't re-prompt the same candidate. **Storage only on explicit confirm.**
 
-**Exit criteria:** an anchor created in session A is referenced (with care + tone guidance) in session B even when only the last 3 chats are in context; user can pause/delete and the reference disappears next turn.
+**Exit 2B:** high-emotional-weight turns surface a `memory_prompt` with **zero added chat latency** (assert no model call on the chat path); confirm writes a structured anchor; decline writes nothing.
+
+#### Phase 2C — Inject anchors into the preflight (reuses Phase 1)
+- Extend the Phase 1 preflight: add a Life Anchors fetch to `_load_preflight_data` (`list_active_for_user`, filtered `status=="active"` and `scopes.mirrorgpt==True`) and render `always_consider` + relevant `when_relevant` anchors into the existing packet, including `tone_guidance`/`do_not_use`. Same bounded-token cap and background-only framing. Gated by `MIRRORGPT_LIFE_ANCHORS` (separate flag from patterns).
+- Ordering in the packet: Life Anchors first (highest-priority durable context), then patterns, then recent summary.
+
+**Exit 2C:** an anchor created in session A is referenced (with care + tone guidance) in session B even when only the last 3 chats are in context; `status==paused`/deleted anchors never surface next turn; sacred anchors always considered.
+
+#### Permissions / safety (spans 2A–2C)
+Per-anchor `status` (active|paused) + `scopes` + `reflection_use` + `emotional_weight`; user can edit/pause/**hard-delete** (or TTL). Ownership = `user_id` PK from the Cognito claim, same as all user-scoped reads. Injection is gated by per-anchor permission — the guardrail that makes cross-session injection safe. Consider `ENABLE_MESSAGE_ENCRYPTION` for sensitive anchor content.
+
+#### Client-UI boundary (out of backend scope)
+Backend contract: chat response `memory_prompt` (the ask) + the `/api/me/life-anchors` CRUD + `/confirm` endpoints. The RN app renders the Remember/Not-now/Never prompt and a Life Anchors management screen. Coordinate the `memory_prompt` shape with the app team (mirrors how the client already reads `suggested_practice`).
 
 ---
 
