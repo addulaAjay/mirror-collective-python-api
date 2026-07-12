@@ -107,14 +107,49 @@ Directly fixes the beta complaint. Ship first.
 
 **Exit criteria:** a scripted 2-session test (chat → new session → reference prior topic) recalls reliably across Lambda cold starts, for both short and long prior chats.
 
-### Phase 1 — Wire Tier 3 (Echo Map) into chat via the preflight (small; high perceived value)
-Uses memory you already store.
+### Phase 1 — Memory Preflight: wire Tier 3 (Echo Map) + Tier 2 (recent summary) into chat
+Uses memory you already store. Scope grounded in a full code trace (2026-07-12).
 
-- **1.1 Preflight leg.** Add a leg to the `asyncio.gather` in `process_mirror_chat` that reads `EchoLoopStateRepo` / `build_snapshot(user_id)` (respect `return_exceptions=True`).
-- **1.2 Render + inject.** Format the top-N active loops (loop, tone, intensity, trend, last_seen) into a compact background system message and append to `history` (same vector as the carrier). Cap size.
-- **1.3 Tone guidance.** Optionally include short `tone_guidance` / `do_not_use` lines derived from loop state (e.g. rising grief → "reflect grief as context, not identity").
+#### As-built facts (confirmed)
+- **Echo Map store:** `EchoLoopStateRepo` (`src/app/repositories/echo_loop_state_repo.py`), table `mc_echo_loop_state` (PK `user_id`, SK `loop_id`). ≤6 loops: `pressure, overwhelm, grief, self_silencing, agency, transition`. Per loop: `tone_state` (rising|steady|softening), `intensity_score` [0–1], `intensity_label` (High|Medium|Low), `last_seen`, `recently_changed`. Read via `query_by_user(user_id) -> List[EchoLoopState]`.
+- **Tone guidance is free:** the tone library (`src/app/services/echo/tone_library_loader.py` → `lookup(loop_id, tone_state)`) already yields a reflection line per (loop, tone), e.g. grief+rising → *"Grief is surfacing. It's asking for presence, not resolution."* Reuse as `tone_guidance` — no new copy.
+- **Chat reads none of it today** (`mirror_orchestrator` / `mirrorgpt_routes` don't touch loop state). This is the gap.
+- **Injection mechanics:** the final LLM call is assembled in `ResponseGenerator.generate_enhanced_response` as `messages = [ChatMessage("system", system_prompt)] + history + [ChatMessage("user", user_message)]` (`mirror_orchestrator.py` ~L177–180). `_build_system_prompt` is **static** and deliberately injects no cross-session signals. The continuity carrier is injected by **prepending to `history`** only when history is empty (~L269–276).
 
-**Exit criteria:** chat responses demonstrably reference active patterns; added tokens < ~600; feature-flagged (`MIRRORGPT_PREFLIGHT_PATTERNS`).
+#### Key design decision — read `query_by_user`, NOT `build_snapshot`
+`build_snapshot()` (`services/echo/snapshot_service.py`) is the existing read path but **enforces an active reflection session and raises `SessionExpired`/`NotFoundError`** (tied to the daily quiz). Coupling chat to that would drop all pattern context for anyone chatting without a fresh reflection session — or throw in the hot path. Phase 1 therefore reads `loop_state_repo.query_by_user(user_id)` directly, filters `intensity_score > 0`, sorts desc, takes top-N, and enriches with the tone library itself. Chat stays decoupled from reflection-session lifecycle.
+
+#### 1.1 Preflight fetch leg (patterns + recent summary)
+Add legs to the existing `asyncio.gather` in `process_mirror_chat` (`mirror_orchestrator.py` ~L241), `return_exceptions=True`, degrade-to-empty per the existing per-leg pattern:
+- **Tier 3:** `EchoLoopStateRepo().query_by_user(user_id)`.
+- **Tier 2:** the recent reflection summary. Reuse the continuity data already computed for the carrier / greeting (`get_recent_conversations` most-recent summarized). Injected on **every** turn (the carrier only fires turn-1 of an empty conversation), so resumed/continued conversations also carry cross-session summary context.
+
+Runs **in parallel** with the profile/signals/history fetches → **~0 added wall-clock**. Gated by the flag: when off, the legs are skipped entirely (no fetch, no cost).
+
+#### 1.2 Render the packet
+One bounded background `ChatMessage(role="system", …)` combining:
+- **Active patterns** (top-N, N≈3): `loop — tone/trend, intensity_label, "age" (last_seen)` + the tone-library guidance line.
+- **Recent summary** (Tier 2): the one-line recent reflection summary + top open thread.
+- Framing header matching the carrier's: *"background only — do NOT quote, reflect as context not identity; obey anti-oracle/safety rules."*
+
+Cap the whole packet (~400–600 tokens; hard char cap like history's per-turn 2000). Estimated ≈500–600 tokens for all 6 loops enriched, so top-3 stays well under budget.
+
+#### 1.3 Inject on every turn
+After the existing carrier logic, prepend the packet to `history`: `if packet: history = [packet] + history`. Final order → `[system_prompt, pattern+summary packet, carrier?/history…, user]`. No signature changes to `generate_enhanced_response` (packet rides the existing `history` vector).
+
+#### Feature flag
+`MIRRORGPT_PREFLIGHT_PATTERNS` (default `false`), read per convention (`os.getenv(..., "false").lower() == "true"`). Ship dark; enable per cohort.
+
+#### Files to touch
+- `src/app/services/mirror_orchestrator.py` — flag read (`__init__`), gather leg(s), `_load_pattern_preflight(user_id)` builder (fetch + render), prepend-to-history.
+- Reuse (no change): `EchoLoopStateRepo`, `tone_library_loader`, the recent-summary path.
+- Tests: fetch degrades to empty on repo error; render caps at top-N and includes tone guidance + recent summary; packet present-on-every-turn when flag on / absent when off; `process_mirror_chat` integration; token-size assertion.
+
+#### Boundaries / non-goals
+- Loops are written only by **quiz + practice completion** — Phase 1 is **read-only** injection; chat does not update loop state (a possible future enhancement, explicitly out of scope).
+- Packet reflects reflection-room state (patterns) + recent-conversation summary — both already-stored memory; no new store.
+
+**Exit criteria:** chat responses demonstrably reference active patterns and recent context; added tokens < ~600/turn; one extra (parallel) DynamoDB query; feature-flagged (`MIRRORGPT_PREFLIGHT_PATTERNS`); no p50 latency change with flag off; suite green.
 
 ### Phase 2 — Life Anchors (Tier 4) — the new feature
 Build as an owned, user-scoped, **permissioned** entity following the modern repository pattern (`user_personalization` is the template).
