@@ -363,3 +363,87 @@ async def test_increment_conversation_activity_sets_title_if_not_exists(
     assert "#title = if_not_exists(#title, :title)" in expr
     assert captured["ExpressionAttributeNames"]["#title"] == "title"
     assert captured["ExpressionAttributeValues"][":title"] == "First message title"
+
+
+# ---------------------------------------------------------------------------
+# D) Soul Ping mark-read (resolve ping_id → key, then update read_at)
+# ---------------------------------------------------------------------------
+
+
+def _install_soulping_query_update(service: Any, items: List[Dict[str, Any]]):
+    captured: Dict[str, Any] = {}
+
+    async def _query(**_kw):
+        return {"Items": items}
+
+    async def _update(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    fake_table = MagicMock()
+    fake_table.query = AsyncMock(side_effect=_query)
+    fake_table.update_item = AsyncMock(side_effect=_update)
+    fake_resource = MagicMock()
+    fake_resource.Table = AsyncMock(return_value=fake_table)
+
+    async def _get_resource():
+        return fake_resource
+
+    service._get_resource = _get_resource  # type: ignore[assignment]
+    return captured, fake_table
+
+
+@pytest.mark.asyncio
+async def test_mark_soul_ping_read_updates_matching_row(dynamodb_service_cls):
+    DynamoDBService, _ = dynamodb_service_cls
+    service = DynamoDBService()
+    captured, _table = _install_soulping_query_update(
+        service,
+        [
+            {"user_id": "u1", "sent_at": "2026-07-12T10:00:00Z", "ping_id": "other"},
+            {"user_id": "u1", "sent_at": "2026-07-12T09:00:00Z", "ping_id": "p1"},
+        ],
+    )
+
+    out = await service.mark_soul_ping_read("u1", "p1")
+
+    assert out is True
+    assert captured["Key"] == {"user_id": "u1", "sent_at": "2026-07-12T09:00:00Z"}
+    assert "read_at = :r" in captured["UpdateExpression"]
+
+
+@pytest.mark.asyncio
+async def test_mark_soul_ping_read_false_when_ping_not_found(dynamodb_service_cls):
+    DynamoDBService, _ = dynamodb_service_cls
+    service = DynamoDBService()
+    _captured, table = _install_soulping_query_update(
+        service,
+        [{"user_id": "u1", "sent_at": "2026-07-12T10:00:00Z", "ping_id": "other"}],
+    )
+
+    out = await service.mark_soul_ping_read("u1", "missing")
+
+    assert out is False
+    table.update_item.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mark_soul_ping_read_idempotent_when_already_read(dynamodb_service_cls):
+    DynamoDBService, _ = dynamodb_service_cls
+    service = DynamoDBService()
+    _captured, table = _install_soulping_query_update(
+        service,
+        [
+            {
+                "user_id": "u1",
+                "sent_at": "2026-07-12T09:00:00Z",
+                "ping_id": "p1",
+                "read_at": "2026-07-12T09:30:00Z",
+            }
+        ],
+    )
+
+    out = await service.mark_soul_ping_read("u1", "p1")
+
+    assert out is True  # already read → success without a rewrite
+    table.update_item.assert_not_called()

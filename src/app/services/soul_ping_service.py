@@ -4,14 +4,17 @@ SoulPingService — generate + deliver proactive, conversation-aware notificatio
 Pipeline per user:
   1. Read the user's Soul Ping config (preferences.soul_pings) — enabled flag +
      enabled categories. Configurable per user.
-  2. Enforce the one-per-hour throttle (latest row in the soul-pings table).
-  3. Generate ping copy with an LLM grounded in the user's most recent
-     mirror-chat continuity summary (+ key themes / open threads / recent
-     emotional tone), constrained to the enabled categories.
+  2. Enforce a safety throttle (latest row in the soul-pings table).
+  3. Choose the message based on engagement:
+       - new reflection since the last ping  → fresh LLM copy grounded in the
+         user's recent continuity summary / themes / open threads / emotion;
+       - no new reflection but last ping SEEN → a different re-engagement nudge;
+       - no new reflection and last ping UNSEEN → skip (no duplicate stacking).
   4. Deliver via SNS to each active device endpoint and persist the ping.
 
-The hourly dispatch job (jobs/soul_ping_job.py) fans this out across users.
+The daily dispatch job (jobs/soul_ping_job.py) fans this out across users.
 All failures are caught + logged; a bad ping for one user never blocks others.
+"Seen" is recorded via mark_read (POST /api/soul-pings/{ping_id}/read).
 """
 
 from __future__ import annotations
@@ -85,6 +88,45 @@ HARD RULES:
 - Plain, human, caring tone. No therapy jargon, no diagnoses.
 - If there is little to go on, write a soft, general check-in.
 """
+
+
+# Re-engagement nudges — used when the user has SEEN the last ping but hasn't
+# reflected since. Static + rotating (no LLM) so each is guaranteed distinct
+# from the previous message and cheap to produce.
+_REENGAGEMENT_PINGS: List[tuple] = [
+    (
+        "Still here for you",
+        "Whenever you're ready to reflect, The Mirror is here. No rush.",
+    ),
+    (
+        "A quiet moment?",
+        "Even a minute of reflection can shift the day. Come back when it feels right.",
+    ),
+    (
+        "The Mirror is listening",
+        "Your space for reflection is always open. Pick it up whenever you like.",
+    ),
+    (
+        "Checking back in",
+        "No pressure — just a gentle reminder this space is here when you need it.",
+    ),
+    (
+        "Whenever you're ready",
+        "Life gets busy. The Mirror will be here when you want to return.",
+    ),
+]
+
+
+def _pick_reengagement(last_body: Optional[str]) -> tuple:
+    """Pick a re-engagement (title, body) that differs from the last message.
+
+    Rotates to the next variant when the previous ping was itself a
+    re-engagement, so the user never sees the same nudge twice in a row.
+    """
+    for i, (_title, body) in enumerate(_REENGAGEMENT_PINGS):
+        if body == last_body:
+            return _REENGAGEMENT_PINGS[(i + 1) % len(_REENGAGEMENT_PINGS)]
+    return _REENGAGEMENT_PINGS[0]
 
 
 @dataclass
@@ -330,6 +372,51 @@ class SoulPingService:
             logger.error(f"Failed to persist soul ping for {ping.user_id}: {e}")
         return delivered
 
+    # ---------------------------------------------------------- seen / activity
+    async def mark_read(self, user_id: str, ping_id: str) -> bool:
+        """Record that the user opened/saw a ping. Returns True if a row was
+        updated. Drives the first-send-vs-re-engagement branch below."""
+        return await self.db.mark_soul_ping_read(user_id, ping_id)
+
+    async def _has_new_activity_since(
+        self, user_id: str, last: Optional[SoulPing]
+    ) -> bool:
+        """True if the user reflected (a conversation was updated) after the
+        last ping was sent. No prior ping → treat as new activity."""
+        if last is None:
+            return True
+        last_sent = _parse_iso(last.sent_at)
+        if last_sent is None:
+            return True
+        try:
+            recents = await self.conversations.get_recent_conversations(
+                user_id=user_id, limit=1
+            )
+        except Exception:  # noqa: BLE001
+            return False
+        if not recents:
+            return False
+        last_msg = _parse_iso(recents[0].last_message_at)
+        return last_msg is not None and last_msg > last_sent
+
+    def build_reengagement_ping(
+        self, user_id: str, enabled_categories: List[str], last: Optional[SoulPing]
+    ) -> SoulPing:
+        """A gentle 'come back' nudge (no LLM), distinct from the last message.
+
+        Used when the user saw the last ping but hasn't reflected since — a new
+        angle to re-engage rather than repeating the same conversation-grounded
+        content.
+        """
+        title, body = _pick_reengagement(last.body if last else None)
+        cat_value = (
+            SoulPingCategory.EMOTIONAL.value
+            if SoulPingCategory.EMOTIONAL.value in enabled_categories
+            else enabled_categories[0]
+        )
+        category = SoulPingCategory.from_value(cat_value) or SoulPingCategory.EMOTIONAL
+        return SoulPing(user_id=user_id, category=category, title=title, body=body)
+
     # ------------------------------------------------------------- orchestrate
     async def maybe_send_for_user(
         self,
@@ -338,9 +425,17 @@ class SoulPingService:
         source: str = "scheduled",
         force: bool = False,
     ) -> PingResult:
-        """End-to-end for one user: config → throttle → generate → send.
+        """End-to-end for one user: config → throttle → choose message → send.
 
-        `force=True` (manual test) bypasses only the throttle, never the config.
+        Message choice (the fix for "same conversation, same notification"):
+          * new reflection since the last ping → fresh, grounded content ping;
+          * no new reflection but last ping was SEEN → a different
+            re-engagement nudge (rotates, never a duplicate);
+          * no new reflection and last ping NOT yet opened → skip, so we don't
+            stack duplicate notifications the user hasn't even looked at.
+
+        `force=True` (manual test) bypasses the throttle and always generates a
+        fresh content ping.
         """
         profile = profile or await self.db.get_user_profile(user_id)
         if not profile:
@@ -352,14 +447,23 @@ class SoulPingService:
         if not config["categories"]:
             return PingResult(user_id, "skipped", "no_categories")
 
-        if not force and await self.was_pinged_recently(user_id):
-            return PingResult(user_id, "skipped", "throttled")
+        last = await self.db.get_last_soul_ping(user_id)
+        if not force and last is not None:
+            sent_at = _parse_iso(last.sent_at)
+            if sent_at and _now() - sent_at < timedelta(minutes=THROTTLE_MINUTES):
+                return PingResult(user_id, "skipped", "throttled")
 
-        ping = await self.generate_ping(user_id, config["categories"])
-        if not ping:
-            return PingResult(user_id, "skipped", "no_content")
+        has_new_activity = force or await self._has_new_activity_since(user_id, last)
+        if has_new_activity:
+            ping = await self.generate_ping(user_id, config["categories"])
+            if not ping:
+                return PingResult(user_id, "skipped", "no_content")
+        elif last is not None and last.read_at:
+            ping = self.build_reengagement_ping(user_id, config["categories"], last)
+        else:
+            return PingResult(user_id, "skipped", "unseen_no_activity")
+
         ping.source = source
-
         delivered = await self.send_and_record(ping)
         if delivered == 0:
             return PingResult(

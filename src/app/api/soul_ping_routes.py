@@ -114,3 +114,27 @@ async def send_test_ping(
         category=result.category,
         endpoints=result.endpoints,
     )
+
+
+class MarkReadResponse(BaseModel):
+    success: bool
+    ping_id: str
+
+
+@router.post("/{ping_id}/read", response_model=MarkReadResponse)
+async def mark_ping_read(
+    ping_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> MarkReadResponse:
+    """Record that the user has seen/opened a Soul Ping.
+
+    The client calls this on push-tap or in-app view (``ping_id`` comes from the
+    push ``data`` payload). It drives whether the next scheduled ping is a fresh
+    content nudge, a re-engagement message, or skipped — so users stop getting
+    duplicate notifications for a conversation they've already been nudged about.
+    Idempotent; 404 only if no such ping exists for this user.
+    """
+    updated = await get_soul_ping_service().mark_read(_uid(current_user), ping_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Soul ping not found")
+    return MarkReadResponse(success=True, ping_id=ping_id)
