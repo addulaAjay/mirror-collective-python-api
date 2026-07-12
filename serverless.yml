@@ -413,18 +413,21 @@ functions:
           rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
           description: Auto-release scheduled echoes
 
-  # Scheduled job: hourly Soul Ping dispatch (one proactive ping per user max,
+  # Scheduled job: daily Soul Ping dispatch (one proactive ping per user max,
   # generated from recent mirror-chat history + summary). The service enforces
-  # the per-user one-per-hour throttle and per-user category config.
+  # per-user category config, and skips/re-engages based on whether the last
+  # ping was seen (avoids duplicate nudges on the same conversation).
   soulPingDispatch:
     handler: src/app/jobs/soul_ping_job.lambda_handler
-    description: Hourly per-user Soul Ping generation + delivery
+    description: Daily per-user Soul Ping generation + delivery (9 PM EST)
     timeout: 600
     memorySize: 512
     events:
       - schedule:
-          rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
-          description: Generate and send Soul Pings
+          # 02:00 UTC = 9 PM EST (fixed offset; lands at 10 PM Eastern during
+          # EDT/summer since EventBridge cron has no DST). One send per day.
+          rate: cron(0 2 * * ? *)
+          description: Generate and send Soul Pings (daily, 9 PM EST)
 
   # Writes the web-playable MP4 url back onto an attachment when a MediaConvert
   # transcode finishes. Triggered by EventBridge on job-state COMPLETE.

@@ -209,3 +209,140 @@ def test_push_data_is_all_strings():
     assert data["type"] == "soul_ping"
     assert data["category"] == "emotional"
     assert all(isinstance(v, str) for v in data.values())
+
+
+# ------------------------------------------------- seen / re-engagement (2026)
+def _iso(dt) -> str:
+    return dt.isoformat()
+
+
+def _seen_ping(sent_at: str) -> SoulPing:
+    p = _ping(sent_at)
+    p.read_at = "2026-07-12T00:00:00Z"
+    return p
+
+
+def test_pick_reengagement_differs_from_last():
+    first_title, first_body = sps._REENGAGEMENT_PINGS[0]
+    # If the last message was that first variant, we rotate to a different one.
+    assert sps._pick_reengagement(first_body) != (first_title, first_body)
+    # A non-re-engagement (content) last body → start at the first variant.
+    assert sps._pick_reengagement("some content body") == sps._REENGAGEMENT_PINGS[0]
+
+
+def test_build_reengagement_ping_falls_back_to_enabled_category():
+    ping = _build().build_reengagement_ping("u1", ["progress"], _ping("x"))
+    assert ping.category.value == "progress"  # emotional not enabled → first enabled
+    assert ping.body in [b for _t, b in sps._REENGAGEMENT_PINGS]
+
+
+async def test_has_new_activity_true_when_conversation_newer():
+    now = datetime.now(timezone.utc)
+    last = _ping(_iso(now - timedelta(hours=2)))
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(
+        return_value=[SimpleNamespace(last_message_at=_iso(now - timedelta(minutes=1)))]
+    )
+    assert await _build(conv=conv)._has_new_activity_since("u1", last) is True
+
+
+async def test_has_new_activity_false_when_conversation_older():
+    now = datetime.now(timezone.utc)
+    last = _ping(_iso(now))
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(
+        return_value=[SimpleNamespace(last_message_at=_iso(now - timedelta(hours=1)))]
+    )
+    assert await _build(conv=conv)._has_new_activity_since("u1", last) is False
+
+
+async def test_maybe_send_reengages_when_seen_and_no_new_activity():
+    """Seen last ping + no new reflection → a DIFFERENT re-engagement nudge,
+    no LLM, and not a duplicate of the prior content."""
+    now = datetime.now(timezone.utc)
+    db = AsyncMock()
+    db.get_user_profile = AsyncMock(return_value=_profile())
+    db.get_last_soul_ping = AsyncMock(
+        return_value=_seen_ping(_iso(now - timedelta(hours=2)))
+    )
+    db.get_user_device_tokens = AsyncMock(
+        return_value=[{"endpoint_arn": "arn:1", "is_active": True}]
+    )
+    db.save_soul_ping = AsyncMock(return_value=True)
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(
+        return_value=[SimpleNamespace(last_message_at=_iso(now - timedelta(hours=5)))]
+    )
+    openai = AsyncMock()
+    sns = AsyncMock()
+    sns.publish_to_endpoint_async = AsyncMock(return_value="m")
+
+    result = await _build(db=db, openai=openai, conv=conv, sns=sns).maybe_send_for_user(
+        "u1"
+    )
+
+    assert result.status == "sent"
+    openai.send_with_overrides_async.assert_not_called()  # re-engagement = no LLM
+    assert db.save_soul_ping.await_args is not None
+    saved = db.save_soul_ping.await_args.args[0]
+    assert saved.body != "b"  # not the old content body
+    assert saved.body in [b for _t, b in sps._REENGAGEMENT_PINGS]
+
+
+async def test_maybe_send_skips_when_unseen_and_no_new_activity():
+    """Unseen last ping + no new reflection → skip (no duplicate stacking)."""
+    now = datetime.now(timezone.utc)
+    db = AsyncMock()
+    db.get_user_profile = AsyncMock(return_value=_profile())
+    db.get_last_soul_ping = AsyncMock(  # read_at is None → unseen
+        return_value=_ping(_iso(now - timedelta(hours=2)))
+    )
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(
+        return_value=[SimpleNamespace(last_message_at=_iso(now - timedelta(hours=5)))]
+    )
+    result = await _build(db=db, conv=conv).maybe_send_for_user("u1")
+    assert result.status == "skipped" and result.reason == "unseen_no_activity"
+
+
+async def test_maybe_send_generates_content_when_new_activity():
+    """New reflection since the last (seen) ping → fresh LLM content ping."""
+    now = datetime.now(timezone.utc)
+    db = AsyncMock()
+    db.get_user_profile = AsyncMock(return_value=_profile())
+    db.get_last_soul_ping = AsyncMock(
+        return_value=_seen_ping(_iso(now - timedelta(hours=2)))
+    )
+    db.get_user_device_tokens = AsyncMock(
+        return_value=[{"endpoint_arn": "arn:1", "is_active": True}]
+    )
+    db.save_soul_ping = AsyncMock(return_value=True)
+    fresh = SimpleNamespace(
+        summary="Working through stress.",
+        key_themes=["stress"],
+        open_threads=[],
+        conversation_id="c1",
+        last_message_at=_iso(now - timedelta(minutes=5)),  # newer than last ping
+    )
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(return_value=[fresh])
+    conv.get_conversation_history = AsyncMock(return_value=[])
+    openai = AsyncMock()
+    openai.send_with_overrides_async = AsyncMock(
+        return_value='{"category":"emotional","title":"Hi","body":"You seem stressed."}'
+    )
+    sns = AsyncMock()
+    sns.publish_to_endpoint_async = AsyncMock(return_value="m")
+
+    result = await _build(db=db, openai=openai, conv=conv, sns=sns).maybe_send_for_user(
+        "u1"
+    )
+    assert result.status == "sent"
+    openai.send_with_overrides_async.assert_called_once()  # content path used the LLM
+
+
+async def test_mark_read_passthrough():
+    db = AsyncMock()
+    db.mark_soul_ping_read = AsyncMock(return_value=True)
+    assert await _build(db=db).mark_read("u1", "p1") is True
+    db.mark_soul_ping_read.assert_awaited_once_with("u1", "p1")

@@ -1168,6 +1168,46 @@ class DynamoDBService:
             logger.error(f"Error getting last soul ping for user {user_id}: {e}")
             return None
 
+    async def mark_soul_ping_read(self, user_id: str, ping_id: str) -> bool:
+        """Set ``read_at=now`` on the user's ping with this ``ping_id``.
+
+        Returns True if a matching row was found (idempotent — already-read
+        rows return True without a rewrite). ``ping_id`` isn't a table key, so
+        we page the user's recent rows (newest first) to resolve its ``sent_at``
+        key, then update by key.
+        """
+        try:
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(self.soul_pings_table)
+            response = await table.query(
+                KeyConditionExpression="user_id = :uid",
+                ExpressionAttributeValues={":uid": user_id},
+                ScanIndexForward=False,  # newest first
+                Limit=50,
+            )
+            target = next(
+                (
+                    item
+                    for item in response.get("Items", [])
+                    if item.get("ping_id") == ping_id
+                ),
+                None,
+            )
+            if not target:
+                return False
+            if target.get("read_at"):
+                return True  # already marked — idempotent
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            await table.update_item(
+                Key={"user_id": user_id, "sent_at": target["sent_at"]},
+                UpdateExpression="SET read_at = :r",
+                ExpressionAttributeValues={":r": now},
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error marking soul ping read for user {user_id}: {e}")
+            return False
+
     async def get_device_token(
         self, user_id: str, device_token: str
     ) -> Optional[Dict[str, Any]]:
