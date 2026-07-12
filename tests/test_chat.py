@@ -231,3 +231,43 @@ def test_mirrorgpt_chat_special_characters():
     data = response.json()
     assert data["success"] is True
     assert "response" in data["data"]
+
+
+def test_mirrorgpt_chat_surfaces_memory_prompt_when_enabled(monkeypatch):
+    """Phase 2B: with the flag on, an anchor-worthy message yields a
+    memory_prompt in the chat response (heuristic — no LLM in the path)."""
+    from src.app.api import mirrorgpt_routes
+
+    monkeypatch.setattr(mirrorgpt_routes, "_LIFE_ANCHORS_ENABLED", True)
+    client = get_clean_test_client()
+
+    response = client.post(
+        "/api/mirrorgpt/chat",
+        json={
+            "message": "My wife passed away last year and I still feel lost.",
+            "use_enhanced_response": True,
+        },
+    )
+    assert response.status_code == 200
+    memory_prompt = response.json()["data"]["memory_prompt"]
+    assert memory_prompt is not None
+    assert memory_prompt["anchor_type_guess"] == "loss"
+    assert memory_prompt["prompt"]
+
+
+def test_mirrorgpt_chat_no_memory_prompt_when_disabled(monkeypatch):
+    """Flag off (default) → no memory_prompt even for an anchor-worthy message."""
+    from src.app.api import mirrorgpt_routes
+
+    monkeypatch.setattr(mirrorgpt_routes, "_LIFE_ANCHORS_ENABLED", False)
+    client = get_clean_test_client()
+
+    response = client.post(
+        "/api/mirrorgpt/chat",
+        json={
+            "message": "My wife passed away last year.",
+            "use_enhanced_response": True,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["memory_prompt"] is None

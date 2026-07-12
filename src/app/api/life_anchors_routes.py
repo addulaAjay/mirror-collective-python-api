@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from ..core.security import get_current_user
 from ..models.life_anchor import AnchorScopes, LifeAnchor
 from ..repositories.life_anchor_repo import LifeAnchorRepo
+from ..services.life_anchor_structurer import LifeAnchorStructurer
+from ..services.openai_service import get_openai_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Life Anchors"])
@@ -82,6 +84,29 @@ class LifeAnchorUpdateRequest(BaseModel):
     tone_guidance: Optional[List[str]] = None
 
 
+class LifeAnchorConfirmRequest(BaseModel):
+    """The user's response to an in-chat 'remember this?' memory prompt."""
+
+    candidate_text: str = Field(..., min_length=1, max_length=2000)
+    choice: Literal["remember", "not_now", "never"]
+    # Optional client-passed guesses from the memory_prompt (used if the
+    # gpt-4o-mini structuring pass fails or is skipped).
+    anchor_type: Optional[
+        Literal[
+            "loss",
+            "birth",
+            "divorce",
+            "diagnosis",
+            "sobriety",
+            "anniversary",
+            "transition",
+            "custom",
+        ]
+    ] = None
+    emotional_weight: Optional[Literal["sacred", "high", "medium"]] = None
+    title: Optional[str] = Field(None, max_length=200)
+
+
 class LifeAnchorOut(BaseModel):
     anchor_id: str
     anchor_type: str
@@ -106,6 +131,10 @@ class LifeAnchorOut(BaseModel):
 
 def get_life_anchor_repo() -> LifeAnchorRepo:
     return LifeAnchorRepo()
+
+
+def get_life_anchor_structurer() -> LifeAnchorStructurer:
+    return LifeAnchorStructurer(get_openai_service())
 
 
 def _user_id_or_401(user: Dict[str, Any]) -> str:
@@ -294,3 +323,61 @@ async def delete_life_anchor(
     await _get_owned_or_404(repo, user_id, anchor_id)
     await repo.delete(user_id, anchor_id)
     return _envelope(None, "Life anchor deleted")
+
+
+# ============================================================
+# POST /me/life-anchors/confirm — respond to an in-chat memory prompt
+# ============================================================
+
+
+@router.post(
+    "/me/life-anchors/confirm",
+    response_model=Dict[str, Any],
+    summary="Confirm (or decline) a detected Life Anchor candidate",
+)
+async def confirm_life_anchor(
+    request: LifeAnchorConfirmRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    repo: LifeAnchorRepo = Depends(get_life_anchor_repo),
+    structurer: LifeAnchorStructurer = Depends(get_life_anchor_structurer),
+):
+    """Handle the user's choice on an in-chat 'remember this?' prompt.
+
+    On ``remember`` the candidate is structured (gpt-4o-mini, off the chat hot
+    path) and persisted. On ``not_now``/``never`` nothing is written — an
+    anchor is only ever created by explicit confirmation.
+    """
+    user_id = _user_id_or_401(current_user)
+
+    if request.choice != "remember":
+        # Candidate-level suppression for "never" is a documented follow-up.
+        return _envelope(None, "No life anchor created")
+
+    # Best-effort structuring; fall back to the client-passed / heuristic guesses.
+    structured = await structurer.structure(request.candidate_text) or {}
+    anchor_type = request.anchor_type or structured.get("anchor_type") or "custom"
+    emotional_weight = (
+        request.emotional_weight or structured.get("emotional_weight") or "medium"
+    )
+    title = (
+        request.title or structured.get("title") or request.candidate_text.strip()[:120]
+    )
+    # Sacred anchors are always considered; everything else only when relevant.
+    reflection_use = (
+        "always_consider" if emotional_weight == "sacred" else "when_relevant"
+    )
+
+    anchor = LifeAnchor(
+        user_id=user_id,
+        anchor_type=anchor_type,
+        title=title,
+        description=request.candidate_text.strip()[:1000],
+        relationship=structured.get("relationship"),
+        emotional_weight=emotional_weight,
+        reflection_use=reflection_use,
+        tone_guidance=list(structured.get("tone_guidance") or []),
+        created_from="mirrorgpt",
+        user_confirmed=True,
+    )
+    saved = await repo.upsert(anchor)
+    return _envelope(_to_out(saved).model_dump(), "Life anchor created")
