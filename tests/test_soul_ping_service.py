@@ -289,20 +289,37 @@ async def test_maybe_send_reengages_when_seen_and_no_new_activity():
     assert saved.body in [b for _t, b in sps._REENGAGEMENT_PINGS]
 
 
-async def test_maybe_send_skips_when_unseen_and_no_new_activity():
-    """Unseen last ping + no new reflection → skip (no duplicate stacking)."""
+async def test_maybe_send_reengages_when_unseen_and_no_new_activity():
+    """Unseen last ping + no new reflection → still send a re-engagement nudge
+    (dormant users must not go silent just because the client hasn't reported
+    'seen'). No LLM; not a duplicate of the prior content."""
     now = datetime.now(timezone.utc)
     db = AsyncMock()
     db.get_user_profile = AsyncMock(return_value=_profile())
     db.get_last_soul_ping = AsyncMock(  # read_at is None → unseen
         return_value=_ping(_iso(now - timedelta(hours=2)))
     )
+    db.get_user_device_tokens = AsyncMock(
+        return_value=[{"endpoint_arn": "arn:1", "is_active": True}]
+    )
+    db.save_soul_ping = AsyncMock(return_value=True)
     conv = AsyncMock()
     conv.get_recent_conversations = AsyncMock(
         return_value=[SimpleNamespace(last_message_at=_iso(now - timedelta(hours=5)))]
     )
-    result = await _build(db=db, conv=conv).maybe_send_for_user("u1")
-    assert result.status == "skipped" and result.reason == "unseen_no_activity"
+    openai = AsyncMock()
+    sns = AsyncMock()
+    sns.publish_to_endpoint_async = AsyncMock(return_value="m")
+
+    result = await _build(db=db, openai=openai, conv=conv, sns=sns).maybe_send_for_user(
+        "u1"
+    )
+
+    assert result.status == "sent"
+    openai.send_with_overrides_async.assert_not_called()  # re-engagement = no LLM
+    assert db.save_soul_ping.await_args is not None
+    saved = db.save_soul_ping.await_args.args[0]
+    assert saved.body in [b for _t, b in sps._REENGAGEMENT_PINGS]
 
 
 async def test_maybe_send_generates_content_when_new_activity():

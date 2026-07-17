@@ -6,10 +6,11 @@ Pipeline per user:
      enabled categories. Configurable per user.
   2. Enforce a safety throttle (latest row in the soul-pings table).
   3. Choose the message based on engagement:
-       - new reflection since the last ping  → fresh LLM copy grounded in the
+       - new reflection since the last ping → fresh LLM copy grounded in the
          user's recent continuity summary / themes / open threads / emotion;
-       - no new reflection but last ping SEEN → a different re-engagement nudge;
-       - no new reflection and last ping UNSEEN → skip (no duplicate stacking).
+       - no new reflection → a different re-engagement nudge (rotating copy,
+         never a duplicate). Sent regardless of "seen" so dormant users still
+         get nudged; "seen" (read_at) is retained for later flavoring.
   4. Deliver via SNS to each active device endpoint and persist the ping.
 
 The daily dispatch job (jobs/soul_ping_job.py) fans this out across users.
@@ -458,10 +459,13 @@ class SoulPingService:
             ping = await self.generate_ping(user_id, config["categories"])
             if not ping:
                 return PingResult(user_id, "skipped", "no_content")
-        elif last is not None and last.read_at:
-            ping = self.build_reengagement_ping(user_id, config["categories"], last)
         else:
-            return PingResult(user_id, "skipped", "unseen_no_activity")
+            # No new reflection since the last ping → a gentle re-engagement
+            # nudge. Sent regardless of "seen": at daily cadence there's no
+            # notification-stacking concern, and read_at is only reliably set
+            # once the client reports opens (which isn't shipped yet). The
+            # rotating copy guarantees it differs from the previous message.
+            ping = self.build_reengagement_ping(user_id, config["categories"], last)
 
         ping.source = source
         delivered = await self.send_and_record(ping)
