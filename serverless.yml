@@ -421,21 +421,21 @@ functions:
           rate: cron(0 * * * ? *)  # Run hourly at minute 0 UTC
           description: Auto-release scheduled echoes
 
-  # Scheduled job: daily Soul Ping dispatch (one proactive ping per user max,
-  # generated from recent mirror-chat history + summary). The service enforces
-  # per-user category config, and skips/re-engages based on whether the last
-  # ping was seen (avoids duplicate nudges on the same conversation).
+  # Scheduled job: twice-daily Soul Ping dispatch (one proactive ping per user
+  # per run, generated from recent mirror-chat history + summary). The service
+  # picks fresh content when there's new activity, otherwise a rotating
+  # re-engagement nudge (never a duplicate).
   soulPingDispatch:
     handler: src/app/jobs/soul_ping_job.lambda_handler
-    description: Daily per-user Soul Ping generation + delivery (9 PM EST)
+    description: Twice-daily per-user Soul Ping generation + delivery (8 AM & 8 PM EST)
     timeout: 600
     memorySize: 512
     events:
       - schedule:
-          # 02:00 UTC = 9 PM EST (fixed offset; lands at 10 PM Eastern during
-          # EDT/summer since EventBridge cron has no DST). One send per day.
-          rate: cron(0 2 * * ? *)
-          description: Generate and send Soul Pings (daily, 9 PM EST)
+          # 13:00 & 01:00 UTC = 8 AM & 8 PM EST (fixed offset; no DST, so lands
+          # at 9 AM/9 PM Eastern during EDT/summer). Two runs per day.
+          rate: cron(0 1,13 * * ? *)
+          description: Generate and send Soul Pings (twice daily, 8 AM & 8 PM EST)
 
   # Writes the web-playable MP4 url back onto an attachment when a MediaConvert
   # transcode finishes. Triggered by EventBridge on job-state COMPLETE.

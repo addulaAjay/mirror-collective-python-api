@@ -13,7 +13,7 @@ Pipeline per user:
          get nudged; "seen" (read_at) is retained for later flavoring.
   4. Deliver via SNS to each active device endpoint and persist the ping.
 
-The daily dispatch job (jobs/soul_ping_job.py) fans this out across users.
+The twice-daily dispatch job (jobs/soul_ping_job.py) fans this out across users.
 All failures are caught + logged; a bad ping for one user never blocks others.
 "Seen" is recorded via mark_read (POST /api/soul-pings/{ping_id}/read).
 """
@@ -461,7 +461,7 @@ class SoulPingService:
                 return PingResult(user_id, "skipped", "no_content")
         else:
             # No new reflection since the last ping → a gentle re-engagement
-            # nudge. Sent regardless of "seen": at daily cadence there's no
+            # nudge. Sent regardless of "seen": at this cadence there's no
             # notification-stacking concern, and read_at is only reliably set
             # once the client reports opens (which isn't shipped yet). The
             # rotating copy guarantees it differs from the previous message.

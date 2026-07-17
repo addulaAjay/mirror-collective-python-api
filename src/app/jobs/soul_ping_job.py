@@ -1,11 +1,11 @@
 """
-Scheduled hourly job — dispatch Soul Pings.
+Scheduled twice-daily job — dispatch Soul Pings.
 
-Runs every hour (EventBridge cron in serverless.yml). For each user with an
-active device token it attempts one Soul Ping: the SoulPingService enforces the
-per-user one-per-hour throttle, the user's enabled-categories config, and skips
-users with no usable conversation history. So this job naturally sends at most
-one ping per user per hour.
+Runs at 8 AM & 8 PM EST (EventBridge cron in serverless.yml). For each user
+with an active device token it attempts one Soul Ping: the SoulPingService
+picks fresh content when there's new activity, otherwise a rotating
+re-engagement nudge, subject to the user's enabled-categories config and a
+short safety throttle.
 
 All per-user work is isolated — one user's failure never blocks the rest.
 """
@@ -61,7 +61,7 @@ async def run_soul_ping_dispatch() -> Dict[str, Any]:
 
 
 def lambda_handler(event: Dict, context: Any) -> Dict:
-    """EventBridge-triggered handler (hourly). See serverless.yml soulPingDispatch."""
+    """EventBridge-triggered handler (twice daily). See serverless.yml soulPingDispatch."""
     logger.info(f"Soul Ping dispatch triggered by: {event.get('source', 'manual')}")
     try:
         summary = asyncio.run(run_soul_ping_dispatch())
