@@ -236,6 +236,13 @@ class CreateRecipientRequest(BaseModel):
     profile_image_url: Optional[str] = None  # S3 URL returned by upload-url flow
 
 
+class UpdateRecipientPictureRequest(BaseModel):
+    # Picture-only update: name/email are intentionally NOT accepted here, so
+    # they can never be changed via this endpoint. profile_image_url is the
+    # canonical S3 URL returned by the upload-url flow.
+    profile_image_url: str
+
+
 class CreateGuardianRequest(BaseModel):
     name: str
     email: EmailStr
@@ -1190,6 +1197,45 @@ async def delete_recipient(
     return {
         "success": True,
         "message": "Recipient deleted successfully",
+    }
+
+
+@router.patch("/recipients/{recipient_id}", response_model=Dict[str, Any])
+async def update_recipient_photo(
+    recipient_id: str,
+    payload: UpdateRecipientPictureRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Update a recipient's profile picture only.
+
+    Name and email are immutable via this endpoint by design — the request
+    body carries only the picture. The replaced S3 object is best-effort
+    deleted. Returns the recipient with a freshly presigned profile_image_url.
+    """
+    from ..core.exceptions import ValidationError
+
+    user_id = current_user["id"]
+    try:
+        recipient = await echo_service.update_recipient_picture(
+            recipient_id, user_id, payload.profile_image_url
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if recipient is None:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+
+    return {
+        "success": True,
+        "data": {
+            "recipient_id": recipient.recipient_id,
+            "name": recipient.name,
+            "email": recipient.email,
+            "relationship": recipient.relationship,
+            "motif": recipient.motif,
+            "profile_image_url": recipient.profile_image_url,
+        },
+        "message": "Recipient picture updated successfully",
     }
 
 
