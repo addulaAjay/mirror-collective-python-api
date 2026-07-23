@@ -3201,6 +3201,77 @@ class EchoService:
             logger.error(f"Error deleting recipient: {e}")
             return False
 
+    def _canonical_profile_url(self, url: str, user_id: str) -> str:
+        """Normalize an incoming profile-image URL to its canonical S3 form and
+        verify it belongs to this user's profile namespace.
+
+        The client uploads via the presigned flow and gets back the canonical
+        ``media_url``; defensively we strip any presign query string and require
+        the key to sit under ``profiles/{user_id}/`` — so a recipient's picture
+        can only point at an object this user just uploaded, never an arbitrary
+        S3 object or someone else's namespace.
+        """
+        base = (url or "").split("?", 1)[0]
+        if "amazonaws.com/" not in base:
+            raise ValidationError("Invalid profile image URL")
+        key = base.split("amazonaws.com/", 1)[-1]
+        if not key.startswith(f"profiles/{user_id}/"):
+            raise ValidationError("profile image URL is outside the allowed namespace")
+        return f"https://{self.s3_bucket}.s3.{self.region}.amazonaws.com/{key}"
+
+    async def _delete_profile_object_best_effort(
+        self, url: Optional[str], user_id: str
+    ) -> None:
+        """Delete a replaced profile image from S3. Best-effort — never raises.
+
+        Only deletes objects under this user's ``profiles/`` namespace, so a
+        crafted stored URL can't be used to delete arbitrary objects.
+        """
+        try:
+            base = (url or "").split("?", 1)[0]
+            if "amazonaws.com/" not in base:
+                return
+            key = base.split("amazonaws.com/", 1)[-1]
+            if not key.startswith(f"profiles/{user_id}/"):
+                return
+            s3 = await self._get_s3_client()
+            await s3.delete_object(Bucket=self.s3_bucket, Key=key)
+            logger.info(f"Deleted replaced profile image: {key}")
+        except Exception as e:  # noqa: BLE001 — cleanup must never fail the update
+            logger.warning(f"Failed to delete old profile image (non-fatal): {e}")
+
+    async def update_recipient_picture(
+        self, recipient_id: str, user_id: str, profile_image_url: str
+    ) -> Optional[Recipient]:
+        """Replace a recipient's profile picture — and ONLY the picture.
+
+        name / email / relationship / motif are never read here, so they are
+        immutable by construction. Returns the updated Recipient with a freshly
+        presigned ``profile_image_url``, or None if the recipient doesn't exist
+        or isn't owned by ``user_id``. The replaced S3 object is best-effort
+        deleted.
+        """
+        recipient = await self.get_recipient(recipient_id, user_id)
+        if recipient is None:
+            return None
+
+        old_url = recipient.profile_image_url
+        new_url = self._canonical_profile_url(profile_image_url, user_id)
+
+        recipient.profile_image_url = new_url
+        recipient.updated_at = _current_timestamp()
+
+        dynamodb = await self._get_dynamodb_resource()
+        table = await dynamodb.Table(self.recipients_table)
+        await table.put_item(Item=recipient.to_dynamodb_item())
+
+        if old_url and old_url != new_url:
+            await self._delete_profile_object_best_effort(old_url, user_id)
+
+        # Return a fresh presigned URL so the client can display it immediately.
+        recipient.profile_image_url = await self._sign_profile_url(new_url)
+        return recipient
+
     # ========================================
     # GUARDIAN CRUD OPERATIONS
     # ========================================
