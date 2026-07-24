@@ -488,6 +488,21 @@ async def test_summarize_blanks_reason_when_not_eligible():
 
 
 @pytest.mark.asyncio
+async def test_summarize_requests_json_object_response_format():
+    history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
+    conv = _make_conversation(message_count=4)
+    payload = json.dumps({"summary": "s", "key_themes": [], "open_threads": []})
+    summarizer, openai_service, _ = _make_summarizer(
+        conversation=conv, history=history, openai_response=payload
+    )
+
+    await summarizer.summarize("conv-1", "user-1")
+
+    kwargs = openai_service.send_with_overrides_async.await_args.kwargs
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
 async def test_summarize_persists_nudge_and_object_themes():
     history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
     conv = _make_conversation(message_count=4)
@@ -603,3 +618,17 @@ def test_summarizer_prompt_forbids_identity_trait_claims():
     """Patterns must be situational, not fixed identity traits."""
     assert "situational and probabilistic" in SUMMARIZER_SYSTEM_PROMPT
     assert "not fixed identity traits" in SUMMARIZER_SYSTEM_PROMPT
+
+
+def test_summarizer_prompt_defines_theme_confidence_contract():
+    """V2: themes carry a confidence level with explicit guidance."""
+    assert '"confidence"' in SUMMARIZER_SYSTEM_PROMPT
+    assert "Confidence guidance" in SUMMARIZER_SYSTEM_PROMPT
+    assert "high, medium, low" in SUMMARIZER_SYSTEM_PROMPT
+
+
+def test_summarizer_prompt_defines_nudge_contract():
+    """V2: the nudge object drives Reflection Nudge eligibility."""
+    assert '"nudge"' in SUMMARIZER_SYSTEM_PROMPT
+    assert "NUDGE RULES" in SUMMARIZER_SYSTEM_PROMPT
+    assert "Reflection Nudge" in SUMMARIZER_SYSTEM_PROMPT

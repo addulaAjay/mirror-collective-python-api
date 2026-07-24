@@ -41,13 +41,13 @@ Notes: `nudge_eligible`/`nudge_reason` are not DynamoDB reserved words (compound
 underscore names), so no `ExpressionAttributeNames` aliasing was needed — matches
 the existing unaliased `summary`/`key_themes`/`open_threads` writes.
 
-## Slice 2 — reliability + prompt finalize
+## Slice 2 — reliability + prompt finalize ✅ DONE
 
-- [ ] `openai_service.send_with_overrides_async`: optional `response_format` param
-- [ ] Summarizer passes `{"type": "json_object"}`; bump `MIRRORGPT_SUMMARY_MAX_TOKENS` 400 → 500
-- [ ] Swap in V2 `SUMMARIZER_SYSTEM_PROMPT`; neutralize the `"eligible": true` skeleton example; soften the "high" confidence rubric (drop the "recent summarized context" clause the summarizer isn't fed)
-- [ ] Tests: response_format passed through; prompt smoke checks
-- [ ] Full suite green + commit
+- [x] `openai_service.send_with_overrides_async`: optional `response_format` param (splatted via `create_kwargs`)
+- [x] Summarizer passes `{"type": "json_object"}`; bump `MIRRORGPT_SUMMARY_MAX_TOKENS` 400 → 500
+- [x] Swap in V2 `SUMMARIZER_SYSTEM_PROMPT`; neutralized the skeleton `eligible` to `false`; softened the "high" confidence rubric to "explicitly supported throughout the current conversation" (no cross-conversation context is fed to the summarizer)
+- [x] Tests: response_format passthrough; V2 prompt anchors (confidence + nudge); existing safety/anti-oracle anchors still pass
+- [x] Full suite green + mypy clean + commit
 
 ## Slice 3 — Soul Ping wiring
 
