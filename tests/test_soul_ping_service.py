@@ -363,3 +363,110 @@ async def test_mark_read_passthrough():
     db.mark_soul_ping_read = AsyncMock(return_value=True)
     assert await _build(db=db).mark_read("u1", "p1") is True
     db.mark_soul_ping_read.assert_awaited_once_with("u1", "p1")
+
+
+# --------------------------------------------------------- V2 Reflection Nudge
+def test_build_reengagement_ping_uses_reason_when_eligible():
+    ping = _build().build_reengagement_ping(
+        "u1",
+        ["emotional", "systemic"],
+        _ping("x"),
+        reason="A hard conversation at work is still pending",
+    )
+    assert ping.title == "A thread to pick up"
+    assert "A hard conversation at work is still pending" in ping.body
+    # A grounded reason prefers the systemic angle when available.
+    assert ping.category.value == "systemic"
+
+
+def test_build_reengagement_ping_ignores_blank_reason():
+    ping = _build().build_reengagement_ping(
+        "u1", ["emotional"], _ping("x"), reason="  "
+    )
+    # Blank reason → generic rotating copy, not the reason-grounded template.
+    assert ping.title != "A thread to pick up"
+    assert ping.body in [b for _t, b in sps._REENGAGEMENT_PINGS]
+
+
+async def test_recent_nudge_reason_returns_reason_when_eligible():
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(
+        return_value=[
+            SimpleNamespace(nudge_eligible=True, nudge_reason="pending decision")
+        ]
+    )
+    assert await _build(conv=conv)._recent_nudge_reason("u1") == "pending decision"
+
+
+async def test_recent_nudge_reason_none_when_not_eligible():
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(
+        return_value=[SimpleNamespace(nudge_eligible=False, nudge_reason="leftover")]
+    )
+    assert await _build(conv=conv)._recent_nudge_reason("u1") is None
+
+
+async def test_maybe_send_reason_grounded_nudge_when_eligible():
+    """No new activity + summarizer flagged the recent convo eligible →
+    a reason-grounded Reflection Nudge (still no LLM)."""
+    now = datetime.now(timezone.utc)
+    db = AsyncMock()
+    db.get_user_profile = AsyncMock(return_value=_profile())
+    db.get_last_soul_ping = AsyncMock(
+        return_value=_ping(_iso(now - timedelta(hours=2)))
+    )
+    db.get_user_device_tokens = AsyncMock(
+        return_value=[{"endpoint_arn": "arn:1", "is_active": True}]
+    )
+    db.save_soul_ping = AsyncMock(return_value=True)
+    convo = SimpleNamespace(
+        last_message_at=_iso(now - timedelta(hours=5)),  # no new activity
+        nudge_eligible=True,
+        nudge_reason="A recurring decision conflict remains unresolved",
+    )
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(return_value=[convo])
+    openai = AsyncMock()
+    sns = AsyncMock()
+    sns.publish_to_endpoint_async = AsyncMock(return_value="m")
+
+    result = await _build(db=db, openai=openai, conv=conv, sns=sns).maybe_send_for_user(
+        "u1"
+    )
+
+    assert result.status == "sent"
+    openai.send_with_overrides_async.assert_not_called()  # still no LLM
+    assert db.save_soul_ping.await_args is not None
+    saved = db.save_soul_ping.await_args.args[0]
+    assert "A recurring decision conflict remains unresolved" in saved.body
+
+
+async def test_maybe_send_still_sends_when_nudge_not_eligible():
+    """Anti-outage regression: not-eligible must NOT suppress the ping — a
+    generic re-engagement still goes out so dormant users never go silent."""
+    now = datetime.now(timezone.utc)
+    db = AsyncMock()
+    db.get_user_profile = AsyncMock(return_value=_profile())
+    db.get_last_soul_ping = AsyncMock(
+        return_value=_ping(_iso(now - timedelta(hours=2)))
+    )
+    db.get_user_device_tokens = AsyncMock(
+        return_value=[{"endpoint_arn": "arn:1", "is_active": True}]
+    )
+    db.save_soul_ping = AsyncMock(return_value=True)
+    convo = SimpleNamespace(
+        last_message_at=_iso(now - timedelta(hours=5)),
+        nudge_eligible=False,
+        nudge_reason="",
+    )
+    conv = AsyncMock()
+    conv.get_recent_conversations = AsyncMock(return_value=[convo])
+    sns = AsyncMock()
+    sns.publish_to_endpoint_async = AsyncMock(return_value="m")
+
+    result = await _build(db=db, conv=conv, sns=sns).maybe_send_for_user("u1")
+
+    assert result.status == "sent"
+    assert db.save_soul_ping.await_args is not None
+    saved = db.save_soul_ping.await_args.args[0]
+    assert saved.body in [b for _t, b in sps._REENGAGEMENT_PINGS]

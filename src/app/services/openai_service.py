@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from functools import lru_cache
-from typing import AsyncGenerator, Dict, List, Optional, cast
+from typing import Any, AsyncGenerator, Dict, List, Optional, cast
 
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -203,6 +203,7 @@ class OpenAIService(IMirrorChatRepository):
         model: str,
         temperature: float,
         max_tokens: int,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Async override-aware completion using the native AsyncOpenAI client.
 
@@ -215,13 +216,21 @@ class OpenAIService(IMirrorChatRepository):
                 cast(ChatCompletionMessageParam, msg.to_dict()) for msg in messages
             ]
 
+            create_kwargs: Dict[str, Any] = {
+                "model": model,
+                "messages": openai_messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+            # e.g. {"type": "json_object"} to force valid-JSON output. Requires
+            # the word "json" somewhere in the prompt (OpenAI constraint).
+            if response_format is not None:
+                create_kwargs["response_format"] = response_format
+
             async with _get_semaphore():
                 response = await self.async_client.chat.completions.create(
-                    model=model,
-                    messages=openai_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=False,
+                    **create_kwargs
                 )
 
             return response.choices[0].message.content or ""

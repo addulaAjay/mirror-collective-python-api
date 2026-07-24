@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from ..models.conversation import normalize_key_themes
 from ..models.soul_ping import V1_CATEGORIES, SoulPing, SoulPingCategory
 from ..models.user_profile import UserProfile
 from .conversation_service import ConversationService
@@ -299,9 +300,11 @@ class SoulPingService:
         parts: List[str] = []
         if convo.summary:
             parts.append(f"Summary: {convo.summary}")
-        themes = convo.key_themes or []
+        # normalize_key_themes tolerates both the V2 object shape and any
+        # legacy plain-string themes still on older records.
+        themes = normalize_key_themes(convo.key_themes)
         if themes:
-            parts.append("Recurring themes: " + ", ".join(themes[:4]))
+            parts.append("Recurring themes: " + ", ".join(t.theme for t in themes[:4]))
         open_threads = convo.open_threads or []
         if open_threads:
             parts.append("Open threads: " + "; ".join(open_threads[:3]))
@@ -400,22 +403,65 @@ class SoulPingService:
         last_msg = _parse_iso(recents[0].last_message_at)
         return last_msg is not None and last_msg > last_sent
 
+    async def _recent_nudge_reason(self, user_id: str) -> Optional[str]:
+        """The Reflection-Nudge reason from the user's most recent conversation,
+        if the summarizer flagged it eligible. None otherwise. Never raises."""
+        try:
+            recents = await self.conversations.get_recent_conversations(
+                user_id=user_id, limit=1
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if not recents:
+            return None
+        convo = recents[0]
+        if getattr(convo, "nudge_eligible", False):
+            reason = str(getattr(convo, "nudge_reason", "") or "").strip()
+            return reason or None
+        return None
+
     def build_reengagement_ping(
-        self, user_id: str, enabled_categories: List[str], last: Optional[SoulPing]
+        self,
+        user_id: str,
+        enabled_categories: List[str],
+        last: Optional[SoulPing],
+        reason: Optional[str] = None,
     ) -> SoulPing:
         """A gentle 'come back' nudge (no LLM), distinct from the last message.
 
-        Used when the user saw the last ping but hasn't reflected since — a new
-        angle to re-engage rather than repeating the same conversation-grounded
-        content.
+        When ``reason`` is provided — the summarizer flagged the user's most
+        recent conversation as nudge-eligible — build a reason-grounded
+        Reflection Nudge. Otherwise fall back to rotating generic copy.
+
+        Eligibility only *flavors* the nudge; this path always returns a ping.
+        A non-eligible conversation must never suppress the re-engagement, or
+        dormant users go silent (the outage this system was built to avoid).
         """
-        title, body = _pick_reengagement(last.body if last else None)
-        cat_value = (
-            SoulPingCategory.EMOTIONAL.value
-            if SoulPingCategory.EMOTIONAL.value in enabled_categories
-            else enabled_categories[0]
-        )
+        reason = (reason or "").strip()
+
+        # A grounded reason leans "systemic" (surface a pattern) when available;
+        # the generic fallback keeps the prior emotional-first behavior.
+        if reason and SoulPingCategory.SYSTEMIC.value in enabled_categories:
+            cat_value = SoulPingCategory.SYSTEMIC.value
+        elif SoulPingCategory.EMOTIONAL.value in enabled_categories:
+            cat_value = SoulPingCategory.EMOTIONAL.value
+        else:
+            cat_value = enabled_categories[0]
         category = SoulPingCategory.from_value(cat_value) or SoulPingCategory.EMOTIONAL
+
+        if reason:
+            if len(reason) > 120:
+                reason = reason[:117].rstrip() + "…"
+            if reason[-1] not in ".!?…":
+                reason += "."
+            return SoulPing(
+                user_id=user_id,
+                category=category,
+                title="A thread to pick up",
+                body=f"{reason} Whenever you're ready, The Mirror is here.",
+            )
+
+        title, body = _pick_reengagement(last.body if last else None)
         return SoulPing(user_id=user_id, category=category, title=title, body=body)
 
     # ------------------------------------------------------------- orchestrate
@@ -461,11 +507,15 @@ class SoulPingService:
                 return PingResult(user_id, "skipped", "no_content")
         else:
             # No new reflection since the last ping → a gentle re-engagement
-            # nudge. Sent regardless of "seen": at this cadence there's no
-            # notification-stacking concern, and read_at is only reliably set
-            # once the client reports opens (which isn't shipped yet). The
-            # rotating copy guarantees it differs from the previous message.
-            ping = self.build_reengagement_ping(user_id, config["categories"], last)
+            # nudge. If the summarizer flagged the recent conversation as
+            # nudge-eligible, ground the copy in its reason (a Reflection
+            # Nudge); otherwise use rotating generic copy. Either way we always
+            # send — eligibility flavors the nudge, it never suppresses it, so
+            # dormant users never go silent. Sent regardless of "seen".
+            reason = await self._recent_nudge_reason(user_id)
+            ping = self.build_reengagement_ping(
+                user_id, config["categories"], last, reason=reason
+            )
 
         ping.source = source
         delivered = await self.send_and_record(ping)

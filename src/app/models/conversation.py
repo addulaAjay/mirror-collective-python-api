@@ -164,6 +164,55 @@ class ConversationMessage:
         self.analysis_version = "1.0"
 
 
+CONFIDENCE_LEVELS = ("high", "medium", "low")
+
+
+@dataclass
+class KeyTheme:
+    """A behavioral/decision theme plus the summarizer's confidence in it."""
+
+    theme: str
+    confidence: str = "low"  # one of CONFIDENCE_LEVELS
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"theme": self.theme, "confidence": self.confidence}
+
+
+def normalize_key_themes(raw: Any) -> List[KeyTheme]:
+    """Coerce persisted/parsed key_themes into a list of KeyTheme.
+
+    Tolerates the legacy shape (list of plain strings) and the V2 shape
+    (list of ``{theme, confidence}`` maps) so old and new records both work
+    everywhere themes are read. Junk entries are dropped; unknown confidence
+    values clamp to ``"low"``.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: List[KeyTheme] = []
+    for item in raw:
+        if isinstance(item, KeyTheme):
+            if item.theme.strip():
+                out.append(item)
+        elif isinstance(item, str):
+            theme = item.strip()
+            if theme:
+                out.append(KeyTheme(theme=theme, confidence="low"))
+        elif isinstance(item, dict):
+            theme = str(item.get("theme", "")).strip()
+            if not theme:
+                continue
+            confidence = str(item.get("confidence", "low")).strip().lower()
+            if confidence not in CONFIDENCE_LEVELS:
+                confidence = "low"
+            out.append(KeyTheme(theme=theme, confidence=confidence))
+    return out
+
+
+def key_themes_to_items(themes: Optional[List[KeyTheme]]) -> List[Dict[str, str]]:
+    """Serialize a KeyTheme list into DynamoDB-storable maps."""
+    return [t.to_dict() for t in (themes or [])]
+
+
 @dataclass
 class Conversation:
     """Conversation metadata and management"""
@@ -183,10 +232,15 @@ class Conversation:
     # Compact, behavior-focused summary that travels across conversations
     # so MirrorGPT can pick up a thread without re-reading raw turns.
     summary: Optional[str] = None
-    key_themes: Optional[List[str]] = None
+    key_themes: Optional[List[KeyTheme]] = None
     open_threads: Optional[List[str]] = None
     summarized_through_message_id: Optional[str] = None
     summarized_at: Optional[str] = None
+    # V2 continuity: whether this conversation warrants a proactive Reflection
+    # Nudge, and a short grounded reason. Consumed by the Soul Ping
+    # re-engagement path. See docs/MIRRORGPT_SUMMARY_V2_PLAN.md.
+    nudge_eligible: bool = False
+    nudge_reason: str = ""
 
     def __post_init__(self):
         if not self.conversation_id:
@@ -221,10 +275,12 @@ class Conversation:
             last_message_at=item.get("last_message_at"),
             tags=item.get("tags", []),
             summary=item.get("summary"),
-            key_themes=item.get("key_themes"),
+            key_themes=normalize_key_themes(item.get("key_themes")),
             open_threads=item.get("open_threads"),
             summarized_through_message_id=item.get("summarized_through_message_id"),
             summarized_at=item.get("summarized_at"),
+            nudge_eligible=bool(item.get("nudge_eligible", False)),
+            nudge_reason=item.get("nudge_reason") or "",
         )
 
     def generate_title_from_content(self, first_message: str) -> str:

@@ -1,8 +1,9 @@
 """ConversationSummarizer — builds the continuity memory for a conversation.
 
-The summarizer produces a small JSON structure (summary + key_themes +
-open_threads) and persists it back to the Conversation record. See
-docs/MIRRORGPT_CONTINUITY_MEMORY.md for the design rationale.
+The summarizer produces a small JSON structure (summary + confidence-tagged
+key_themes + open_threads + a nudge signal) and persists it back to the
+Conversation record. See docs/MIRRORGPT_CONTINUITY_MEMORY.md for the design
+rationale and docs/MIRRORGPT_SUMMARY_V2_PLAN.md for the V2 schema.
 
 This is intentionally a separate service from the main chat path:
 - Uses a cheaper model (configurable via MIRRORGPT_SUMMARY_MODEL).
@@ -22,7 +23,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from ..models.conversation import Conversation, ConversationMessage
+from ..models.conversation import (
+    Conversation,
+    ConversationMessage,
+    KeyTheme,
+    normalize_key_themes,
+)
 from .conversation_service import ConversationService
 from .openai_service import ChatMessage, OpenAIService
 
@@ -39,7 +45,7 @@ DEFAULT_FIRST_SUMMARY_AT = int(os.getenv("MIRRORGPT_SUMMARY_FIRST_AT", "2"))
 DEFAULT_REFRESH_THRESHOLD = int(os.getenv("MIRRORGPT_SUMMARY_REFRESH_THRESHOLD", "6"))
 DEFAULT_MODEL = os.getenv("MIRRORGPT_SUMMARY_MODEL", "gpt-4o-mini")
 DEFAULT_TEMPERATURE = float(os.getenv("MIRRORGPT_SUMMARY_TEMPERATURE", "0.2"))
-DEFAULT_MAX_TOKENS = int(os.getenv("MIRRORGPT_SUMMARY_MAX_TOKENS", "400"))
+DEFAULT_MAX_TOKENS = int(os.getenv("MIRRORGPT_SUMMARY_MAX_TOKENS", "500"))
 
 # How many recent messages we feed into the summarizer prompt at once.
 # Bounded so a very long conversation doesn't blow the input context.
@@ -49,13 +55,26 @@ MAX_CHARS_PER_TURN = int(os.getenv("MIRRORGPT_SUMMARY_MAX_CHARS_PER_TURN", "1200
 
 SUMMARIZER_SYSTEM_PROMPT = """\
 You analyze a MirrorGPT conversation transcript and produce a compact
-continuity memory the assistant will use to pick up the thread later.
+continuity memory the assistant will use to resume future conversations
+and determine whether a Reflection Nudge is appropriate.
 
 Your output MUST be a single JSON object with exactly these keys:
+
 {
   "summary": "<1-3 short sentences, grounded plain English, no quoting>",
-  "key_themes": ["<short tag>", "<short tag>"],
-  "open_threads": ["<unfinished thing>", "<unfinished thing>"]
+  "key_themes": [
+    {
+      "theme": "<short lowercase tag>",
+      "confidence": "<high|medium|low>"
+    }
+  ],
+  "open_threads": [
+    "<unfinished thing>"
+  ],
+  "nudge": {
+    "eligible": false,
+    "reason": "<short grounded reason or empty string>"
+  }
 }
 
 RULES — these are hard constraints:
@@ -63,26 +82,35 @@ RULES — these are hard constraints:
 - Return ONLY the JSON object. No prose before or after.
 - The JSON must be valid and parseable.
 - Do not add extra keys.
-- If a field has nothing meaningful to include, use an empty list or a very
-  short neutral summary.
+- If a field has nothing meaningful to include, use an empty list, empty
+  string, or false as appropriate.
 
 MEMORY OBJECTIVE
 
-- Capture continuity that would help MirrorGPT resume the conversation later.
+- Capture only the continuity that would materially improve MirrorGPT's next
+  conversation with the user.
+- Every conversation should preserve a useful conversation anchor, even if no
+  meaningful behavioral pattern emerges.
 - Focus on behavioral patterns, recurring friction, decision conflicts,
-  emotional dynamics, avoidance loops, or unresolved situations.
+  emotional dynamics, avoidance loops, unresolved situations, or meaningful
+  life context that are supported by the conversation.
+- Capture likely patterns, not definitive traits.
+- Treat all interpretations as probabilistic observations rather than facts.
 - Prioritize clarity and continuity over transcript recap.
 - Prioritize patterns or conflicts likely to matter across future conversations.
-- Do not preserve temporary emotional reactions unless they appear central
-  or recurring.
+- Do not preserve temporary emotional reactions unless they appear central or
+  recurring.
 - If the conversation clearly resolves or reverses a previously implied
   pattern, reflect the updated state rather than preserving outdated framing.
 
 SUMMARY RULES
 
-- summary must be grounded, concise, and behavior-oriented.
-- summary must be maximum 3 short sentences.
-- If the transcript is thin (one short exchange), keep summary to a single sentence.
+- summary must be grounded, concise, and behavior-oriented when appropriate.
+- summary must be a maximum of 3 short sentences.
+- If the transcript is thin (one short exchange), keep the summary to a single
+  sentence.
+- Every summary should provide enough context for MirrorGPT to naturally
+  resume the conversation later.
 - Do NOT quote the user's words verbatim.
 - Do NOT recap the conversation step-by-step.
 - Do NOT include filler empathy or assistant phrasing.
@@ -93,10 +121,25 @@ SUMMARY RULES
   - "showed a pattern of"
   - "seems stuck in"
   rather than definitive personality claims.
-- Separate observable events from interpretations when possible.
+- Separate observable events from interpretations whenever possible.
+- Do not strengthen an inferred pattern simply because it appeared in a
+  previous summary.
+- When a previously recurring pattern appears to weaken, resolve, or reverse,
+  capture that change explicitly.
+- Preserve evidence of growth, not only evidence of recurring friction.
+- Do not invent behavioral patterns simply because the conversation was brief
+  or factual.
+- If no meaningful pattern exists, summarize the useful conversation context
+  instead.
 
 GOOD:
 "Working through indecision about a career change, with repeated analysis replacing action. Seems conflicted between stability and wanting more autonomy."
+
+GOOD:
+"Showed more confidence setting boundaries than in previous conversations, although some hesitation remains."
+
+GOOD:
+"Prepared for an upcoming conversation at work and wanted help communicating one concern clearly."
 
 BAD:
 "User talked about a meeting with their boss and said they felt stressed."
@@ -106,39 +149,71 @@ BAD:
 
 KEY_THEMES RULES
 
-- key_themes must contain 1-4 short lowercase tags.
-- Tags should be behavior-, decision-, or pattern-oriented.
+- key_themes must contain 0-4 theme objects.
+- Each object must contain "theme" and "confidence".
+- theme must be a short lowercase behavioral, decision-, or pattern-oriented tag.
+- confidence must be one of: high, medium, low.
+- Choose themes that are likely to remain useful across future conversations.
+- Do not include themes that only describe the topic discussed.
+- Prefer underlying behavioral or decision patterns over conversation subjects.
 - Prefer specific behavioral tags over broad emotional categories.
-- Empty list if nothing clearly emerged.
+- Leave the list empty if no meaningful behavioral theme emerged.
 
-GOOD TAGS:
-- "conflict avoidance"
-- "people-pleasing"
-- "analysis paralysis"
-- "fear of disappointing others"
-- "career indecision"
+Confidence guidance:
 
-BAD TAGS:
-- "stress"
-- "sadness"
-- "relationships"
-- "life"
+high
+- Strongly and explicitly supported throughout the current conversation — the
+  user directly confirms it, or it recurs clearly across multiple turns.
+
+medium
+- Supported by the current conversation.
+- Appears plausible but should be treated as a working hypothesis.
+
+low
+- Weak signal.
+- Mention only if potentially valuable for future continuity.
+- Never use low confidence for speculative personality traits.
+
+GOOD:
+{ "theme": "analysis paralysis", "confidence": "high" }
+{ "theme": "fear of disappointing others", "confidence": "medium" }
+{ "theme": "boundary setting", "confidence": "low" }
 
 OPEN_THREADS RULES
 
 - open_threads must contain 0-3 short phrases.
-- Include unresolved decisions, avoided actions, recurring conflicts,
-  unfinished conversations, or situations likely to continue later.
+- Include unresolved decisions, upcoming events, avoided actions, recurring
+  conflicts, unfinished conversations, paused reflections, or situations
+  likely to continue later.
 - Do NOT include vague emotional states.
-- Empty list if everything appears resolved.
+- Leave the list empty if everything appears resolved.
 
 GOOD:
 - "has not decided whether to leave current job"
+- "upcoming conversation has not happened yet"
 - "avoiding conversation with partner about boundaries"
 
 BAD:
 - "feels anxious"
 - "still emotional"
+
+NUDGE RULES
+
+- The nudge field exists to help determine whether a future Reflection Nudge
+  would be relevant.
+- Set eligible to true only when there is a clear, context-supported reason to
+  return to the conversation. Appropriate reasons include: unresolved
+  decisions, upcoming events, paused reflections, unfinished conversations,
+  repeated behavioral patterns, or a user-requested follow-up.
+- A conversation may be worth remembering without being worth a Reflection
+  Nudge.
+- If there is no meaningful reason to proactively re-engage the user, set
+  { "eligible": false, "reason": "" }.
+
+GOOD:
+{ "eligible": true, "reason": "An important conversation has not happened yet." }
+{ "eligible": true, "reason": "A recurring decision conflict remains unresolved." }
+{ "eligible": false, "reason": "" }
 
 SAFETY + PRIVACY RULES
 
@@ -149,7 +224,7 @@ SAFETY + PRIVACY RULES
 - Do NOT diagnose, label, or speculate about mental health conditions,
   personality disorders, attachment styles, trauma disorders, or neurotypes
   unless the user explicitly self-identified them in the transcript.
-- Do NOT interpret beyond evidence in the transcript.
+- Do NOT interpret beyond the evidence in the transcript.
 - If the user did not say or strongly imply X, do not claim X.
 
 ANTI-ORACLE RULES
@@ -165,7 +240,7 @@ STYLE RULES
 - Use plain English.
 - Sound grounded, emotionally intelligent, and believable.
 - Keep summaries compact and information-dense.
-- Focus on what is likely to matter in the next conversation.
+- Focus on what is most likely to improve the user's next MirrorGPT conversation.
 """
 
 
@@ -174,10 +249,12 @@ class SummaryResult:
     """Structured output from a summarization run."""
 
     summary: str
-    key_themes: List[str]
+    key_themes: List[KeyTheme]
     open_threads: List[str]
     summarized_through_message_id: str
     summarized_at: str
+    nudge_eligible: bool = False
+    nudge_reason: str = ""
 
 
 class ConversationSummarizer:
@@ -281,6 +358,9 @@ class ConversationSummarizer:
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                # Force valid-JSON output — the schema is now nested
+                # (themes carry confidence; nudge is an object).
+                response_format={"type": "json_object"},
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -303,6 +383,8 @@ class ConversationSummarizer:
             open_threads=parsed["open_threads"],
             summarized_through_message_id=messages[-1].message_id,
             summarized_at=_utc_now_iso(),
+            nudge_eligible=parsed["nudge_eligible"],
+            nudge_reason=parsed["nudge_reason"],
         )
 
         await self._persist(conversation, result)
@@ -352,6 +434,8 @@ class ConversationSummarizer:
             summarized_through_message_id=conversation.summarized_through_message_id
             or "",
             summarized_at=conversation.summarized_at or "",
+            nudge_eligible=conversation.nudge_eligible,
+            nudge_reason=conversation.nudge_reason,
         )
 
     async def _count_messages_since(
@@ -423,22 +507,41 @@ class ConversationSummarizer:
             return None
 
         summary = obj.get("summary")
-        themes = obj.get("key_themes")
+        themes_raw = obj.get("key_themes")
         threads = obj.get("open_threads")
 
         if not isinstance(summary, str) or not summary.strip():
             return None
-        if not isinstance(themes, list) or not all(isinstance(t, str) for t in themes):
+        # Accept both V2 object themes ({theme, confidence}) and legacy plain
+        # strings; normalize_key_themes drops junk and clamps confidence.
+        if not isinstance(themes_raw, list):
             return None
         if not isinstance(threads, list) or not all(
             isinstance(t, str) for t in threads
         ):
             return None
 
+        key_themes = normalize_key_themes(themes_raw)[:4]
+
+        # nudge is optional (V1 output has none) — default to not-eligible. The
+        # reason is only meaningful when eligible.
+        nudge = obj.get("nudge")
+        if not isinstance(nudge, dict):
+            nudge = {}
+        nudge_eligible = bool(nudge.get("eligible", False))
+        nudge_reason = nudge.get("reason", "")
+        if not isinstance(nudge_reason, str):
+            nudge_reason = ""
+        nudge_reason = nudge_reason.strip()
+        if not nudge_eligible:
+            nudge_reason = ""
+
         return {
             "summary": summary.strip(),
-            "key_themes": [t.strip() for t in themes if t.strip()][:4],
+            "key_themes": key_themes,
             "open_threads": [t.strip() for t in threads if t.strip()][:3],
+            "nudge_eligible": nudge_eligible,
+            "nudge_reason": nudge_reason,
         }
 
     async def _persist(self, conversation: Conversation, result: SummaryResult) -> None:
@@ -446,6 +549,8 @@ class ConversationSummarizer:
         conversation.summary = result.summary
         conversation.key_themes = result.key_themes
         conversation.open_threads = result.open_threads
+        conversation.nudge_eligible = result.nudge_eligible
+        conversation.nudge_reason = result.nudge_reason
         conversation.summarized_through_message_id = (
             result.summarized_through_message_id
         )
