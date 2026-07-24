@@ -16,7 +16,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from ..core.exceptions import InternalServerError
-from ..models.conversation import Conversation, ConversationMessage
+from ..models.conversation import Conversation, ConversationMessage, key_themes_to_items
 from ..models.soul_ping import SoulPing
 from ..models.user_profile import UserProfile
 
@@ -695,13 +695,17 @@ class DynamoDBService:
                     "SET summary = :summary, "
                     "key_themes = :key_themes, "
                     "open_threads = :open_threads, "
+                    "nudge_eligible = :nudge_eligible, "
+                    "nudge_reason = :nudge_reason, "
                     "summarized_through_message_id = :stmid, "
                     "summarized_at = :sat"
                 ),
                 ExpressionAttributeValues={
                     ":summary": conversation.summary,
-                    ":key_themes": conversation.key_themes or [],
+                    ":key_themes": key_themes_to_items(conversation.key_themes),
                     ":open_threads": conversation.open_threads or [],
+                    ":nudge_eligible": conversation.nudge_eligible,
+                    ":nudge_reason": conversation.nudge_reason or "",
                     ":stmid": conversation.summarized_through_message_id,
                     ":sat": conversation.summarized_at,
                 },

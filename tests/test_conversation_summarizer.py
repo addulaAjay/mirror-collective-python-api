@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.app.models.conversation import Conversation, ConversationMessage
+from src.app.models.conversation import Conversation, ConversationMessage, KeyTheme
 from src.app.services.conversation_summarizer import (
     SUMMARIZER_SYSTEM_PROMPT,
     ConversationSummarizer,
@@ -48,7 +48,7 @@ def _make_conversation(
         user_id="user-1",
         message_count=message_count,
         summary=summary,
-        key_themes=["existing-theme"] if summary else None,
+        key_themes=[KeyTheme("existing-theme")] if summary else None,
         open_threads=["existing-thread"] if summary else None,
         summarized_through_message_id=summarized_through,
         summarized_at="2026-05-09T00:00:00Z" if summary else None,
@@ -110,7 +110,12 @@ async def test_summarize_happy_path_persists_result():
     assert result is not None
     assert isinstance(result, SummaryResult)
     assert result.summary.startswith("Working through avoidance")
-    assert result.key_themes == ["career indecision", "avoidance"]
+    # V1 plain-string themes normalize to low-confidence KeyTheme objects.
+    assert [t.theme for t in result.key_themes] == [
+        "career indecision",
+        "avoidance",
+    ]
+    assert all(t.confidence == "low" for t in result.key_themes)
     assert result.open_threads == ["hasn't told the manager yet"]
     assert result.summarized_through_message_id == "m4"
     assert result.summarized_at  # populated
@@ -212,7 +217,7 @@ async def test_summarize_strips_code_fences():
 
     assert result is not None
     assert result.summary == "Brief check-in."
-    assert result.key_themes == ["check-in"]
+    assert [t.theme for t in result.key_themes] == ["check-in"]
     assert result.open_threads == []
 
 
@@ -377,6 +382,169 @@ async def test_summarize_if_stale_regenerates_when_marker_not_in_window():
     assert result is not None
     assert result.summary == "refreshed"
     openai_service.send_with_overrides_async.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------
+# V2 schema — confidence-tagged themes + nudge
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summarize_parses_object_themes_with_confidence():
+    history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
+    conv = _make_conversation(message_count=4)
+    payload = json.dumps(
+        {
+            "summary": "Working through avoidance.",
+            "key_themes": [
+                {"theme": "avoidance", "confidence": "high"},
+                {"theme": "career indecision", "confidence": "medium"},
+            ],
+            "open_threads": [],
+            "nudge": {"eligible": True, "reason": "A hard conversation is pending."},
+        }
+    )
+    summarizer, _, _ = _make_summarizer(
+        conversation=conv, history=history, openai_response=payload
+    )
+
+    result = await summarizer.summarize("conv-1", "user-1")
+
+    assert result is not None
+    assert result.key_themes == [
+        KeyTheme("avoidance", "high"),
+        KeyTheme("career indecision", "medium"),
+    ]
+    assert result.nudge_eligible is True
+    assert result.nudge_reason == "A hard conversation is pending."
+
+
+@pytest.mark.asyncio
+async def test_summarize_clamps_bad_confidence_and_drops_junk_themes():
+    history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
+    conv = _make_conversation(message_count=4)
+    payload = json.dumps(
+        {
+            "summary": "ok",
+            "key_themes": [
+                {"theme": "boundary setting", "confidence": "SUPER"},  # -> low
+                {"confidence": "high"},  # no theme -> dropped
+                {"theme": "  ", "confidence": "low"},  # empty theme -> dropped
+                "people-pleasing",  # legacy string -> low
+            ],
+            "open_threads": [],
+        }
+    )
+    summarizer, _, _ = _make_summarizer(
+        conversation=conv, history=history, openai_response=payload
+    )
+
+    result = await summarizer.summarize("conv-1", "user-1")
+
+    assert result is not None
+    assert result.key_themes == [
+        KeyTheme("boundary setting", "low"),
+        KeyTheme("people-pleasing", "low"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_summarize_defaults_nudge_when_absent():
+    history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
+    conv = _make_conversation(message_count=4)
+    payload = json.dumps({"summary": "brief", "key_themes": [], "open_threads": []})
+    summarizer, _, _ = _make_summarizer(
+        conversation=conv, history=history, openai_response=payload
+    )
+
+    result = await summarizer.summarize("conv-1", "user-1")
+
+    assert result is not None
+    assert result.nudge_eligible is False
+    assert result.nudge_reason == ""
+
+
+@pytest.mark.asyncio
+async def test_summarize_blanks_reason_when_not_eligible():
+    history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
+    conv = _make_conversation(message_count=4)
+    payload = json.dumps(
+        {
+            "summary": "brief",
+            "key_themes": [],
+            "open_threads": [],
+            "nudge": {"eligible": False, "reason": "leftover reason"},
+        }
+    )
+    summarizer, _, _ = _make_summarizer(
+        conversation=conv, history=history, openai_response=payload
+    )
+
+    result = await summarizer.summarize("conv-1", "user-1")
+
+    assert result is not None
+    assert result.nudge_eligible is False
+    assert result.nudge_reason == ""
+
+
+@pytest.mark.asyncio
+async def test_summarize_persists_nudge_and_object_themes():
+    history = [_make_message(f"m{i}", "user", "x") for i in range(1, 5)]
+    conv = _make_conversation(message_count=4)
+    payload = json.dumps(
+        {
+            "summary": "s",
+            "key_themes": [{"theme": "avoidance", "confidence": "high"}],
+            "open_threads": [],
+            "nudge": {"eligible": True, "reason": "pending decision"},
+        }
+    )
+    summarizer, _, conv_service = _make_summarizer(
+        conversation=conv, history=history, openai_response=payload
+    )
+
+    await summarizer.summarize("conv-1", "user-1")
+
+    persisted = conv_service.update_conversation_summary.await_args.args[0]
+    assert persisted.key_themes == [KeyTheme("avoidance", "high")]
+    assert persisted.nudge_eligible is True
+    assert persisted.nudge_reason == "pending decision"
+
+
+# --------------------------------------------------------------------------
+# Conversation model — theme normalization + nudge round-trip
+# --------------------------------------------------------------------------
+
+
+def test_from_dynamodb_item_normalizes_legacy_string_themes():
+    conv = Conversation.from_dynamodb_item(
+        {
+            "conversation_id": "c",
+            "user_id": "u",
+            "key_themes": ["avoidance", "people-pleasing"],
+        }
+    )
+    assert conv.key_themes == [
+        KeyTheme("avoidance", "low"),
+        KeyTheme("people-pleasing", "low"),
+    ]
+    assert conv.nudge_eligible is False
+    assert conv.nudge_reason == ""
+
+
+def test_from_dynamodb_item_reads_object_themes_and_nudge():
+    conv = Conversation.from_dynamodb_item(
+        {
+            "conversation_id": "c",
+            "user_id": "u",
+            "key_themes": [{"theme": "avoidance", "confidence": "high"}],
+            "nudge_eligible": True,
+            "nudge_reason": "pending decision",
+        }
+    )
+    assert conv.key_themes == [KeyTheme("avoidance", "high")]
+    assert conv.nudge_eligible is True
+    assert conv.nudge_reason == "pending decision"
 
 
 # --------------------------------------------------------------------------

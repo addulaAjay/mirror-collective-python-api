@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from ..models.conversation import normalize_key_themes
 from ..models.soul_ping import V1_CATEGORIES, SoulPing, SoulPingCategory
 from ..models.user_profile import UserProfile
 from .conversation_service import ConversationService
@@ -299,9 +300,11 @@ class SoulPingService:
         parts: List[str] = []
         if convo.summary:
             parts.append(f"Summary: {convo.summary}")
-        themes = convo.key_themes or []
+        # normalize_key_themes tolerates both the V2 object shape and any
+        # legacy plain-string themes still on older records.
+        themes = normalize_key_themes(convo.key_themes)
         if themes:
-            parts.append("Recurring themes: " + ", ".join(themes[:4]))
+            parts.append("Recurring themes: " + ", ".join(t.theme for t in themes[:4]))
         open_threads = convo.open_threads or []
         if open_threads:
             parts.append("Open threads: " + "; ".join(open_threads[:3]))

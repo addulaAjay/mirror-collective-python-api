@@ -22,7 +22,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from ..models.conversation import Conversation, ConversationMessage
+from ..models.conversation import (
+    Conversation,
+    ConversationMessage,
+    KeyTheme,
+    normalize_key_themes,
+)
 from .conversation_service import ConversationService
 from .openai_service import ChatMessage, OpenAIService
 
@@ -174,10 +179,12 @@ class SummaryResult:
     """Structured output from a summarization run."""
 
     summary: str
-    key_themes: List[str]
+    key_themes: List[KeyTheme]
     open_threads: List[str]
     summarized_through_message_id: str
     summarized_at: str
+    nudge_eligible: bool = False
+    nudge_reason: str = ""
 
 
 class ConversationSummarizer:
@@ -303,6 +310,8 @@ class ConversationSummarizer:
             open_threads=parsed["open_threads"],
             summarized_through_message_id=messages[-1].message_id,
             summarized_at=_utc_now_iso(),
+            nudge_eligible=parsed["nudge_eligible"],
+            nudge_reason=parsed["nudge_reason"],
         )
 
         await self._persist(conversation, result)
@@ -352,6 +361,8 @@ class ConversationSummarizer:
             summarized_through_message_id=conversation.summarized_through_message_id
             or "",
             summarized_at=conversation.summarized_at or "",
+            nudge_eligible=conversation.nudge_eligible,
+            nudge_reason=conversation.nudge_reason,
         )
 
     async def _count_messages_since(
@@ -423,22 +434,41 @@ class ConversationSummarizer:
             return None
 
         summary = obj.get("summary")
-        themes = obj.get("key_themes")
+        themes_raw = obj.get("key_themes")
         threads = obj.get("open_threads")
 
         if not isinstance(summary, str) or not summary.strip():
             return None
-        if not isinstance(themes, list) or not all(isinstance(t, str) for t in themes):
+        # Accept both V2 object themes ({theme, confidence}) and legacy plain
+        # strings; normalize_key_themes drops junk and clamps confidence.
+        if not isinstance(themes_raw, list):
             return None
         if not isinstance(threads, list) or not all(
             isinstance(t, str) for t in threads
         ):
             return None
 
+        key_themes = normalize_key_themes(themes_raw)[:4]
+
+        # nudge is optional (V1 output has none) — default to not-eligible. The
+        # reason is only meaningful when eligible.
+        nudge = obj.get("nudge")
+        if not isinstance(nudge, dict):
+            nudge = {}
+        nudge_eligible = bool(nudge.get("eligible", False))
+        nudge_reason = nudge.get("reason", "")
+        if not isinstance(nudge_reason, str):
+            nudge_reason = ""
+        nudge_reason = nudge_reason.strip()
+        if not nudge_eligible:
+            nudge_reason = ""
+
         return {
             "summary": summary.strip(),
-            "key_themes": [t.strip() for t in themes if t.strip()][:4],
+            "key_themes": key_themes,
             "open_threads": [t.strip() for t in threads if t.strip()][:3],
+            "nudge_eligible": nudge_eligible,
+            "nudge_reason": nudge_reason,
         }
 
     async def _persist(self, conversation: Conversation, result: SummaryResult) -> None:
@@ -446,6 +476,8 @@ class ConversationSummarizer:
         conversation.summary = result.summary
         conversation.key_themes = result.key_themes
         conversation.open_threads = result.open_threads
+        conversation.nudge_eligible = result.nudge_eligible
+        conversation.nudge_reason = result.nudge_reason
         conversation.summarized_through_message_id = (
             result.summarized_through_message_id
         )

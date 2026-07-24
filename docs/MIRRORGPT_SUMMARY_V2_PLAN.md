@@ -24,17 +24,22 @@ summarizer prompt review.
    reason-grounded nudge built from `nudge_reason`; otherwise fall back to the
    existing rotating copy. `eligible=false` must never suppress a ping.
 
-## Slice 1 — schema + parser + model + persistence + back-compat
+## Slice 1 — schema + parser + model + persistence + back-compat ✅ DONE
 
 Foundation. Nudge captured but dormant; no behavior change downstream.
 
-- [ ] Add `KeyTheme` dataclass + `_normalize_themes()` helper
-- [ ] `SummaryResult`: `key_themes: List[KeyTheme]`, add `nudge_eligible`, `nudge_reason`
-- [ ] `Conversation` model: add `nudge_eligible`, `nudge_reason`; normalize themes in `from_dynamodb_item`
-- [ ] `_parse_response`: accept object themes (clamp bad confidence → "low", drop malformed entries), parse `nudge` (tolerate missing), keep fence recovery
-- [ ] `_persist` + `dynamodb_service.update_conversation_summary`: write themes-as-maps + `nudge_eligible`/`nudge_reason` (reserved-word aliases via `ExpressionAttributeNames`)
-- [ ] Tests: object parse, confidence clamp, legacy string back-compat, nudge present/absent, malformed-theme drop, model round-trip
-- [ ] Full suite green + commit
+- [x] Add `KeyTheme` dataclass + `normalize_key_themes()` / `key_themes_to_items()` helpers (`models/conversation.py`)
+- [x] `SummaryResult`: `key_themes: List[KeyTheme]`, add `nudge_eligible`, `nudge_reason`
+- [x] `Conversation` model: add `nudge_eligible`, `nudge_reason`; normalize themes in `from_dynamodb_item`
+- [x] `_parse_response`: accept object themes (clamp bad confidence → "low", drop malformed entries), parse `nudge` (tolerate missing), keep fence recovery
+- [x] `_persist` + `dynamodb_service.update_conversation_summary`: write themes-as-maps + `nudge_eligible`/`nudge_reason`
+- [x] Object-safe theme rendering in `soul_ping_service` (pulled forward from Slice 3 — the type change would otherwise break it now)
+- [x] Tests: object parse, confidence clamp, legacy string back-compat, nudge present/absent, malformed-theme drop, model round-trip
+- [x] Full suite green (all pass) + commit
+
+Notes: `nudge_eligible`/`nudge_reason` are not DynamoDB reserved words (compound
+underscore names), so no `ExpressionAttributeNames` aliasing was needed — matches
+the existing unaliased `summary`/`key_themes`/`open_threads` writes.
 
 ## Slice 2 — reliability + prompt finalize
 
