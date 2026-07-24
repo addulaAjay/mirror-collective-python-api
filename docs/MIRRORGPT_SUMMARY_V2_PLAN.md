@@ -49,13 +49,22 @@ the existing unaliased `summary`/`key_themes`/`open_threads` writes.
 - [x] Tests: response_format passthrough; V2 prompt anchors (confidence + nudge); existing safety/anti-oracle anchors still pass
 - [x] Full suite green + mypy clean + commit
 
-## Slice 3 — Soul Ping wiring
+## Slice 3 — Soul Ping wiring ✅ DONE
 
-- [ ] `soul_ping_service`: render themes via `t.theme` (object-safe)
-- [ ] `_build_context` / recent-convo path: surface `nudge_eligible` / `nudge_reason`
-- [ ] `maybe_send_for_user` / `build_reengagement_ping`: eligible → reason-grounded nudge; else existing rotating copy (never suppress)
-- [ ] Tests: object-theme rendering; eligible→reason-grounded; **not-eligible→still sends (anti-outage regression)**
-- [ ] Full suite green + commit
+- [x] `soul_ping_service`: render themes via `t.theme` (object-safe — done in Slice 1)
+- [x] `_recent_nudge_reason(user_id)` surfaces the recent conversation's `nudge_reason` when `nudge_eligible`
+- [x] `build_reengagement_ping(..., reason=)` → reason-grounded Reflection Nudge ("A thread to pick up", systemic-leaning) when eligible; rotating generic copy otherwise
+- [x] `maybe_send_for_user` re-engagement branch fetches the reason and passes it — always sends (flavor, never suppress)
+- [x] Tests: reason-grounded build; `_recent_nudge_reason` eligible/not; full-path reason-grounded nudge; **not-eligible → still sends (anti-outage regression)**
+- [x] Full suite green + mypy clean + commit
+
+## Status: COMPLETE ✅
+
+All three slices implemented, tested, and committed on `feat/mirrorgpt-summary-v2`.
+End-to-end: the V2 prompt emits confidence-tagged themes + a nudge; the parser +
+model + DynamoDB persist them (back-compatible with legacy string themes); and
+the Soul Ping re-engagement path turns an eligible nudge into a grounded
+Reflection Nudge without ever suppressing a ping.
 
 ## Risks / notes
 
