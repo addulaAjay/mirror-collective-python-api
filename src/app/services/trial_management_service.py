@@ -258,7 +258,13 @@ class TrialManagementService:
                     user_id=user_profile.user_id,
                     title="Mirror Collective Trial Ending",
                     body=message,
-                    data={"type": "trial_expiration", "days_remaining": days_remaining},
+                    data={
+                        "type": "trial_expiration",
+                        "days_remaining": days_remaining,
+                        # Deterministic route so a tap opens the paywall — same
+                        # destination as the 403 subscription_required guard.
+                        "screen": "StartFreeTrial",
+                    },
                 )
 
             # Update notifications sent list
@@ -316,7 +322,11 @@ class TrialManagementService:
                         user_id=user_id,
                         title="Trial Expired",
                         body="Your trial has expired. Subscribe to unlock Echo Vault.",
-                        data={"type": "trial_expired", "action": "upgrade"},
+                        data={
+                            "type": "trial_expired",
+                            "action": "upgrade",
+                            "screen": "StartFreeTrial",
+                        },
                     )
 
             await self.dynamodb.update_user_profile(user_profile)
