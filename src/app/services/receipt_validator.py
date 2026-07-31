@@ -43,7 +43,7 @@ import uuid
 from dataclasses import asdict, is_dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
 import jwt
@@ -427,6 +427,68 @@ def _payload_to_dict(payload: Any) -> Dict[str, Any]:
                 value = value.value
             data[camel] = value
     return data
+
+
+def verify_apple_transaction_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
+    """Public wrapper: verify a signedTransactionInfo JWS + return it as a dict.
+
+    Verifies the x5c chain, bundle_id, app_apple_id, and signature via the
+    App Store Server Library, then returns the camelCase dict shape callers
+    expect. Raises ``JWSVerificationError`` on any failure (fail-closed).
+    """
+    return _verify_apple_jws(jws, sandbox=sandbox)
+
+
+def verify_and_decode_apple_notification(
+    signed_payload: str,
+) -> Tuple[Dict[str, Any], bool]:
+    """Verify an App Store Server Notification V2 signedPayload.
+
+    Verifies the notification's x5c chain back to Apple Root CA G3, the
+    bundle_id / app_apple_id, and the signature. On success returns
+    ``(decoded_notification_dict, sandbox)`` where the dict is the raw
+    (camelCase) notification body (``notificationType``, ``data`` with
+    ``signedTransactionInfo`` / ``signedRenewalInfo``).
+
+    Raises ``JWSVerificationError`` on any verification failure — callers MUST
+    treat that as a hard denial and never mutate entitlements.
+
+    The environment (sandbox vs production) is read from the *unverified*
+    payload only to pick the verifier; the verifier then ENFORCES the
+    environment claim, so a wrong guess fails closed.
+    """
+    if not signed_payload or not isinstance(signed_payload, str):
+        raise JWSVerificationError("Empty or non-string notification payload")
+
+    try:
+        from appstoreserverlibrary.signed_data_verifier import VerificationException
+    except ImportError as e:  # pragma: no cover - dep always present in prod
+        raise JWSVerificationError(
+            "app-store-server-library not installed; notification "
+            "verification cannot proceed."
+        ) from e
+
+    peek = _decode_jws_payload(signed_payload)
+    environment = (peek.get("data") or {}).get("environment", "Production")
+    sandbox = str(environment).lower() == "sandbox"
+
+    verifier = _get_apple_signed_data_verifier(sandbox=sandbox)
+    try:
+        verifier.verify_and_decode_notification(signed_payload)
+    except VerificationException as e:
+        logger.warning(
+            f"Apple notification verification failed (sandbox={sandbox}): {e}"
+        )
+        raise JWSVerificationError(
+            f"Apple notification verification failed: {e}"
+        ) from e
+    except Exception as e:  # noqa: BLE001 - defensively treat as a security failure
+        logger.error(f"Unexpected error verifying Apple notification: {e}")
+        raise JWSVerificationError(f"Notification verification error: {e}") from e
+
+    # Signature verified — the payload content is now trusted. Return the raw
+    # (camelCase) JWT body the downstream webhook handler reads.
+    return _decode_jws_payload(signed_payload), sandbox
 
 
 def _extract_transaction_id(receipt_data: str) -> Optional[str]:
