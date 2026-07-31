@@ -992,6 +992,7 @@ def echo_client():
     from fastapi.testclient import TestClient
 
     from src.app.api.echo_routes import router
+    from src.app.core.entitlements import require_echo_vault_access
     from src.app.core.error_handlers import setup_error_handlers
     from src.app.core.security import get_current_user
 
@@ -1007,7 +1008,12 @@ def echo_client():
             "family_name": "User",
         }
 
+    async def _bypass_entitlement():
+        # Guard is unit-tested in test_entitlements.py; bypass it here.
+        return await _fake_user()
+
     mini_app.dependency_overrides[get_current_user] = _fake_user
+    mini_app.dependency_overrides[require_echo_vault_access] = _bypass_entitlement
 
     with TestClient(mini_app) as c:
         yield c

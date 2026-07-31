@@ -243,13 +243,23 @@ mock_models_response.data = [
 mock_openai_health_instance.models.list.return_value = mock_models_response
 
 from src.app.api.mirrorgpt_routes import get_mirror_orchestrator  # noqa: E402
+from src.app.core.entitlements import require_echo_vault_access  # noqa: E402
 from src.app.core.security import get_current_user  # noqa: E402
 from src.app.handler import app  # noqa: E402
+
+
+async def mock_require_echo_vault_access():
+    """Bypass the Echo Vault entitlement guard in integration tests — the guard
+    itself is unit-tested in test_entitlements.py. No params: FastAPI would read
+    ``*args, **kwargs`` as required query fields."""
+    return {"id": "test-user-id"}
+
 
 # Clear any existing overrides and set clean ones
 app.dependency_overrides = {}
 app.dependency_overrides[get_current_user] = mock_get_current_user
 app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
+app.dependency_overrides[require_echo_vault_access] = mock_require_echo_vault_access
 
 # Store references for test cleanup
 GLOBAL_PATCHES = [
@@ -344,6 +354,7 @@ def clean_dependency_overrides():
     app.dependency_overrides = {}
     app.dependency_overrides[get_current_user] = mock_get_current_user
     app.dependency_overrides[get_mirror_orchestrator] = mock_get_mirror_orchestrator
+    app.dependency_overrides[require_echo_vault_access] = mock_require_echo_vault_access
     yield
     # Keep overrides for consistency
 
