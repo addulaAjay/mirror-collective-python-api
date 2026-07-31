@@ -215,6 +215,12 @@ jobs:
         SHARE_TOKEN_SECRET: ${{ secrets.STAGING_SHARE_TOKEN_SECRET }}
         # Public origin serving /share/* for THIS stage (email link host).
         SHARE_BASE_URL: ${{ secrets.STAGING_SHARE_BASE_URL }}
+        # Apple App Store Server API — IAP receipt validation + notification
+        # JWS verification. Same key works for sandbox + production receipts.
+        APPLE_APP_STORE_KEY_ID: ${{ secrets.STAGING_APPLE_APP_STORE_KEY_ID }}
+        APPLE_APP_STORE_ISSUER_ID: ${{ secrets.STAGING_APPLE_APP_STORE_ISSUER_ID }}
+        APPLE_APP_STORE_PRIVATE_KEY: ${{ secrets.STAGING_APPLE_APP_STORE_PRIVATE_KEY }}
+        APPLE_APP_STORE_APP_APPLE_ID: ${{ secrets.STAGING_APPLE_APP_STORE_APP_APPLE_ID }}
 
     # Upload the rich-email brand images to the public bucket the deploy just
     # created (mirror-collective-email-assets-<stage>). Runs from the repo
@@ -299,6 +305,12 @@ jobs:
         SHARE_TOKEN_SECRET: ${{ secrets.PROD_SHARE_TOKEN_SECRET }}
         # Public origin serving /share/* for THIS stage (email link host).
         SHARE_BASE_URL: ${{ secrets.PROD_SHARE_BASE_URL }}
+        # Apple App Store Server API — IAP receipt validation + notification
+        # JWS verification. Same key works for sandbox + production receipts.
+        APPLE_APP_STORE_KEY_ID: ${{ secrets.PROD_APPLE_APP_STORE_KEY_ID }}
+        APPLE_APP_STORE_ISSUER_ID: ${{ secrets.PROD_APPLE_APP_STORE_ISSUER_ID }}
+        APPLE_APP_STORE_PRIVATE_KEY: ${{ secrets.PROD_APPLE_APP_STORE_PRIVATE_KEY }}
+        APPLE_APP_STORE_APP_APPLE_ID: ${{ secrets.PROD_APPLE_APP_STORE_APP_APPLE_ID }}
 
     # Upload brand images to the public bucket created by the deploy. Prod
     # deploys to stage "production-v2", so the bucket is
