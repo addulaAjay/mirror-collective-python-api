@@ -19,7 +19,12 @@ from ..models.subscription import (
     SubscriptionType,
 )
 from .dynamodb_service import DynamoDBService
-from .receipt_validator import ReceiptValidator
+from .receipt_validator import (
+    JWSVerificationError,
+    ReceiptValidator,
+    verify_and_decode_apple_notification,
+    verify_apple_transaction_jws,
+)
 from .storage_quota_service import get_storage_quota_service
 
 logger = logging.getLogger(__name__)
@@ -48,41 +53,6 @@ class SubscriptionService:
         self.subscription_events_table = os.getenv(
             "DYNAMODB_SUBSCRIPTION_EVENTS_TABLE", "subscription_events"
         )
-
-    async def _verify_apple_jwt(self, signed_payload: str) -> Optional[Dict]:
-        """
-        Verify Apple App Store Server Notification JWT signature
-
-        Args:
-            signed_payload: JWT string from Apple webhook
-
-        Returns:
-            Decoded JWT payload if valid, None if invalid
-        """
-        try:
-            # Import JWT library
-            import jwt
-            from jwt import PyJWKClient
-
-            # Decode JWT header to get key ID
-            header = jwt.get_unverified_header(signed_payload)
-
-            # Apple uses JWK Set for their public keys
-            # For production, implement proper JWK fetching and caching
-            # For now, decode without verification (development only)
-            logger.warning(
-                "Apple JWT signature verification not fully implemented. "
-                "Decoding without verification - DO NOT USE IN PRODUCTION"
-            )
-
-            # Decode without verification (INSECURE - for development only)
-            decoded = jwt.decode(signed_payload, options={"verify_signature": False})
-
-            return decoded
-
-        except Exception as e:
-            logger.error(f"Error verifying Apple JWT: {e}")
-            return None
 
     async def _verify_google_pubsub_message(self, message_data: str) -> Optional[Dict]:
         """
@@ -406,27 +376,42 @@ class SubscriptionService:
             Dict with processing status
         """
         try:
-            # Apple sends notifications as signed JWT
+            # Apple sends notifications as a signed JWS (App Store Server
+            # Notifications V2).
             signed_payload = notification_payload.get("signedPayload")
             if not signed_payload:
                 logger.error("Missing signedPayload in Apple webhook")
                 return {"success": False, "error": "Missing signedPayload"}
 
-            # Verify JWT signature
-            decoded_payload = await self._verify_apple_jwt(signed_payload)
-            if not decoded_payload:
-                logger.error("Failed to verify Apple JWT signature")
-                return {"success": False, "error": "Invalid JWT signature"}
+            # Verify the notification signature (x5c chain → Apple Root CA G3,
+            # bundle_id, app_apple_id). Fail closed: a bad signature never
+            # mutates entitlements.
+            try:
+                decoded_payload, sandbox = verify_and_decode_apple_notification(
+                    signed_payload
+                )
+            except JWSVerificationError as e:
+                logger.error(f"Apple webhook signature verification failed: {e}")
+                return {"success": False, "error": "Invalid signature"}
 
             # Extract notification data
             notification_type = decoded_payload.get("notificationType")
             data = decoded_payload.get("data", {})
 
-            # Decode signed transaction info
+            # Verify the inner signed transaction info the same way.
             signed_transaction_info = data.get("signedTransactionInfo")
             transaction_info = None
             if signed_transaction_info:
-                transaction_info = await self._verify_apple_jwt(signed_transaction_info)
+                try:
+                    transaction_info = verify_apple_transaction_jws(
+                        signed_transaction_info, sandbox=sandbox
+                    )
+                except JWSVerificationError as e:
+                    logger.error(f"Apple webhook transaction verification failed: {e}")
+                    return {
+                        "success": False,
+                        "error": "Invalid transaction signature",
+                    }
 
             logger.info(f"Processing Apple webhook: {notification_type}")
 
