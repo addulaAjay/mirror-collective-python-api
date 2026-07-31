@@ -22,6 +22,35 @@ trial_service = TrialManagementService(dynamodb_service)
 quota_service = get_storage_quota_service()
 subscription_service = SubscriptionService(dynamodb_service)
 
+# Fields safe to expose to the client for a subscription. Deliberately EXCLUDES
+# receipt_data and any raw platform payload.
+_PUBLIC_SUBSCRIPTION_FIELDS = (
+    "subscription_id",
+    "product_id",
+    "subscription_type",
+    "status",
+    "billing_period",
+    "expiry_date",
+    "auto_renew_enabled",
+    "is_in_trial",
+)
+
+
+async def _public_subscription_for(user_id: str, subscription_id):
+    """Fetch a subscription record and return a client-safe subset, or None.
+
+    Trims out receipt_data etc. so the /status response never leaks receipts.
+    """
+    if not subscription_id:
+        return None
+    item = await dynamodb_service.get_item(
+        subscription_service.subscriptions_table,
+        {"user_id": user_id, "subscription_id": subscription_id},
+    )
+    if not item:
+        return None
+    return {k: item.get(k) for k in _PUBLIC_SUBSCRIPTION_FIELDS}
+
 
 # Request/Response Models
 class VerifyPurchaseRequest(BaseModel):
@@ -113,6 +142,16 @@ async def get_subscription_status(
             if expires > now:
                 trial_days_remaining = (expires - now).days
 
+        # Fetch the user's active core / storage subscription records so the
+        # client can show plan details (product, status, expiry, auto-renew).
+        # Trimmed to a public shape — never return receipt_data to the client.
+        core_subscription = await _public_subscription_for(
+            user_id, getattr(user_profile, "primary_subscription_id", None)
+        )
+        storage_subscription = await _public_subscription_for(
+            user_id, getattr(user_profile, "storage_subscription_id", None)
+        )
+
         # Determine features based on tier
         features = {
             "echo_vault_enabled": user_profile.subscription_tier
@@ -131,8 +170,8 @@ async def get_subscription_status(
                 "status": user_profile.subscription_status,
                 "trial_days_remaining": trial_days_remaining,
                 "features": features,
-                "core_subscription": None,  # TODO: Fetch from subscriptions table
-                "storage_subscription": None,  # TODO: Fetch from subscriptions table
+                "core_subscription": core_subscription,
+                "storage_subscription": storage_subscription,
                 "has_used_trial": user_profile.has_used_trial,
             },
         }

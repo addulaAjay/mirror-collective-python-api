@@ -114,6 +114,14 @@ provider:
     REFLECTION_DEFAULT_USER_TZ: ${env:REFLECTION_DEFAULT_USER_TZ, 'America/New_York'}
     # Apple/Google IAP credentials
     APPLE_SHARED_SECRET: ${env:APPLE_SHARED_SECRET, ''}
+    # App Store Server API (modern receipt validation + notification JWS
+    # verification). Required for sandbox/beta purchase verification — the
+    # receipt validator prefers this over the legacy verifyReceipt path.
+    APPLE_APP_STORE_KEY_ID: ${env:APPLE_APP_STORE_KEY_ID, ''}
+    APPLE_APP_STORE_ISSUER_ID: ${env:APPLE_APP_STORE_ISSUER_ID, ''}
+    APPLE_APP_STORE_BUNDLE_ID: ${env:APPLE_APP_STORE_BUNDLE_ID, 'com.themirrorcollective.mirror'}
+    APPLE_APP_STORE_PRIVATE_KEY: ${env:APPLE_APP_STORE_PRIVATE_KEY, ''}
+    APPLE_APP_STORE_APP_APPLE_ID: ${env:APPLE_APP_STORE_APP_APPLE_ID, ''}
     GOOGLE_SERVICE_ACCOUNT_KEY: ${env:GOOGLE_SERVICE_ACCOUNT_KEY, ''}
     GOOGLE_PACKAGE_NAME: ${env:GOOGLE_PACKAGE_NAME, 'com.mirrorcollective.app'}
   iam:
