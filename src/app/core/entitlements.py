@@ -11,7 +11,8 @@ client can navigate to the paywall instead of showing a generic error. Over-
 quota uploads return 507 with ``code`` ``"quota_exceeded"`` / ``"no_quota"``.
 """
 
-from typing import Any, Dict
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, HTTPException, Request
 
@@ -37,6 +38,24 @@ _dynamodb = get_dynamodb_service()
 _quota = get_storage_quota_service()
 
 
+def _trial_has_lapsed(expires_at: Optional[str]) -> bool:
+    """True when a trial's ``trial_expires_at`` is in the past.
+
+    The daily expiry cron only flips ``subscription_tier`` to ``free`` once a
+    day, so a trial that lapses between runs still reads ``tier == "trial"``.
+    Checking the timestamp here restricts the user the moment the trial ends
+    rather than up to ~24h later, closing that accuracy gap. A missing or
+    unparseable timestamp is treated as lapsed — fail closed.
+    """
+    if not expires_at:
+        return True
+    try:
+        end = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return True
+    return end <= datetime.now(timezone.utc)
+
+
 async def require_echo_vault_access(
     request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -44,8 +63,9 @@ async def require_echo_vault_access(
     """Router dependency: gate Echo Vault mutations behind an active entitlement.
 
     Raises 403 ``{"code": "subscription_required"}`` when the caller's tier is
-    not entitled (free / trial-expired / never subscribed). GET/HEAD/OPTIONS
-    pass through so existing content stays viewable.
+    not entitled (free / trial-expired / never subscribed) or when a trial tier
+    has passed its expiry. GET/HEAD/OPTIONS pass through so existing content
+    stays viewable.
     """
     if request.method in _READ_METHODS:
         return current_user
@@ -54,6 +74,15 @@ async def require_echo_vault_access(
     tier = getattr(profile, "subscription_tier", None) if profile else None
     if tier not in _ENTITLED_TIERS:
         raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
+
+    # A "trial" tier is only valid until its expiry — don't wait for the daily
+    # cron to downgrade it. Paid tiers (core / core_plus) are governed by the
+    # subscription lifecycle, not this timestamp, so they skip the check.
+    if tier == "trial" and _trial_has_lapsed(
+        getattr(profile, "trial_expires_at", None)
+    ):
+        raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
+
     return current_user
 
 
