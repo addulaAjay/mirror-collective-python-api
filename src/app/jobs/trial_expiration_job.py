@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from ..services.dynamodb_service import get_dynamodb_service
+from ..services.push_notification_service import PushNotificationService
 from ..services.trial_management_service import TrialManagementService
 
 logger = logging.getLogger(__name__)
@@ -27,9 +28,11 @@ async def check_trial_expirations() -> Dict[str, Any]:
         Dict with job execution results
     """
     try:
-        # Initialize services
+        # Initialize services. Wiring a real push service is what actually makes
+        # the trial nudges fire — without it the service no-ops the notifications.
         dynamodb_service = get_dynamodb_service()
-        trial_service = TrialManagementService(dynamodb_service)
+        push_service = PushNotificationService(dynamodb_service)
+        trial_service = TrialManagementService(dynamodb_service, push_service)
 
         logger.info("Starting trial expiration check job")
 

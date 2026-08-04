@@ -9,13 +9,20 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, validator
 
+from ..core.entitlements import enforce_upload_quota, require_echo_vault_access
 from ..core.idempotency import idempotent
 from ..core.security import get_current_user
 from ..services.echo_service import get_echo_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["Echo Vault"])
+# Router-level guard: every Echo Vault mutation (create/upload/modify) requires
+# an active entitlement (trial or paid). Reads pass through — see
+# require_echo_vault_access. Returns 403 {"code": "subscription_required"}.
+router = APIRouter(
+    tags=["Echo Vault"],
+    dependencies=[Depends(require_echo_vault_access)],
+)
 
 # Initialize service
 echo_service = get_echo_service()
@@ -339,6 +346,11 @@ async def get_upload_url(
 
     user_id = current_user["id"]
 
+    # Echo attachments count against the storage quota; profile/avatar images
+    # don't. Block echo uploads once the user is at/over their quota.
+    if (request.upload_type or "echo") == "echo":
+        await enforce_upload_quota(user_id)
+
     try:
         result = await echo_service.generate_upload_url(
             user_id=user_id,
@@ -622,6 +634,8 @@ async def initiate_multipart_upload(
     from ..core.exceptions import NotFoundError, ValidationError
 
     user_id = current_user["id"]
+    # Large files are echo attachments — block once at/over the storage quota.
+    await enforce_upload_quota(user_id)
     try:
         result = await echo_service.initiate_multipart_upload(
             echo_id=echo_id,
