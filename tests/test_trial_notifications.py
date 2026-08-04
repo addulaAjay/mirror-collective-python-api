@@ -7,6 +7,7 @@ expiry notice were silently dropped. These tests lock in that (a) the concrete
 (b) the trial service actually invokes it.
 """
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -152,3 +153,69 @@ async def test_trial_expired_no_downgrade_when_paid_subscription():
     assert result["action"] == "no_change"
     push.send_notification.assert_not_awaited()  # paid users are never nudged
     assert profile.subscription_tier == "core"  # untouched
+
+
+# ----------------------------------------------------- threshold bucketing
+def _days_remaining(send_mock) -> int:
+    """days_remaining kwarg from the most recent send call (mypy-friendly)."""
+    call = send_mock.await_args
+    assert call is not None
+    return call.kwargs["days_remaining"]
+
+
+def _trial_user(days_from_now: float, sent=None):
+    """A trial user whose trial_expires_at is `days_from_now` days out."""
+    expires = datetime.now(timezone.utc) + timedelta(days=days_from_now)
+    return SimpleNamespace(
+        user_id="u1",
+        subscription_status="trial",
+        trial_expires_at=expires.isoformat().replace("+00:00", "Z"),
+        trial_notifications_sent=sent if sent is not None else [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_bucketing_picks_most_urgent_unsent_threshold():
+    # ~2 days left, no prior nudges: must send the 3-day nudge, NOT "7 days left".
+    user = _trial_user(2.2)
+    db: Any = SimpleNamespace(scan_users_with_trials=AsyncMock(return_value=[user]))
+    svc = TrialManagementService(db, SimpleNamespace())
+    svc.send_trial_expiration_notification = AsyncMock()  # type: ignore[method-assign]
+    svc.handle_trial_expired = AsyncMock()  # type: ignore[method-assign]
+
+    result = await svc.check_trial_expiration()
+
+    svc.send_trial_expiration_notification.assert_awaited_once()
+    assert _days_remaining(svc.send_trial_expiration_notification) == 3
+    assert result["notifications_sent"]["3_day"] == 1
+    assert result["notifications_sent"]["7_day"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bucketing_last_day_sends_one_day_nudge():
+    # <1 day left, earlier nudges already sent: send the 1-day nudge.
+    user = _trial_user(0.5, sent=["7_day", "3_day"])
+    db: Any = SimpleNamespace(scan_users_with_trials=AsyncMock(return_value=[user]))
+    svc = TrialManagementService(db, SimpleNamespace())
+    svc.send_trial_expiration_notification = AsyncMock()  # type: ignore[method-assign]
+    svc.handle_trial_expired = AsyncMock()  # type: ignore[method-assign]
+
+    result = await svc.check_trial_expiration()
+
+    assert _days_remaining(svc.send_trial_expiration_notification) == 1
+    assert result["notifications_sent"]["1_day"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bucketing_expired_goes_to_handler_not_nudge():
+    user = _trial_user(-0.1)  # already past expiry
+    db: Any = SimpleNamespace(scan_users_with_trials=AsyncMock(return_value=[user]))
+    svc = TrialManagementService(db, SimpleNamespace())
+    svc.send_trial_expiration_notification = AsyncMock()  # type: ignore[method-assign]
+    svc.handle_trial_expired = AsyncMock()  # type: ignore[method-assign]
+
+    result = await svc.check_trial_expiration()
+
+    svc.send_trial_expiration_notification.assert_not_awaited()
+    svc.handle_trial_expired.assert_awaited_once_with("u1")
+    assert result["trials_expired"] == 1

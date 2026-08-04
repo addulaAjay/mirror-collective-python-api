@@ -175,22 +175,19 @@ class TrialManagementService:
                     users_expired.append(user)
                     continue
 
-                # Check notification thresholds
-                if (
-                    days_until_expiry <= 7
-                    and "7_day" not in user.trial_notifications_sent
-                ):
-                    users_to_notify_7_day.append(user)
-                elif (
-                    days_until_expiry <= 3
-                    and "3_day" not in user.trial_notifications_sent
-                ):
-                    users_to_notify_3_day.append(user)
-                elif (
-                    days_until_expiry <= 1
-                    and "1_day" not in user.trial_notifications_sent
-                ):
+                # Check notification thresholds MOST-URGENT FIRST. Ordering
+                # <=7 first would send the "7 days left" copy to a user who
+                # only has, say, 2 days remaining (e.g. installed late, or the
+                # cron skipped a day). Checking <=1, then <=3, then <=7 sends
+                # the most urgent unsent nudge that applies. (`trial_
+                # notifications_sent` may be None on older records.)
+                sent = user.trial_notifications_sent or []
+                if days_until_expiry <= 1 and "1_day" not in sent:
                     users_to_notify_1_day.append(user)
+                elif days_until_expiry <= 3 and "3_day" not in sent:
+                    users_to_notify_3_day.append(user)
+                elif days_until_expiry <= 7 and "7_day" not in sent:
+                    users_to_notify_7_day.append(user)
 
             # Send notifications
             for user in users_to_notify_7_day:

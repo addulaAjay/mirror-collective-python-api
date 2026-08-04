@@ -29,6 +29,16 @@ _ENTITLED_TIERS = frozenset({"trial", "core", "core_plus"})
 # Non-mutating methods stay open so users keep read access to an existing vault.
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# upload_type values that are account-level (the user's own avatar), NOT Echo
+# Vault content. These don't require an entitlement — an expired user must still
+# be able to change their profile picture. Mirrors the quota exemption in
+# get_upload_url, which already only counts "echo" uploads.
+_ACCOUNT_UPLOAD_TYPES = frozenset({"profile", "user_profile"})
+
+# The one route whose entitlement need depends on the request body (upload_type)
+# rather than the method alone.
+_UPLOAD_URL_SUFFIX = "/echoes/upload-url"
+
 SUBSCRIPTION_REQUIRED_DETAIL: Dict[str, str] = {
     "code": "subscription_required",
     "message": "An active trial or subscription is required to use Echo Vault.",
@@ -56,6 +66,40 @@ def _trial_has_lapsed(expires_at: Optional[str]) -> bool:
     return end <= datetime.now(timezone.utc)
 
 
+def _profile_is_entitled(profile: Any) -> bool:
+    """True when a user profile grants active Echo Vault access.
+
+    Entitled = tier in {trial, core, core_plus}, and — for a trial — still
+    within its window (paid tiers ignore the trial timestamp, governed instead
+    by the subscription lifecycle).
+    """
+    tier = getattr(profile, "subscription_tier", None) if profile else None
+    if tier not in _ENTITLED_TIERS:
+        return False
+    if tier == "trial" and _trial_has_lapsed(
+        getattr(profile, "trial_expires_at", None)
+    ):
+        return False
+    return True
+
+
+async def _is_account_level_upload(request: Request) -> bool:
+    """True when this is the upload-url route asking for an account-level
+    (profile/avatar) upload, which needs no Echo Vault entitlement.
+
+    Peeks at the JSON body; Starlette caches it on the request, so the route
+    handler still parses ``UploadUrlRequest`` normally afterwards. Any parse
+    failure falls through to ``False`` (treat as gated) — fail closed.
+    """
+    if not request.url.path.endswith(_UPLOAD_URL_SUFFIX):
+        return False
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - malformed body → let the route 4xx it
+        return False
+    return (body.get("upload_type") or "echo") in _ACCOUNT_UPLOAD_TYPES
+
+
 async def require_echo_vault_access(
     request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -65,22 +109,16 @@ async def require_echo_vault_access(
     Raises 403 ``{"code": "subscription_required"}`` when the caller's tier is
     not entitled (free / trial-expired / never subscribed) or when a trial tier
     has passed its expiry. GET/HEAD/OPTIONS pass through so existing content
-    stays viewable.
+    stays viewable, and account-level avatar uploads pass through so an expired
+    user can still manage their own profile picture.
     """
     if request.method in _READ_METHODS:
         return current_user
 
-    profile = await _dynamodb.get_user_profile(current_user["id"])
-    tier = getattr(profile, "subscription_tier", None) if profile else None
-    if tier not in _ENTITLED_TIERS:
-        raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
+    if await _is_account_level_upload(request):
+        return current_user
 
-    # A "trial" tier is only valid until its expiry — don't wait for the daily
-    # cron to downgrade it. Paid tiers (core / core_plus) are governed by the
-    # subscription lifecycle, not this timestamp, so they skip the check.
-    if tier == "trial" and _trial_has_lapsed(
-        getattr(profile, "trial_expires_at", None)
-    ):
+    if not _profile_is_entitled(await _dynamodb.get_user_profile(current_user["id"])):
         raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
 
     return current_user
