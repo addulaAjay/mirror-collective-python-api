@@ -470,3 +470,36 @@ async def test_maybe_send_still_sends_when_nudge_not_eligible():
     assert db.save_soul_ping.await_args is not None
     saved = db.save_soul_ping.await_args.args[0]
     assert saved.body in [b for _t, b in sps._REENGAGEMENT_PINGS]
+
+
+# --------------------------------------------------- re-engagement voice/guard
+_ALL_CATS = [c.value for c in SoulPingCategory]
+
+
+def test_reengagement_uses_a_second_person_reason():
+    svc = _build()
+    ping = svc.build_reengagement_ping(
+        "u1",
+        _ALL_CATS,
+        None,
+        reason="There's an important conversation you haven't had yet",
+    )
+    assert ping.title == "A thread to pick up"
+    assert "important conversation you haven't had yet" in ping.body
+    assert ping.body.endswith("Whenever you're ready, The Mirror is here.")
+
+
+def test_reengagement_drops_third_person_user_reason():
+    # A stale/edge-case third-person reason must never reach the lock screen —
+    # the guard drops it and we fall back to the generic 2nd-person copy.
+    svc = _build()
+    ping = svc.build_reengagement_ping(
+        "u1",
+        _ALL_CATS,
+        None,
+        reason="User is dealing with unresolved feelings of guilt.",
+    )
+    assert "user" not in ping.body.lower()
+    assert "dealing with unresolved feelings of guilt" not in ping.body
+    # Fell back to the generic re-engagement copy, not the reason-grounded body.
+    assert ping.title != "A thread to pick up"
