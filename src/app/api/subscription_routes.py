@@ -204,6 +204,7 @@ async def verify_purchase(
             platform=request.platform,
             receipt_data=request.receipt_data,
             product_id=request.product_id,
+            transaction_id=request.transaction_id,
         )
 
         return result

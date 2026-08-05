@@ -157,6 +157,42 @@ class TestAppleModernPath:
         assert result["data"]["is_trial_period"] is True
         assert result["data"]["auto_renew_status"] is True
 
+    async def test_uses_client_transaction_id_when_receipt_is_legacy_blob(
+        self, apple_creds_env, _bypass_jws_verification, monkeypatch
+    ):
+        # iOS sends the opaque legacy base64 app receipt as receipt_data (which
+        # _extract_transaction_id can't parse) plus the numeric transactionId.
+        # The modern path must use the supplied transactionId, not fall through
+        # to the legacy/"not configured" error.
+        validator = ReceiptValidator()
+        signed_tx = _sign_jws(
+            {
+                "transactionId": "tx-client-99",
+                "originalTransactionId": "orig-99",
+                "productId": "com.mc.yearly",
+                "purchaseDate": 1700000000000,
+                "expiresDate": 1702592000000,
+                "type": "Auto-Renewable Subscription",
+            }
+        )
+
+        async def fake_get(transaction_id, token, *, sandbox):
+            assert transaction_id == "tx-client-99"  # used the client id
+            return {"signedTransactionInfo": signed_tx}
+
+        monkeypatch.setattr(rv_module, "_apple_get_transaction", fake_get)
+
+        legacy_receipt = "A" * 200  # opaque -> _extract_transaction_id => None
+        assert _extract_transaction_id(legacy_receipt) is None
+
+        result = await validator.validate_apple_receipt(
+            legacy_receipt, transaction_id="tx-client-99"
+        )
+
+        assert result["valid"] is True
+        assert result["data"]["transaction_id"] == "tx-client-99"
+        assert result["data"]["product_id"] == "com.mc.yearly"
+
     async def test_falls_back_to_sandbox_when_production_404s(
         self, apple_creds_env, _bypass_jws_verification, monkeypatch
     ):

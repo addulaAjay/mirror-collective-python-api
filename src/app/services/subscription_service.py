@@ -81,7 +81,12 @@ class SubscriptionService:
             return None
 
     async def verify_and_activate_purchase(
-        self, user_id: str, platform: str, receipt_data: str, product_id: str
+        self,
+        user_id: str,
+        platform: str,
+        receipt_data: str,
+        product_id: str,
+        transaction_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Verify IAP receipt and activate subscription
@@ -103,7 +108,7 @@ class SubscriptionService:
             # 1. Validate receipt with platform
             if platform.lower() == "ios":
                 validation_result = await self.receipt_validator.validate_apple_receipt(
-                    receipt_data
+                    receipt_data, transaction_id=transaction_id
                 )
             elif platform.lower() == "android":
                 validation_result = (
