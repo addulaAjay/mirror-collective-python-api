@@ -8,7 +8,7 @@ Apple flow (modern):
     deprecated by Apple and is being turned off — see
     https://developer.apple.com/news/?id=koe9hryd. This module signs an
     ES256 JWT with the App Store Connect API key on each request, calls
-    `/inApp/v1/transactions/{transactionId}`, and decodes the returned
+    `/inApps/v1/transactions/{transactionId}`, and decodes the returned
     JWS-signed transaction payload.
 
     A legacy `verifyReceipt` fallback remains behind the
@@ -240,7 +240,7 @@ def _decode_jws_payload(jws: str) -> Dict:
     Signature verification is therefore not required on this path.
 
     For verifying Apple's RESPONSE payloads (signedTransactionInfo from
-    /inApp/v1/transactions/...), use ``_verify_apple_jws`` instead —
+    /inApps/v1/transactions/...), use ``_verify_apple_jws`` instead —
     that path IS security-critical and DOES verify the x5c chain back
     to Apple Root CA G3.
     """
@@ -332,7 +332,7 @@ def _verify_apple_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
 
     Args:
         jws: The signedTransactionInfo string returned by Apple's
-             /inApp/v1/transactions/{transactionId} endpoint.
+             /inApps/v1/transactions/{transactionId} endpoint.
         sandbox: True if the JWS came from the sandbox API endpoint.
 
     Returns:
@@ -533,7 +533,7 @@ class AppleTransactionError(Exception):
 async def _apple_get_transaction(
     transaction_id: str, jwt_token: str, *, sandbox: bool
 ) -> Optional[Dict]:
-    """GET /inApp/v1/transactions/{transactionId} on production or sandbox.
+    """GET /inApps/v1/transactions/{transactionId} on production or sandbox.
 
     Returns:
         - dict on 200 OK (the transaction payload)
@@ -546,7 +546,7 @@ async def _apple_get_transaction(
         transaction would otherwise grant production entitlements.
     """
     base = _APPLE_API_SANDBOX if sandbox else _APPLE_API_PRODUCTION
-    url = f"{base}/inApp/v1/transactions/{transaction_id}"
+    url = f"{base}/inApps/v1/transactions/{transaction_id}"
     headers = {"Authorization": f"Bearer {jwt_token}"}
     session = await _get_session()
     async with session.get(url, headers=headers) as resp:

@@ -609,3 +609,42 @@ class TestGoogleValidation:
         result = await validator.validate_google_receipt("tok", product_id=None)
         assert result["valid"] is False
         assert "Product ID required" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_apple_get_transaction_uses_inApps_endpoint_path(monkeypatch):
+    """Guards the exact App Store Server API path — a '/inApp/' (singular)
+    typo 404s every lookup ('transaction not found in production or sandbox')
+    and silently blocks all purchases."""
+    captured: dict = {}
+
+    class _Resp:
+        status = 404
+
+        async def text(self) -> str:
+            return ""
+
+        async def json(self) -> dict:
+            return {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        def get(self, url, headers=None):
+            captured["url"] = url
+            return _Resp()
+
+    async def _fake_session():
+        return _Session()
+
+    monkeypatch.setattr(rv_module, "_get_session", _fake_session)
+
+    await rv_module._apple_get_transaction("tx-1", "jwt-token", sandbox=False)
+
+    assert captured["url"] == (
+        "https://api.storekit.itunes.apple.com/inApps/v1/transactions/tx-1"
+    )
