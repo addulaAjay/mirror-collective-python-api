@@ -209,11 +209,21 @@ NUDGE RULES
   Nudge.
 - If there is no meaningful reason to proactively re-engage the user, set
   { "eligible": false, "reason": "" }.
+- VOICE — the reason is shown directly to the person in a push notification, so
+  write it in SECOND PERSON, speaking warmly and gently TO them ("you" / "your").
+  Never write it in the third person, and never refer to them as "user" or "the
+  user". It should read like a caring, human opening line — not a clinical
+  status or case note.
 
 GOOD:
-{ "eligible": true, "reason": "An important conversation has not happened yet." }
-{ "eligible": true, "reason": "A recurring decision conflict remains unresolved." }
+{ "eligible": true, "reason": "There's an important conversation you haven't had yet." }
+{ "eligible": true, "reason": "That decision you keep circling back to still feels unresolved." }
+{ "eligible": true, "reason": "You left off in the middle of something worth returning to." }
 { "eligible": false, "reason": "" }
+
+BAD (never phrase the reason like this — third person / clinical / labels the person "user"):
+{ "reason": "User is dealing with unresolved feelings of guilt." }
+{ "reason": "The user has a recurring decision conflict." }
 
 SAFETY + PRIVACY RULES
 

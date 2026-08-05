@@ -439,6 +439,15 @@ class SoulPingService:
         """
         reason = (reason or "").strip()
 
+        # Voice safety net: a reason that refers to the person in the third
+        # person ("User is dealing with…", "The user…") must never reach the
+        # lock screen — it reads as clinical and detached. New summaries are
+        # authored in second person (see conversation_summarizer NUDGE RULES);
+        # this drops any stale/edge-case third-person reason so we fall back to
+        # the generic, second-person re-engagement copy instead.
+        if reason and "user" in reason.lower():
+            reason = ""
+
         # A grounded reason leans "systemic" (surface a pattern) when available;
         # the generic fallback keeps the prior emotional-first behavior.
         if reason and SoulPingCategory.SYSTEMIC.value in enabled_categories:
