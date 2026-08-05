@@ -588,7 +588,10 @@ class ReceiptValidator:
     # ----------------- Apple ----------------- #
 
     async def validate_apple_receipt(
-        self, receipt_data: str, exclude_old_transactions: bool = True
+        self,
+        receipt_data: str,
+        exclude_old_transactions: bool = True,
+        transaction_id: Optional[str] = None,
     ) -> Dict:
         """Validate an Apple IAP receipt.
 
@@ -614,11 +617,19 @@ class ReceiptValidator:
             if creds is None:
                 return await self._validate_apple_legacy_or_error(receipt_data)
 
-            transaction_id = _extract_transaction_id(receipt_data)
-            if not transaction_id:
+            # Prefer a transactionId we can extract from the payload; otherwise
+            # use the one the client supplied directly. iOS clients send the
+            # legacy base64 app receipt as receipt_data (opaque — not parseable
+            # here) alongside the numeric transactionId, which is exactly what
+            # the App Store Server API needs. Without this fallback, real
+            # purchases fail with a misleading "credentials not configured".
+            tx_id = _extract_transaction_id(receipt_data) or (
+                (transaction_id or "").strip() or None
+            )
+            if not tx_id:
                 return await self._validate_apple_legacy_or_error(receipt_data)
 
-            return await self._validate_apple_modern(transaction_id, creds)
+            return await self._validate_apple_modern(tx_id, creds)
         except Exception as e:  # noqa: BLE001 - return canonical error envelope
             logger.error(f"Error validating Apple receipt: {e}")
             return {"valid": False, "data": None, "error": str(e)}
