@@ -270,16 +270,26 @@ class JWSVerificationError(Exception):
 
 
 def _load_apple_root_ca_g3() -> bytes:
-    """Load Apple Root CA G3 bytes from the bundled PEM asset.
+    """Load Apple Root CA G3 as DER (ASN.1) bytes from the bundled PEM asset.
 
-    Cached implicitly via lru_cache on the calling factory.
+    CRITICAL: appstoreserverlibrary's SignedDataVerifier loads each trusted root
+    with ``crypto.load_certificate(FILETYPE_ASN1, ...)`` — i.e. it expects
+    DER-encoded bytes. The bundled asset is PEM, so we must convert. Passing the
+    raw PEM makes the root fail to parse, leaving the trust store empty, and
+    EVERY JWS verification then fails with INVALID_CERTIFICATE — even for a
+    perfectly valid Apple chain. Cached implicitly via lru_cache on the calling
+    factory.
     """
     if not _APPLE_ROOT_CA_G3_PATH.is_file():
         raise FileNotFoundError(
             f"Apple Root CA G3 PEM not found at {_APPLE_ROOT_CA_G3_PATH}. "
             "JWS verification cannot proceed."
         )
-    return _APPLE_ROOT_CA_G3_PATH.read_bytes()
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    pem = _APPLE_ROOT_CA_G3_PATH.read_bytes()
+    return x509.load_pem_x509_certificate(pem).public_bytes(serialization.Encoding.DER)
 
 
 @lru_cache(maxsize=2)
@@ -318,41 +328,6 @@ def _get_apple_signed_data_verifier(*, sandbox: bool) -> Any:
 def _reset_apple_verifier_cache() -> None:
     """Test-only: clear the verifier cache so env-var changes take effect."""
     _get_apple_signed_data_verifier.cache_clear()
-
-
-def _log_jws_leaf_cert_validity(jws: str, *, sandbox: bool) -> None:
-    """DIAGNOSTIC (temporary): on a JWS verification failure, log the leaf
-    signing cert's validity window so we can tell a genuinely bad chain from a
-    clock/cert-time mismatch (leaf cert not valid at the current time). Purely
-    observational — never raises, never affects the security decision.
-    """
-    try:
-        header_b64 = jws.split(".")[0]
-        pad = "=" * (-len(header_b64) % 4)
-        header = json.loads(base64.urlsafe_b64decode(header_b64 + pad))
-        x5c = header.get("x5c") or []
-        if not x5c:
-            logger.warning("JWS-DIAG: no x5c chain in header (sandbox=%s)", sandbox)
-            return
-        from cryptography import x509
-
-        for i, der_b64 in enumerate(x5c):
-            cert = x509.load_der_x509_certificate(base64.b64decode(der_b64))
-            nb = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before
-            na = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
-            logger.warning(
-                "JWS-DIAG sandbox=%s chain[%d/%d] subject=%r issuer=%r "
-                "not_before=%s not_after=%s",
-                sandbox,
-                i,
-                len(x5c),
-                cert.subject.rfc4514_string(),
-                cert.issuer.rfc4514_string(),
-                nb.isoformat(),
-                na.isoformat(),
-            )
-    except Exception as e:  # noqa: BLE001 - diagnostic only
-        logger.warning("JWS-DIAG: failed to inspect leaf cert: %s", e)
 
 
 def _verify_apple_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
@@ -401,7 +376,6 @@ def _verify_apple_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
         logger.warning(
             f"Apple JWS signature verification failed (sandbox={sandbox}): {e}"
         )
-        _log_jws_leaf_cert_validity(jws, sandbox=sandbox)
         raise JWSVerificationError(f"Apple JWS verification failed: {e}") from e
     except Exception as e:  # noqa: BLE001
         # Unexpected error during verification — defensively treat as a
