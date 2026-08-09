@@ -30,6 +30,21 @@ from .storage_quota_service import get_storage_quota_service
 logger = logging.getLogger(__name__)
 
 
+def _ms_to_iso(ms: Optional[Any]) -> Optional[str]:
+    """Convert Apple's epoch-millis timestamp to an ISO 8601 string (or None).
+
+    The modern App Store Server API returns dates as epoch milliseconds
+    (``purchaseDate``, ``expiresDate``); the Subscription model stores ISO 8601.
+    """
+    if not ms:
+        return None
+    return (
+        datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 class SubscriptionService:
     """
     Service for managing subscription lifecycle:
@@ -130,6 +145,14 @@ class SubscriptionService:
             # 3. Determine subscription type and billing period from product_id
             subscription_type, billing_period = self._parse_product_id(product_id)
 
+            # 3b. Normalise modern App Store Server API fields: dates come back as
+            # epoch-millis (*_ms) and price in milliunits of the currency; the
+            # Subscription model wants ISO 8601 strings and a float price.
+            purchase_date_iso = _ms_to_iso(transaction_data.get("purchase_date_ms"))
+            expiry_date_iso = _ms_to_iso(transaction_data.get("expires_date_ms"))
+            raw_price = transaction_data.get("price")
+            price_usd = round(float(raw_price) / 1000.0, 2) if raw_price else 0.0
+
             # 4. Create or update subscription record
             subscription = Subscription(
                 user_id=user_id,
@@ -142,10 +165,10 @@ class SubscriptionService:
                 ),
                 status=SubscriptionStatus.ACTIVE,
                 billing_period=billing_period,
-                price_usd=transaction_data["price"],
-                purchase_date=transaction_data["purchase_date"],
-                expiry_date=transaction_data["expiry_date"],
-                auto_renew_enabled=transaction_data.get("auto_renew_enabled", True),
+                price_usd=price_usd,
+                purchase_date=purchase_date_iso,
+                expiry_date=expiry_date_iso,
+                auto_renew_enabled=transaction_data.get("auto_renew_status", True),
                 receipt_data=receipt_data,
                 is_in_trial=False,  # Paid subscription, not platform trial
             )
@@ -166,8 +189,8 @@ class SubscriptionService:
                 platform=platform,
                 metadata={
                     "product_id": product_id,
-                    "price": transaction_data["price"],
-                    "expiry_date": transaction_data["expiry_date"],
+                    "price": price_usd,
+                    "expiry_date": expiry_date_iso,
                 },
             )
 

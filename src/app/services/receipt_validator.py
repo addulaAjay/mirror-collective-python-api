@@ -899,6 +899,10 @@ class ReceiptValidator:
                 "is_in_intro_offer_period": tx.get("offerType") in (2, 3),
                 "cancellation_date_ms": tx.get("revocationDate"),
                 "auto_renew_status": tx.get("type") == "Auto-Renewable Subscription",
+                # price is in milliunits of `currency` (e.g. 9990 -> 9.99);
+                # present on recent API versions, absent on older payloads.
+                "price": tx.get("price"),
+                "currency": tx.get("currency"),
             }
         except Exception as e:  # noqa: BLE001
             logger.error(f"Error parsing Apple transaction: {e}")
