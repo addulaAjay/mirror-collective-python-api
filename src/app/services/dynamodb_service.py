@@ -8,6 +8,7 @@ import os
 import time
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
+from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,6 +20,24 @@ from ..core.exceptions import InternalServerError
 from ..models.conversation import Conversation, ConversationMessage, key_themes_to_items
 from ..models.soul_ping import SoulPing
 from ..models.user_profile import UserProfile
+
+
+def _floats_to_decimal(obj: Any) -> Any:
+    """Recursively convert floats to Decimal for DynamoDB.
+
+    boto3/DynamoDB rejects Python ``float`` ("Float types are not supported")
+    and requires ``Decimal``. Applied on every write so numeric fields like a
+    subscription's ``price_usd`` (9.99) or a profile's ``echo_vault_quota_gb``
+    round-trip cleanly. ``Decimal(str(x))`` avoids binary-float artefacts.
+    """
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _floats_to_decimal(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_floats_to_decimal(v) for v in obj]
+    return obj
+
 
 logger = logging.getLogger(__name__)
 
@@ -1679,7 +1698,8 @@ class DynamoDBService:
             dynamodb = await self._get_resource()
             table = await dynamodb.Table(table_name)
 
-            await table.put_item(Item=item)
+            # DynamoDB rejects Python floats — convert to Decimal on write.
+            await table.put_item(Item=_floats_to_decimal(item))
 
             return item
 
