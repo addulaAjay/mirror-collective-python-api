@@ -336,19 +336,21 @@ def _log_jws_leaf_cert_validity(jws: str, *, sandbox: bool) -> None:
             return
         from cryptography import x509
 
-        leaf = x509.load_der_x509_certificate(base64.b64decode(x5c[0]))
-        nb = getattr(leaf, "not_valid_before_utc", None) or leaf.not_valid_before
-        na = getattr(leaf, "not_valid_after_utc", None) or leaf.not_valid_after
-        logger.warning(
-            "JWS-DIAG sandbox=%s chain_len=%d leaf_subject=%r "
-            "not_before=%s not_after=%s server_now=%s",
-            sandbox,
-            len(x5c),
-            leaf.subject.rfc4514_string(),
-            nb.isoformat(),
-            na.isoformat(),
-            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        )
+        for i, der_b64 in enumerate(x5c):
+            cert = x509.load_der_x509_certificate(base64.b64decode(der_b64))
+            nb = getattr(cert, "not_valid_before_utc", None) or cert.not_valid_before
+            na = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
+            logger.warning(
+                "JWS-DIAG sandbox=%s chain[%d/%d] subject=%r issuer=%r "
+                "not_before=%s not_after=%s",
+                sandbox,
+                i,
+                len(x5c),
+                cert.subject.rfc4514_string(),
+                cert.issuer.rfc4514_string(),
+                nb.isoformat(),
+                na.isoformat(),
+            )
     except Exception as e:  # noqa: BLE001 - diagnostic only
         logger.warning("JWS-DIAG: failed to inspect leaf cert: %s", e)
 
