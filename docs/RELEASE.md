@@ -5,7 +5,7 @@ Two isolated AWS environments, one Serverless service (`mirror-collective-python
 | Env | Serverless stage | Deploy trigger | Cognito pool | API URL |
 |-----|------------------|----------------|--------------|---------|
 | **staging** | `staging` | push to `develop` | staging pool (`STAGING_COGNITO_*`) | `<staging-id>.execute-api.us-east-1.amazonaws.com` |
-| **production** | `production-v2` | push a `v*` tag **+ manual approval** | prod pool (`PROD_COGNITO_*`) | `https://ct3onxgeol.execute-api.us-east-1.amazonaws.com` |
+| **production** | `production-v2` | push to `main` | prod pool (`PROD_COGNITO_*`) | `https://ct3onxgeol.execute-api.us-east-1.amazonaws.com` |
 
 Everything except Cognito/SES is created per-stage by CloudFormation (tables, buckets, IAM roles are suffixed with the stage name), so the two environments share **no** DynamoDB tables, S3 buckets, or SNS platform apps. Cognito user pools are external and separate per env.
 
@@ -21,35 +21,27 @@ work on a feature branch
       │                         │
       │                    validate on staging (smoke tests below)
       │
-      ├─ merge develop → main   (main == validated code)
+      ├─ merge develop → main
       ▼
-   git tag v1.2.3 && git push origin v1.2.3
-      │
-      ▼
-   CI builds, then PAUSES for approval on the `production` Environment
-      │  (a required reviewer clicks "Approve and deploy")
-      ▼
-   deploy to PRODUCTION (stage production-v2)
+   main  ──(CI auto)──►  deploy to PRODUCTION (stage production-v2)
 ```
 
-Tag from a commit that has already been validated on staging (i.e. tag `main`
-after `develop` has been deployed and smoke-tested).
+Merge to `main` only after the change has been validated on staging (i.e. it has
+been deployed via `develop` and smoke-tested).
 
 ### Cutting a production release
 
 ```bash
+# open a PR from develop → main and merge it, or:
 git checkout main && git pull
-git tag v1.2.3            # semver; must start with "v"
-git push origin v1.2.3    # triggers the tag-gated prod pipeline
+git merge --ff-only develop
+git push origin main       # triggers the production deploy
 ```
-
-Then open the GitHub Actions run and **approve** the `deploy-production` job.
 
 ### Rollback
 
-Re-tag the last-good commit and push a new tag (e.g. `v1.2.4` pointing at the
-previous release commit), then approve. Serverless/CloudFormation redeploys that
-code. (There is no automatic rollback; forward-fix via a new tag.)
+Revert the offending commit on `main` and push (redeploys the previous code), or
+`git revert <sha>`. There is no automatic rollback; forward-fix via `main`.
 
 ---
 
@@ -89,12 +81,7 @@ Settings → Secrets and variables → Actions. The deploy-staging job reads:
 (OpenAI / Apple keys may reuse the prod values; `SHARE_TOKEN_SECRET` must be a
 new random secret; `SHARE_BASE_URL`/`APP_URL` point at the staging API URL.)
 
-### 4. Create the `production` GitHub Environment (approval gate)
-Settings → Environments → New environment → **production** → enable
-**Required reviewers** (add yourself). The `deploy-production` job references
-`environment: production`, so it will pause for approval before every prod deploy.
-
-### 5. First staging deploy
+### 4. First staging deploy
 Either push to `develop`, or run locally once to bootstrap the stack:
 ```bash
 export STAGE=staging COGNITO_USER_POOL_ID=... COGNITO_CLIENT_ID=... ...
