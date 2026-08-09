@@ -232,9 +232,10 @@ class TestAppleModernPath:
     async def test_production_5xx_does_not_fall_through_to_sandbox(
         self, apple_creds_env, monkeypatch
     ):
-        """Regression: a 5xx (or 401/429) from production MUST NOT cause a
-        silent sandbox fallthrough — that would let a sandbox 200 on a
-        forged transaction grant production entitlements.
+        """Regression: a 5xx (or 429) from production MUST NOT cause a silent
+        sandbox fallthrough — that's a transient/server error, not an
+        environment signal. (401 is handled separately — it DOES fall through,
+        see test_production_401_falls_through_to_sandbox.)
         """
         from src.app.services.receipt_validator import AppleTransactionError
 
@@ -244,13 +245,10 @@ class TestAppleModernPath:
         async def fake_get(transaction_id, token, *, sandbox):
             calls.append(sandbox)
             if not sandbox:
-                # Production raises (e.g. 503 / 401 / 429)
                 raise AppleTransactionError(
-                    "Apple production transactions API returned HTTP 503"
+                    "Apple production transactions API returned HTTP 503",
+                    status_code=503,
                 )
-            # If sandbox ever gets called, this would be the bug — return
-            # a forged-looking valid transaction so the test can assert it
-            # never reaches here.
             return {"signedTransactionInfo": "would-be-forged"}
 
         monkeypatch.setattr(rv_module, "_apple_get_transaction", fake_get)
@@ -259,9 +257,41 @@ class TestAppleModernPath:
 
         # Sandbox path must NOT have been called.
         assert calls == [False], f"Production error fell through to sandbox: {calls}"
-        # Caller sees a clear error, not a silent valid=True.
         assert result["valid"] is False
         assert "503" in str(result["error"]) or "production" in str(result["error"])
+
+    async def test_production_401_falls_through_to_sandbox(
+        self, apple_creds_env, _bypass_jws_verification, monkeypatch
+    ):
+        """Pre-release (TestFlight) apps have no production App Store presence,
+        so production auth 401s even with a valid key; the transaction lives in
+        sandbox. A 401 must fall through and validate against sandbox. The JWS
+        signature is still verified, so this is not a forgery risk.
+        """
+        from src.app.services.receipt_validator import AppleTransactionError
+
+        validator = ReceiptValidator()
+        signed_tx = _sign_jws(
+            {"transactionId": "tx-sbx", "productId": "com.mc.monthly"}
+        )
+        calls = []
+
+        async def fake_get(transaction_id, token, *, sandbox):
+            calls.append(sandbox)
+            if not sandbox:
+                raise AppleTransactionError(
+                    "Apple production transactions API returned HTTP 401",
+                    status_code=401,
+                )
+            return {"signedTransactionInfo": signed_tx}
+
+        monkeypatch.setattr(rv_module, "_apple_get_transaction", fake_get)
+
+        result = await validator.validate_apple_receipt("tx-sbx")
+
+        assert calls == [False, True]  # prod tried (401), then sandbox
+        assert result["valid"] is True
+        assert result["data"]["transaction_id"] == "tx-sbx"
 
 
 # --------------------------------------------------------------------------- #
