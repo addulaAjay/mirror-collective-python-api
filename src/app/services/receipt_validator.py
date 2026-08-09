@@ -526,8 +526,15 @@ class AppleTransactionError(Exception):
     """Raised when Apple's transactions API returns a non-recoverable error.
 
     Distinct from "not found" (which returns None) so the caller can
-    distinguish "try sandbox" from "fatal — propagate to client."
+    distinguish "try sandbox" from "fatal — propagate to client." Carries the
+    HTTP ``status_code`` so callers can special-case 401 (pre-release apps have
+    no production App Store presence, so production auth 401s even with a valid
+    key — the transaction lives in sandbox).
     """
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 async def _apple_get_transaction(
@@ -560,7 +567,8 @@ async def _apple_get_transaction(
                 f"status={resp.status} body={body[:300]}"
             )
             raise AppleTransactionError(
-                f"Apple {env} transactions API returned HTTP {resp.status}"
+                f"Apple {env} transactions API returned HTTP {resp.status}",
+                status_code=resp.status,
             )
         return await resp.json()
 
@@ -639,18 +647,29 @@ class ReceiptValidator:
     ) -> Dict:
         token = _build_apple_jwt(creds)
 
-        # Try production first; on 404, fall through to sandbox (mirrors
-        # the legacy 21007 sandbox-receipt-sent-to-prod behaviour).
+        # Try production first; fall through to sandbox on 404 (transaction not
+        # in production) OR 401. A production 401 is expected for a pre-release
+        # app: it has no production App Store presence yet, so Apple rejects the
+        # (valid) key on the production host while the sandbox host authenticates
+        # fine — that's where TestFlight/sandbox transactions live. Rate limits
+        # (429) and server errors (5xx) still propagate as fatal.
         #
-        # CRITICAL: only 404 triggers the sandbox fallthrough. Auth failures
-        # (401), rate limits (429), and server errors (5xx) from production
-        # MUST propagate as errors — silently falling through on those would
-        # let a sandbox 200 on a forged transaction grant production
-        # entitlements. _apple_get_transaction raises AppleTransactionError
-        # on any 4xx/5xx other than 404; we let it propagate to the outer
-        # except in validate_apple_receipt.
-        body = await _apple_get_transaction(transaction_id, token, sandbox=False)
+        # Security: this does NOT weaken forgery protection. Whatever environment
+        # returns a transaction, its signedTransactionInfo JWS is verified below
+        # against Apple Root CA G3 — a forged/nonexistent id yields 404 (→ None),
+        # never a usable payload. The decoded environment is tracked in
+        # is_sandbox so entitlements record where the purchase originated.
         is_sandbox = False
+        try:
+            body = await _apple_get_transaction(transaction_id, token, sandbox=False)
+        except AppleTransactionError as e:
+            if e.status_code != 401:
+                raise
+            logger.info(
+                "Apple production returned 401 (pre-release app?) — retrying sandbox"
+            )
+            body = None
+
         if body is None:
             body = await _apple_get_transaction(transaction_id, token, sandbox=True)
             is_sandbox = True
