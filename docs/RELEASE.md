@@ -58,8 +58,14 @@ code. (There is no automatic rollback; forward-fix via a new tag.)
 These cannot be done from the repo; do them once.
 
 ### 1. Create the staging Cognito user pool
-Mirror the prod pool's config (sign-in with email, email verification, the same
-app-client settings incl. a client secret, and any Lambda triggers). Capture:
+Run the helper (creates the pool + app client with the exact settings the API
+needs, and offers to push the three secrets via `gh`):
+```bash
+./scripts/create_staging_cognito.sh
+```
+Before running, diff against prod so anything custom (Lambda triggers, MFA,
+password policy, SES email config) is matched — the script header shows the
+`describe-user-pool` commands. It captures:
 - User Pool ID → `STAGING_COGNITO_USER_POOL_ID`
 - App Client ID → `STAGING_COGNITO_CLIENT_ID`
 - App Client secret → `STAGING_COGNITO_CLIENT_SECRET`
