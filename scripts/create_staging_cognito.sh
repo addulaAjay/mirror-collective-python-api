@@ -28,37 +28,41 @@ CLIENT_NAME="${CLIENT_NAME:-mirror-collective-staging-app}"
 
 echo "Creating Cognito user pool '${POOL_NAME}' in ${REGION}..."
 
+# Config mirrors the prod pool (us-east-1_znOU6WKkN) exactly:
+#   - email username + auto-verify, MFA off, COGNITO_DEFAULT email
+#   - password: min 8, upper/lower/number/SYMBOL required
+#   - recovery: verified_email (P1), verified_phone_number (P2)
+#   - NO custom attributes (prod has none; standard given_name/family_name/
+#     phone_number are built in and need no schema entry)
 POOL_ID=$(aws cognito-idp create-user-pool \
   --region "$REGION" \
   --pool-name "$POOL_NAME" \
   --username-attributes email \
   --auto-verified-attributes email \
-  --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=verified_email}]' \
+  --mfa-configuration OFF \
+  --account-recovery-setting 'RecoveryMechanisms=[{Priority=1,Name=verified_email},{Priority=2,Name=verified_phone_number}]' \
   --admin-create-user-config 'AllowAdminCreateUserOnly=false' \
   --email-configuration 'EmailSendingAccount=COGNITO_DEFAULT' \
-  --policies 'PasswordPolicy={MinimumLength=8,RequireUppercase=true,RequireLowercase=true,RequireNumbers=true,RequireSymbols=false}' \
-  --schema \
-    'Name=given_name,AttributeDataType=String,Mutable=true,Required=false' \
-    'Name=family_name,AttributeDataType=String,Mutable=true,Required=false' \
-    'Name=phone_number,AttributeDataType=String,Mutable=true,Required=false' \
-    'Name=deleted_at,AttributeDataType=String,Mutable=true,Required=false' \
-    'Name=account_status,AttributeDataType=String,Mutable=true,Required=false' \
+  --policies 'PasswordPolicy={MinimumLength=8,RequireUppercase=true,RequireLowercase=true,RequireNumbers=true,RequireSymbols=true,TemporaryPasswordValidityDays=7}' \
   --query 'UserPool.Id' --output text)
 
 echo "  -> Pool ID: ${POOL_ID}"
 
 echo "Creating app client '${CLIENT_NAME}' (with secret)..."
 
+# Auth flows + token validity mirror the prod "Mirror Collective API" client:
+#   flows: ADMIN_USER_PASSWORD, CUSTOM, REFRESH_TOKEN, USER_AUTH, USER_PASSWORD, USER_SRP
+#   tokens: access 60 min, id 60 min, refresh 5 days
 CLIENT_ID=$(aws cognito-idp create-user-pool-client \
   --region "$REGION" \
   --user-pool-id "$POOL_ID" \
   --client-name "$CLIENT_NAME" \
   --generate-secret \
-  --explicit-auth-flows ALLOW_ADMIN_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_PASSWORD_AUTH \
-  --access-token-validity 1 \
-  --id-token-validity 1 \
-  --refresh-token-validity 30 \
-  --token-validity-units 'AccessToken=hours,IdToken=hours,RefreshToken=days' \
+  --explicit-auth-flows ALLOW_ADMIN_USER_PASSWORD_AUTH ALLOW_CUSTOM_AUTH ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_AUTH ALLOW_USER_PASSWORD_AUTH ALLOW_USER_SRP_AUTH \
+  --access-token-validity 60 \
+  --id-token-validity 60 \
+  --refresh-token-validity 5 \
+  --token-validity-units 'AccessToken=minutes,IdToken=minutes,RefreshToken=days' \
   --prevent-user-existence-errors ENABLED \
   --query 'UserPoolClient.ClientId' --output text)
 
