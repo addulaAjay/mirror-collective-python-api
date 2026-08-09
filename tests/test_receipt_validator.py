@@ -678,3 +678,21 @@ async def test_apple_get_transaction_uses_inApps_endpoint_path(monkeypatch):
     assert captured["url"] == (
         "https://api.storekit.itunes.apple.com/inApps/v1/transactions/tx-1"
     )
+
+
+def test_apple_root_ca_g3_is_der_for_the_verifier():
+    """Regression: appstoreserverlibrary's SignedDataVerifier loads trusted
+    roots with crypto.load_certificate(FILETYPE_ASN1, ...) — i.e. DER. If
+    _load_apple_root_ca_g3 returns PEM, the root fails to parse, the trust store
+    is empty, and EVERY JWS verification fails with INVALID_CERTIFICATE (even a
+    valid Apple chain)."""
+    from cryptography import x509
+
+    from src.app.services.receipt_validator import _load_apple_root_ca_g3
+
+    der = _load_apple_root_ca_g3()
+    assert not der.lstrip().startswith(b"-----BEGIN"), "root must be DER, not PEM"
+    # load_der_x509_certificate raises on PEM input — same guarantee as the
+    # library's FILETYPE_ASN1 load, without the OpenSSL type-stub dependency.
+    cert = x509.load_der_x509_certificate(der)
+    assert "Apple Root CA - G3" in cert.subject.rfc4514_string()
