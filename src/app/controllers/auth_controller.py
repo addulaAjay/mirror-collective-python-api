@@ -348,21 +348,47 @@ class AuthController:
 
     async def delete_account(self, current_user: Dict[str, Any]) -> GeneralApiResponse:
         """Delete current user account from both Cognito and DynamoDB"""
-        user_email = current_user.get("email")
         user_id = current_user.get("id") or current_user.get("sub")
+        user_email = current_user.get("email")
 
-        if user_email and user_id:
+        # Cognito ACCESS tokens carry no `email` claim, and the app authenticates
+        # with the access token — so `current_user["email"]` is None on this
+        # path. The Cognito username IS the email (see sign_up_user), so resolve
+        # it from the users table by sub. Without this the previous code hit the
+        # `if user_email and user_id` guard as False, SKIPPED the delete, and
+        # STILL returned success — the client cleared its tokens while the
+        # Cognito account lived on, so the user could log straight back in.
+        if not user_email and user_id:
             try:
-                await self.cognito_service.admin_delete_user(user_email)
-                logger.info(f"Deleted user from Cognito: {mask_email(user_email)}")
-
-                # Then delete from DynamoDB
-                await self.user_service.delete_user_account(user_id)
-                logger.info(f"Deleted user profile from DynamoDB: {user_id}")
-
+                profile = await self.user_service.get_user_profile(user_id)
+                user_email = getattr(profile, "email", None) if profile else None
             except Exception as e:
-                logger.error(f"Error during account deletion: {e}")
-                # Re-raise to ensure the client knows deletion failed
-                raise
+                logger.warning(f"Failed to resolve email for account deletion: {e}")
+
+        if not user_id or not user_email:
+            # Never report success when nothing was deleted — the client clears
+            # tokens on success, which would strand a still-active account.
+            logger.error(
+                "Account deletion aborted — could not identify user "
+                f"(id={'present' if user_id else 'missing'}, "
+                f"email={'present' if user_email else 'missing'})"
+            )
+            return GeneralApiResponse(
+                success=False,
+                message="Unable to identify account for deletion. Please try again.",
+            )
+
+        try:
+            await self.cognito_service.admin_delete_user(user_email)
+            logger.info(f"Deleted user from Cognito: {mask_email(user_email)}")
+
+            # Then delete from DynamoDB
+            await self.user_service.delete_user_account(user_id)
+            logger.info(f"Deleted user profile from DynamoDB: {user_id}")
+
+        except Exception as e:
+            logger.error(f"Error during account deletion: {e}")
+            # Re-raise to ensure the client knows deletion failed
+            raise
 
         return GeneralApiResponse(success=True, message="Account deleted successfully")
