@@ -133,7 +133,8 @@ class SubscriptionService:
             # 4. Create or update subscription record
             subscription = Subscription(
                 user_id=user_id,
-                subscription_id=transaction_data["transaction_id"],
+                subscription_id=transaction_data.get("original_transaction_id")
+                or transaction_data["transaction_id"],
                 product_id=product_id,
                 subscription_type=subscription_type,
                 platform=(
@@ -308,7 +309,10 @@ class SubscriptionService:
                             self.subscriptions_table,
                             {
                                 "user_id": user_id,
-                                "subscription_id": transaction_data["transaction_id"],
+                                "subscription_id": transaction_data.get(
+                                    "original_transaction_id"
+                                )
+                                or transaction_data["transaction_id"],
                             },
                         )
 
@@ -321,7 +325,10 @@ class SubscriptionService:
 
                             subscription = Subscription(
                                 user_id=user_id,
-                                subscription_id=transaction_data["transaction_id"],
+                                subscription_id=transaction_data.get(
+                                    "original_transaction_id"
+                                )
+                                or transaction_data["transaction_id"],
                                 product_id=product_id,
                                 subscription_type=subscription_type,
                                 platform=(
@@ -735,9 +742,13 @@ class SubscriptionService:
             # Extract transaction details
             # For Apple: transaction_info contains decoded JWT
             # For Google: transaction_info contains subscriptionNotification
+            # Prefer originalTransactionId — it's stable across renewals and is
+            # the key subscriptions are stored under. transactionId changes on
+            # every renewal, so using it first would orphan renewal/cancel/
+            # expiry notifications (the record would never be found).
             transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
+                "originalTransactionId"
+            ) or transaction_info.get("transactionId")
             subscription_id_from_webhook = transaction_info.get("subscriptionId")
             purchase_token = transaction_info.get("purchaseToken")
 
@@ -815,9 +826,13 @@ class SubscriptionService:
             logger.info(f"Handling renewal failure: {transaction_info}")
 
             # Extract transaction details
+            # Prefer originalTransactionId — it's stable across renewals and is
+            # the key subscriptions are stored under. transactionId changes on
+            # every renewal, so using it first would orphan renewal/cancel/
+            # expiry notifications (the record would never be found).
             transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
+                "originalTransactionId"
+            ) or transaction_info.get("transactionId")
 
             # Find subscription
             subscription = None
@@ -884,9 +899,13 @@ class SubscriptionService:
             logger.info(f"Handling subscription expiration: {transaction_info}")
 
             # Extract transaction details
+            # Prefer originalTransactionId — it's stable across renewals and is
+            # the key subscriptions are stored under. transactionId changes on
+            # every renewal, so using it first would orphan renewal/cancel/
+            # expiry notifications (the record would never be found).
             transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
+                "originalTransactionId"
+            ) or transaction_info.get("transactionId")
 
             # Find subscription
             subscription = None
@@ -980,9 +999,13 @@ class SubscriptionService:
             logger.info(f"Handling refund: {transaction_info}")
 
             # Extract transaction details
+            # Prefer originalTransactionId — it's stable across renewals and is
+            # the key subscriptions are stored under. transactionId changes on
+            # every renewal, so using it first would orphan renewal/cancel/
+            # expiry notifications (the record would never be found).
             transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
+                "originalTransactionId"
+            ) or transaction_info.get("transactionId")
 
             # Find subscription
             subscription = None
@@ -1073,9 +1096,13 @@ class SubscriptionService:
             logger.info(f"Handling renewal status change: {transaction_info}")
 
             # Extract transaction details
+            # Prefer originalTransactionId — it's stable across renewals and is
+            # the key subscriptions are stored under. transactionId changes on
+            # every renewal, so using it first would orphan renewal/cancel/
+            # expiry notifications (the record would never be found).
             transaction_id = transaction_info.get(
-                "transactionId"
-            ) or transaction_info.get("originalTransactionId")
+                "originalTransactionId"
+            ) or transaction_info.get("transactionId")
             auto_renew_status = transaction_info.get(
                 "autoRenewStatus"
             ) or transaction_info.get("autoRenewing")
