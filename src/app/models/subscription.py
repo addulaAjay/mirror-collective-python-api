@@ -83,6 +83,13 @@ class Subscription:
     last_validation_date: Optional[str] = None  # ISO 8601
     validation_environment: str = "production"  # production | sandbox
 
+    # Webhook idempotency / ordering. Apple retries notifications and does not
+    # guarantee delivery order, so we record the last applied notification's
+    # UUID (exact-replay guard) and signedDate in epoch-ms (out-of-order guard —
+    # ignore any event not newer than what we've already applied).
+    last_notification_uuid: Optional[str] = None
+    last_notification_signed_date_ms: Optional[int] = None
+
     # Metadata
     created_at: Optional[str] = None  # ISO 8601
     updated_at: Optional[str] = None  # ISO 8601
