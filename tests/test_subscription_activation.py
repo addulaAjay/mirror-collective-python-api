@@ -92,3 +92,88 @@ async def test_verify_and_activate_defaults_price_when_absent():
     )
     assert result["success"] is True
     assert saved["item"]["price_usd"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_verify_and_activate_marks_storekit_trial_as_trial():
+    """A StoreKit intro/free-trial transaction must be recorded as a trial, not
+    paid 'active'. Regression: is_in_trial was hardcoded False and the user
+    profile status hardcoded 'active', so a trialing user was shown as fully
+    paid (and the paywall offered 'MANAGE SUBSCRIPTION' instead of letting them
+    convert)."""
+    db = AsyncMock()
+    svc = SubscriptionService(db)
+    svc.receipt_validator.validate_apple_receipt = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "valid": True,
+            "data": {
+                "transaction_id": "2000-orig",
+                "original_transaction_id": "2000-orig",
+                "product_id": "com.themirrorcollective.mirror.monthly",
+                "purchase_date_ms": 1723204800000,
+                "expires_date_ms": 1724414400000,  # ~14 days later
+                "price": 0,  # free trial → $0
+                "is_trial_period": True,
+                "auto_renew_status": True,
+            },
+        }
+    )
+    saved: dict = {}
+    db.put_item = AsyncMock(side_effect=lambda table, item: saved.update(item=item))
+    profile_update = AsyncMock()
+    setattr(svc, "_update_user_subscription_status", profile_update)
+    setattr(svc, "_log_subscription_event", AsyncMock())
+
+    result = await svc.verify_and_activate_purchase(
+        "u1",
+        "ios",
+        "receipt-data",
+        "com.themirrorcollective.mirror.monthly",
+        transaction_id="2000-orig",
+    )
+
+    assert result["success"] is True
+    assert saved["item"]["is_in_trial"] is True
+    assert saved["item"]["price_usd"] == 0.0
+    # The subscription handed to the profile updater is flagged as a trial.
+    sub_arg = profile_update.call_args.args[1]
+    assert sub_arg.is_in_trial is True
+
+
+@pytest.mark.asyncio
+async def test_restore_maps_modern_fields_and_counts():
+    """Restore must normalise *_ms dates + milliunits price like the purchase
+    path. Regression: it read transaction_data['purchase_date']/['expiry_date']
+    /['price'] (keys that don't exist) → KeyError swallowed → restored_count 0,
+    so a paying user reinstalling could never regain access."""
+    db = AsyncMock()
+    svc = SubscriptionService(db)
+    svc.receipt_validator.validate_apple_receipt = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "valid": True,
+            "data": {
+                "transaction_id": "3000-orig",
+                "original_transaction_id": "3000-orig",
+                "product_id": "com.themirrorcollective.mirror.monthly",
+                "purchase_date_ms": 1723204800000,
+                "expires_date_ms": 1725796800000,
+                "price": 9990,  # milliunits -> 9.99
+                "auto_renew_status": True,
+            },
+        }
+    )
+    db.get_item = AsyncMock(return_value=None)  # no existing record
+    saved: dict = {}
+    db.put_item = AsyncMock(side_effect=lambda table, item: saved.update(item=item))
+    setattr(svc, "_update_user_subscription_status", AsyncMock())
+    setattr(svc, "_log_subscription_event", AsyncMock())
+
+    result = await svc.restore_user_purchases("u1", "ios", ["receipt-blob"])
+
+    assert result["success"] is True
+    assert result["restored_count"] == 1  # no KeyError, sub actually restored
+    item = saved["item"]
+    assert item["price_usd"] == 9.99  # milliunits divided
+    assert item["purchase_date"].endswith("Z")  # *_ms -> ISO
+    assert item["expiry_date"].endswith("Z")
+    assert item["subscription_id"] == "3000-orig"
