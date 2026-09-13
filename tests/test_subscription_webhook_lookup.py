@@ -68,3 +68,60 @@ async def test_falls_back_to_transaction_id_when_no_original():
     svc, captured = _service_with_capture()
     await svc._handle_subscription_expired({"transactionId": "1000000000000001"})
     assert captured[0]["expression_values"][":sid"] == "1000000000000001"
+
+
+@pytest.mark.asyncio
+async def test_renewal_clears_is_in_trial_on_paid_conversion():
+    """When a trial converts to paid, DID_RENEW must reset is_in_trial=False so
+    the user stops being classified as 'trial'. Regression: the handler only
+    extended expiry + set ACTIVE, leaving the record's is_in_trial=True, so
+    _update_user_subscription_status kept the profile at status 'trial'."""
+    from src.app.models.subscription import (
+        BillingPeriod,
+        Platform,
+        Subscription,
+        SubscriptionStatus,
+        SubscriptionType,
+    )
+
+    stored = Subscription(
+        user_id="u1",
+        subscription_id="1000000000000001",
+        product_id="com.themirrorcollective.mirror.monthly",
+        subscription_type=SubscriptionType.MIRROR_CORE,
+        platform=Platform.IOS,
+        status=SubscriptionStatus.ACTIVE,
+        billing_period=BillingPeriod.MONTHLY,
+        price_usd=0.0,
+        purchase_date="2026-09-13T00:00:00Z",
+        expiry_date="2026-09-27T00:00:00Z",
+        auto_renew_enabled=True,
+        receipt_data="r",
+        is_in_trial=True,  # started as a trial
+    )
+
+    db = AsyncMock()
+    db.query_items = AsyncMock(return_value=[stored.to_dynamodb_item()])
+    saved: dict = {}
+    db.put_item = AsyncMock(side_effect=lambda table, item: saved.update(item=item))
+    svc = SubscriptionService(db)
+    updated: dict = {}
+    setattr(
+        svc,
+        "_update_user_subscription_status",
+        AsyncMock(side_effect=lambda uid, sub: updated.update(sub=sub)),
+    )
+
+    # Paid renewal: no offerType (a genuine paid period, not intro/trial).
+    await svc._handle_subscription_renewal(
+        {
+            "originalTransactionId": "1000000000000001",
+            "transactionId": "2000000000000009",
+            "expiresDate": 1793600000000,
+        }
+    )
+
+    # Record no longer flags trial (the serializer omits the key when False).
+    assert saved["item"].get("is_in_trial", False) is False
+    # And the object handed to the profile updater is paid, so status → active.
+    assert updated["sub"].is_in_trial is False
