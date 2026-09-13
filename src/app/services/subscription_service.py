@@ -152,6 +152,14 @@ class SubscriptionService:
             expiry_date_iso = _ms_to_iso(transaction_data.get("expires_date_ms"))
             raw_price = transaction_data.get("price")
             price_usd = round(float(raw_price) / 1000.0, 2) if raw_price else 0.0
+            # A StoreKit introductory (free-trial) or intro-offer transaction is
+            # a real trial — reflect it so the user is shown "trial" (not paid
+            # "active") and can still convert. The parser derives these from the
+            # transaction's offerType (see receipt_validator.parse_apple_transaction).
+            is_trial = bool(
+                transaction_data.get("is_trial_period")
+                or transaction_data.get("is_in_intro_offer_period")
+            )
 
             # 4. Create or update subscription record
             subscription = Subscription(
@@ -170,7 +178,7 @@ class SubscriptionService:
                 expiry_date=expiry_date_iso,
                 auto_renew_enabled=transaction_data.get("auto_renew_status", True),
                 receipt_data=receipt_data,
-                is_in_trial=False,  # Paid subscription, not platform trial
+                is_in_trial=is_trial,
             )
 
             # 5. Save to DynamoDB
@@ -339,47 +347,75 @@ class SubscriptionService:
                             },
                         )
 
-                        if not existing:
-                            # Create subscription record
-                            product_id = transaction_data["product_id"]
-                            subscription_type, billing_period = self._parse_product_id(
-                                product_id
-                            )
+                        # Normalise modern App Store Server API fields exactly
+                        # like the purchase path: the parser emits epoch-millis
+                        # (*_ms) dates and a milliunits price — NOT
+                        # purchase_date/expiry_date/price. Reading the latter
+                        # keys raised KeyError, which was swallowed, so restore
+                        # always returned 0 and a paying user reinstalling could
+                        # never regain access.
+                        product_id = transaction_data["product_id"]
+                        subscription_type, billing_period = self._parse_product_id(
+                            product_id
+                        )
+                        raw_price = transaction_data.get("price")
+                        price_usd = (
+                            round(float(raw_price) / 1000.0, 2) if raw_price else 0.0
+                        )
+                        is_trial = bool(
+                            transaction_data.get("is_trial_period")
+                            or transaction_data.get("is_in_intro_offer_period")
+                        )
 
-                            subscription = Subscription(
-                                user_id=user_id,
-                                subscription_id=transaction_data.get(
-                                    "original_transaction_id"
-                                )
-                                or transaction_data["transaction_id"],
-                                product_id=product_id,
-                                subscription_type=subscription_type,
-                                platform=(
-                                    Platform.IOS
-                                    if platform.lower() == "ios"
-                                    else Platform.ANDROID
-                                ),
-                                status=SubscriptionStatus.ACTIVE,
-                                billing_period=billing_period,
-                                price_usd=transaction_data["price"],
-                                purchase_date=transaction_data["purchase_date"],
-                                expiry_date=transaction_data["expiry_date"],
-                                auto_renew_enabled=transaction_data.get(
-                                    "auto_renew_enabled", True
-                                ),
-                                receipt_data=receipt_data,
+                        subscription = Subscription(
+                            user_id=user_id,
+                            subscription_id=transaction_data.get(
+                                "original_transaction_id"
                             )
+                            or transaction_data["transaction_id"],
+                            product_id=product_id,
+                            subscription_type=subscription_type,
+                            platform=(
+                                Platform.IOS
+                                if platform.lower() == "ios"
+                                else Platform.ANDROID
+                            ),
+                            status=SubscriptionStatus.ACTIVE,
+                            billing_period=billing_period,
+                            price_usd=price_usd,
+                            purchase_date=_ms_to_iso(
+                                transaction_data.get("purchase_date_ms")
+                            ),
+                            expiry_date=_ms_to_iso(
+                                transaction_data.get("expires_date_ms")
+                            ),
+                            auto_renew_enabled=transaction_data.get(
+                                "auto_renew_status", True
+                            ),
+                            receipt_data=receipt_data,
+                            is_in_trial=is_trial,
+                        )
 
-                            await self.dynamodb_service.put_item(
-                                self.subscriptions_table,
-                                subscription.to_dynamodb_item(),
-                            )
-                            restored_subscriptions.append(subscription.to_dict())
+                        # Upsert regardless of `existing`: a returning user often
+                        # already has a record (e.g. previously marked expired),
+                        # and restore must refresh its status/expiry from the
+                        # fresh validation rather than skip it.
+                        logger.info(
+                            "Restore %s subscription %s for user %s",
+                            "updating" if existing else "creating",
+                            subscription.subscription_id,
+                            user_id,
+                        )
+                        await self.dynamodb_service.put_item(
+                            self.subscriptions_table,
+                            subscription.to_dynamodb_item(),
+                        )
+                        restored_subscriptions.append(subscription.to_dict())
 
-                            # Update user profile
-                            await self._update_user_subscription_status(
-                                user_id, subscription
-                            )
+                        # Update user profile
+                        await self._update_user_subscription_status(
+                            user_id, subscription
+                        )
 
                 except Exception as e:
                     logger.error(f"Error restoring receipt: {e}")
@@ -673,8 +709,15 @@ class SubscriptionService:
             if not user_profile:
                 raise ValueError("User not found")
 
-            # Update subscription fields
-            user_profile.subscription_status = "active"
+            # Update subscription fields. A trial/intro-offer subscription is
+            # surfaced as "trial" (client shows the free-trial state and still
+            # lets the user convert) rather than paid "active". Once the user
+            # has consumed a trial, record it.
+            if getattr(subscription, "is_in_trial", False):
+                user_profile.subscription_status = "trial"
+                user_profile.has_used_trial = True
+            else:
+                user_profile.subscription_status = "active"
 
             # Update tier and quota based on subscription type
             if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
