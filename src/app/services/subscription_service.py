@@ -488,6 +488,29 @@ class SubscriptionService:
 
             # Handle different notification types
             if transaction_info:
+                # Idempotency + ordering guard. Apple retries notifications and
+                # does NOT guarantee order, so a replayed REFUND or a stale
+                # EXPIRED arriving after a newer DID_RENEW could otherwise
+                # clobber current state. Skip anything we've already applied or
+                # that is older than the last event applied to this subscription.
+                notification_uuid = decoded_payload.get("notificationUUID")
+                signed_date = decoded_payload.get("signedDate")
+                original_txid = transaction_info.get(
+                    "originalTransactionId"
+                ) or transaction_info.get("transactionId")
+
+                if original_txid and await self._apple_notification_already_applied(
+                    original_txid, notification_uuid, signed_date
+                ):
+                    logger.info(
+                        "Ignoring stale/duplicate Apple notification "
+                        f"{notification_uuid} ({notification_type})"
+                    )
+                    return {
+                        "success": True,
+                        "message": "Ignored (stale or duplicate)",
+                    }
+
                 if notification_type == "DID_RENEW":
                     await self._handle_subscription_renewal(transaction_info)
                 elif notification_type == "DID_FAIL_TO_RENEW":
@@ -499,11 +522,83 @@ class SubscriptionService:
                 elif notification_type == "DID_CHANGE_RENEWAL_STATUS":
                     await self._handle_renewal_status_change(transaction_info)
 
+                # Record this event as applied so a later replay / out-of-order
+                # delivery is ignored by the guard above.
+                if original_txid:
+                    await self._record_apple_notification_applied(
+                        original_txid, notification_uuid, signed_date
+                    )
+
             return {"success": True, "message": "Webhook processed"}
 
         except Exception as e:
             logger.error(f"Error processing Apple webhook: {e}")
             raise InternalServerError(f"Failed to process webhook: {str(e)}")
+
+    async def _load_subscription_by_original_txid(
+        self, original_txid: str
+    ) -> Optional["Subscription"]:
+        """Load a subscription by its stable originalTransactionId (the key
+        records are stored under), or None if not found."""
+        subs = await self.dynamodb_service.query_items(
+            table_name=self.subscriptions_table,
+            key_condition="subscription_id = :sid",
+            expression_values={":sid": original_txid},
+            index_name="subscription-id-index",
+        )
+        return Subscription.from_dynamodb_item(subs[0]) if subs else None
+
+    async def _apple_notification_already_applied(
+        self,
+        original_txid: str,
+        notification_uuid: Optional[str],
+        signed_date: Optional[Any],
+    ) -> bool:
+        """True when this Apple notification is a replay or is older than the
+        last event already applied to the subscription (out-of-order). A missing
+        subscription (first event) or any read error → False (process it)."""
+        try:
+            sub = await self._load_subscription_by_original_txid(original_txid)
+        except Exception as e:  # noqa: BLE001 — never drop a real event on a read blip
+            logger.warning(f"Idempotency lookup failed for {original_txid}: {e}")
+            return False
+        if not sub:
+            return False
+        # Exact replay of a notification we already processed.
+        if notification_uuid and (
+            getattr(sub, "last_notification_uuid", None) == notification_uuid
+        ):
+            return True
+        # Out-of-order / stale: not newer than what we've already applied.
+        last = getattr(sub, "last_notification_signed_date_ms", None)
+        if last and signed_date and int(signed_date) <= int(last):
+            return True
+        return False
+
+    async def _record_apple_notification_applied(
+        self,
+        original_txid: str,
+        notification_uuid: Optional[str],
+        signed_date: Optional[Any],
+    ) -> None:
+        """Persist the last applied notification UUID + signedDate on the
+        subscription so the guard can dedupe/reorder subsequent deliveries.
+        Reloads first so it layers on top of the handler's just-saved state."""
+        try:
+            sub = await self._load_subscription_by_original_txid(original_txid)
+            if not sub:
+                return
+            if notification_uuid:
+                sub.last_notification_uuid = notification_uuid
+            if signed_date:
+                sub.last_notification_signed_date_ms = int(signed_date)
+            await self.dynamodb_service.put_item(
+                self.subscriptions_table, sub.to_dynamodb_item()
+            )
+        except Exception as e:  # noqa: BLE001 — bookkeeping must not fail the webhook
+            logger.warning(
+                f"Failed to record notification state for {original_txid}: {e}"
+            )
 
     async def handle_google_webhook(self, notification_payload: Dict) -> Dict[str, Any]:
         """
