@@ -249,3 +249,84 @@ def real_guard_client_module_echo_service():
     from src.app.api import echo_routes
 
     return echo_routes.echo_service
+
+
+# ── Paid-subscription expiry gate (fail-open) ───────────────────────────────
+
+
+def _paid_profile(sub_id="sub-1"):
+    return SimpleNamespace(
+        subscription_tier="core",
+        subscription_status="active",
+        trial_expires_at=None,
+        primary_subscription_id=sub_id,
+        user_id="u1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_guard_blocks_paid_tier_when_subscription_expired():
+    """A paid user whose subscription expiry is in the PAST is denied mutations
+    even if a missed/late EXPIRED webhook left the profile tier at 'core'."""
+    profile = _paid_profile()
+    with (
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=profile)
+        ),
+        patch.object(
+            ent._dynamodb,
+            "get_item",
+            AsyncMock(return_value={"expiry_date": _iso(timedelta(days=-1))}),
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "subscription_required"
+
+
+@pytest.mark.asyncio
+async def test_guard_allows_paid_tier_when_subscription_current():
+    profile = _paid_profile()
+    with (
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=profile)
+        ),
+        patch.object(
+            ent._dynamodb,
+            "get_item",
+            AsyncMock(return_value={"expiry_date": _iso(timedelta(days=20))}),
+        ),
+    ):
+        result = await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+    assert result == {"id": "u1"}
+
+
+@pytest.mark.asyncio
+async def test_guard_fails_open_when_subscription_record_missing():
+    """No record / unpopulated expiry → allow (never lock out a real
+    subscriber over a transient read or a missing field)."""
+    profile = _paid_profile()
+    with (
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=profile)
+        ),
+        patch.object(ent._dynamodb, "get_item", AsyncMock(return_value=None)),
+    ):
+        result = await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+    assert result == {"id": "u1"}
+
+
+@pytest.mark.asyncio
+async def test_guard_fails_open_when_subscription_read_errors():
+    profile = _paid_profile()
+    with (
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=profile)
+        ),
+        patch.object(
+            ent._dynamodb, "get_item", AsyncMock(side_effect=Exception("dynamo down"))
+        ),
+    ):
+        result = await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+    assert result == {"id": "u1"}

@@ -11,6 +11,7 @@ client can navigate to the paywall instead of showing a generic error. Over-
 quota uploads return 507 with ``code`` ``"quota_exceeded"`` / ``"no_quota"``.
 """
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -25,6 +26,12 @@ from .security import get_current_user
 # "core_plus" are the internal tier ids; the product is displayed as "Mirror
 # Basic".
 _ENTITLED_TIERS = frozenset({"trial", "core", "core_plus"})
+
+# Paid tiers whose access must also be gated on the subscription's expiry (not
+# just the tier). "trial" is handled separately via trial_expires_at.
+_PAID_TIERS = frozenset({"core", "core_plus"})
+
+_SUBSCRIPTIONS_TABLE = os.getenv("DYNAMODB_SUBSCRIPTIONS_TABLE", "subscriptions")
 
 # Non-mutating methods stay open so users keep read access to an existing vault.
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -63,6 +70,40 @@ def _trial_has_lapsed(expires_at: Optional[str]) -> bool:
         end = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return True
+    return end <= datetime.now(timezone.utc)
+
+
+async def _paid_subscription_lapsed(profile: Any) -> bool:
+    """True only when a paid subscription can be PROVEN expired.
+
+    Loads the user's primary subscription and returns True iff it carries an
+    ``expiry_date`` in the past. A missing record, an absent expiry, or any read
+    error returns False — we fail OPEN so a real subscriber is never wrongly
+    locked out over a transient read or an unpopulated field. The Apple
+    ``EXPIRED``/``REFUND`` webhook (and a reconciliation job) remain the
+    authoritative downgrade; this is a read-time safety net so a single missed
+    or reordered webhook can't grant indefinite access after a lapse.
+    """
+    sub_id = getattr(profile, "primary_subscription_id", None)
+    user_id = getattr(profile, "user_id", None)
+    if not sub_id or not user_id:
+        return False
+    try:
+        item = await _dynamodb.get_item(
+            _SUBSCRIPTIONS_TABLE,
+            {"user_id": user_id, "subscription_id": sub_id},
+        )
+    except Exception:  # noqa: BLE001 — read failure must not lock out a user
+        return False
+    if not item:
+        return False
+    expiry = item.get("expiry_date")
+    if not expiry:
+        return False
+    try:
+        end = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return False
     return end <= datetime.now(timezone.utc)
 
 
@@ -118,7 +159,17 @@ async def require_echo_vault_access(
     if await _is_account_level_upload(request):
         return current_user
 
-    if not _profile_is_entitled(await _dynamodb.get_user_profile(current_user["id"])):
+    profile = await _dynamodb.get_user_profile(current_user["id"])
+    if not _profile_is_entitled(profile):
+        raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
+
+    # Paid tiers were entitled purely by tier — a lapsed/refunded paid user kept
+    # access whenever the EXPIRED webhook was missed/delayed/reordered. Also gate
+    # on a proven-expired subscription (fail open on any doubt). This likewise
+    # catches a StoreKit trial whose window ended without converting (tier stays
+    # "core", so the trial_expires_at branch above doesn't apply).
+    tier = getattr(profile, "subscription_tier", None) if profile else None
+    if tier in _PAID_TIERS and await _paid_subscription_lapsed(profile):
         raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
 
     return current_user

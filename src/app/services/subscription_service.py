@@ -853,6 +853,13 @@ class SubscriptionService:
 
             # Update status to active
             subscription.status = SubscriptionStatus.ACTIVE
+            # A paid renewal is no longer a trial/intro period. The stored record
+            # keeps is_in_trial=True from the original intro purchase, so without
+            # resetting it here the user stays classified as "trial" after
+            # converting to paid (client keeps showing the trial/subscribe copy).
+            # Derive from the renewal transaction's offerType (1=intro/free-trial,
+            # 2/3=intro); a normal paid renewal has no offerType.
+            subscription.is_in_trial = transaction_info.get("offerType") in (1, 2, 3)
             subscription.add_event("renewed", transaction_info)
 
             # Save updated subscription
