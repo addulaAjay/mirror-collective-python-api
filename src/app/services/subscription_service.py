@@ -660,17 +660,34 @@ class SubscriptionService:
     ) -> None:
         """Persist the last applied notification UUID + signedDate on the
         subscription so the guard can dedupe/reorder subsequent deliveries.
-        Reloads first so it layers on top of the handler's just-saved state."""
+
+        Uses a TARGETED update_item (SET only the two tracking fields) rather
+        than load-then-put. The subscription is loaded via the eventually-
+        consistent ``subscription-id-index`` GSI, so a full re-write here would
+        clobber the handler's just-applied change (e.g. a cancel flipping
+        auto_renew_enabled) with a stale pre-write copy. update_item touches
+        only these fields and leaves the handler's write intact."""
+        if not notification_uuid and not signed_date:
+            return
         try:
             sub = await self._load_subscription_by_original_txid(original_txid)
             if not sub:
                 return
+            set_parts = []
+            values: Dict[str, Any] = {}
             if notification_uuid:
-                sub.last_notification_uuid = notification_uuid
+                set_parts.append("last_notification_uuid = :u")
+                values[":u"] = notification_uuid
             if signed_date:
-                sub.last_notification_signed_date_ms = int(signed_date)
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, sub.to_dynamodb_item()
+                set_parts.append("last_notification_signed_date_ms = :d")
+                values[":d"] = int(signed_date)
+            if not set_parts:
+                return
+            await self.dynamodb_service.update_item(
+                self.subscriptions_table,
+                {"user_id": sub.user_id, "subscription_id": sub.subscription_id},
+                "SET " + ", ".join(set_parts),
+                values,
             )
         except Exception as e:  # noqa: BLE001 — bookkeeping must not fail the webhook
             logger.warning(
