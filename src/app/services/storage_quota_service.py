@@ -98,17 +98,9 @@ class StorageQuotaService:
             if not user_profile:
                 raise ValueError(f"User not found: {user_id}")
 
-            # Calculate new quota based on subscription tier
-            base_quota = 0.0
-
-            if user_profile.subscription_tier in ["trial", "core", "core_plus"]:
-                base_quota = 50.0  # Mirror Core includes 50GB
-
-            if user_profile.storage_add_on_active:
-                base_quota += 100.0  # Storage add-on adds 100GB
-
-            # Update quota
-            user_profile.echo_vault_quota_gb = base_quota
+            # Single source of truth for tier + quota, derived from the
+            # subscription flags (idempotent — see UserProfile).
+            user_profile.recompute_entitlement()
 
             # Recalculate current usage
             current_usage = await self.calculate_user_storage_usage(user_id)
@@ -117,7 +109,8 @@ class StorageQuotaService:
             await self.dynamodb.update_user_profile(user_profile)
 
             logger.info(
-                f"Updated quota for user {user_id}: {base_quota}GB (used: {current_usage}GB)"
+                f"Updated quota for user {user_id}: "
+                f"{user_profile.echo_vault_quota_gb}GB (used: {current_usage}GB)"
             )
             return True
 

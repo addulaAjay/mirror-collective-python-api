@@ -880,9 +880,9 @@ class SubscriptionService:
         Returns:
             Tuple of (SubscriptionType, BillingPeriod)
         """
-        if "core" in product_id.lower():
-            subscription_type = SubscriptionType.MIRROR_CORE
-        elif "storage" in product_id.lower():
+        # Storage add-on IDs contain "storage" (e.g. ...mirror.storage.monthly);
+        # every other product is the Core plan (...mirror.monthly / .yearly).
+        if "storage" in product_id.lower():
             subscription_type = SubscriptionType.STORAGE_ADD_ON
         else:
             subscription_type = SubscriptionType.MIRROR_CORE
@@ -962,34 +962,24 @@ class SubscriptionService:
             # surfaced as "trial" (client shows the free-trial state and still
             # lets the user convert) rather than paid "active". Once the user
             # has consumed a trial, record it.
-            if getattr(subscription, "is_in_trial", False):
-                user_profile.subscription_status = "trial"
-                user_profile.has_used_trial = True
-            else:
-                user_profile.subscription_status = "active"
-
-            # Update tier and quota based on subscription type
-            if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
-                user_profile.subscription_tier = "core"
+            sub_type = subscription.subscription_type
+            if sub_type == SubscriptionType.MIRROR_CORE:
+                # subscription_status tracks the CORE plan (trial vs paid).
+                if getattr(subscription, "is_in_trial", False):
+                    user_profile.subscription_status = "trial"
+                    user_profile.has_used_trial = True
+                else:
+                    user_profile.subscription_status = "active"
                 user_profile.primary_subscription_id = subscription.subscription_id
-                base_quota = 50.0  # Mirror Core gives 50 GB
-            elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
+            elif sub_type == SubscriptionType.STORAGE_ADD_ON:
+                # The add-on is an OVERLAY — it never changes the Core status.
                 user_profile.storage_add_on_active = True
                 user_profile.storage_subscription_id = subscription.subscription_id
-                base_quota = user_profile.echo_vault_quota_gb + 100.0  # Add 100 GB
-            else:
-                base_quota = user_profile.echo_vault_quota_gb
 
-            # Calculate total quota
-            total_quota = base_quota
-            if (
-                user_profile.subscription_tier == "core"
-                and user_profile.storage_add_on_active
-            ):
-                user_profile.subscription_tier = "core_plus"
-                total_quota = 150.0  # 50 GB (core) + 100 GB (storage)
-
-            user_profile.echo_vault_quota_gb = total_quota
+            # Derive tier + quota from the flags (idempotent — never increments;
+            # see UserProfile.recompute_entitlement). Fixes the previous
+            # +100-per-renewal double-count.
+            user_profile.recompute_entitlement()
             user_profile.last_subscription_check = (
                 datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             )
@@ -998,7 +988,9 @@ class SubscriptionService:
             await self.dynamodb_service.update_user_profile(user_profile)
 
             logger.info(
-                f"Updated subscription status for user {user_id}: tier={user_profile.subscription_tier}, quota={total_quota}GB"
+                f"Updated subscription status for user {user_id}: "
+                f"tier={user_profile.subscription_tier}, "
+                f"quota={user_profile.echo_vault_quota_gb}GB"
             )
 
         except Exception as e:
@@ -1133,34 +1125,55 @@ class SubscriptionService:
         return True
 
     async def _revoke_profile_access(self, subscription: "Subscription") -> None:
-        """Revoke Echo Vault access on the user profile when a subscription ends
-        (expired / refunded) and the user has no OTHER active sub. Shared by the
-        expiry and refund handlers."""
+        """Apply the profile-side effect of a subscription ENDING (expired /
+        refunded). Core and the storage add-on end differently:
+
+        - STORAGE add-on ends -> drop only the add-on overlay
+          (storage_add_on_active=False, storage_subscription_id=None); Core
+          access is kept. Quota falls 150 -> 50.
+        - CORE ends (and the user has no OTHER active Core) -> clear Core AND the
+          add-on: the add-on requires Core, so ending Core ends the add-on too.
+          Access is revoked (quota -> 0).
+
+        tier + quota are always re-derived via recompute_entitlement()."""
         user_profile = await self.dynamodb_service.get_user_profile(
             subscription.user_id
         )
         if not user_profile:
             return
-        user_subscriptions = await self.dynamodb_service.query_items(
-            table_name=self.subscriptions_table,
-            key_condition="user_id = :uid",
-            expression_values={":uid": subscription.user_id},
-        )
-        has_other_active = any(
-            sub.get("status") in ["active", "trial"]
-            for sub in user_subscriptions
-            if sub.get("subscription_id") != subscription.subscription_id
-        )
-        if has_other_active:
-            return
-        user_profile.subscription_status = "expired"
-        user_profile.subscription_tier = "free"
-        user_profile.echo_vault_quota_gb = 0.0
-        if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
+
+        if subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
+            # Only clear if THIS is the tracked add-on (ignore a stale/older row).
+            if user_profile.storage_subscription_id in (
+                None,
+                subscription.subscription_id,
+            ):
+                user_profile.storage_add_on_active = False
+                user_profile.storage_subscription_id = None
+        else:
+            # Core (or unknown type) is ending. Keep access only if another Core
+            # subscription is still active — a still-active add-on does NOT keep
+            # Core access.
+            user_subscriptions = await self.dynamodb_service.query_items(
+                table_name=self.subscriptions_table,
+                key_condition="user_id = :uid",
+                expression_values={":uid": subscription.user_id},
+            )
+            has_other_active_core = any(
+                sub.get("status") in ("active", "trial")
+                and sub.get("subscription_type") == SubscriptionType.MIRROR_CORE.value
+                for sub in user_subscriptions
+                if sub.get("subscription_id") != subscription.subscription_id
+            )
+            if has_other_active_core:
+                return
+            user_profile.subscription_status = "expired"
             user_profile.primary_subscription_id = None
-        elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
-            user_profile.storage_subscription_id = None
+            # The add-on requires Core — ending Core ends the add-on too.
             user_profile.storage_add_on_active = False
+            user_profile.storage_subscription_id = None
+
+        user_profile.recompute_entitlement()
         await self.dynamodb_service.update_user_profile(user_profile)
 
     async def _handle_subscription_renewal(self, transaction_info: Dict) -> None:
