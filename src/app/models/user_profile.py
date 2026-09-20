@@ -8,6 +8,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+# Echo Vault quota (GB). Single place the amounts are defined; the tier/quota
+# math lives in UserProfile.recompute_entitlement().
+CORE_QUOTA_GB = 50.0  # Mirror Core base
+STORAGE_ADD_ON_QUOTA_GB = 100.0  # Storage add-on, on TOP of Core (total 150)
+
 
 class UserStatus(Enum):
     """User account status synchronized with Cognito"""
@@ -95,6 +100,37 @@ class UserProfile:
         if self.created_at is None:
             self.created_at = current_time
         self.updated_at = current_time
+
+    def recompute_entitlement(self) -> None:
+        """SINGLE SOURCE OF TRUTH for subscription_tier + echo_vault_quota_gb.
+
+        Derives both from the subscription flags (idempotent — safe to call on
+        every purchase/renewal/expiry without double-counting):
+          - no active Core           -> free,      0 GB
+          - Core (paid/trial)        -> core/trial, CORE_QUOTA_GB
+          - Core + storage add-on    -> core_plus,  CORE_QUOTA_GB + STORAGE_ADD_ON_QUOTA_GB
+
+        The storage add-on REQUIRES an active Core plan — it only adds quota (and
+        bumps core -> core_plus) on top of Core. A dangling add-on with no Core
+        grants nothing.
+        """
+        # "Has Core" is driven by subscription_status (active/trial), NOT the
+        # primary_subscription_id reference — so EXISTING users whose reference
+        # field predates this feature are never wrongly downgraded to free.
+        # (The add-on only sets its own flag; it never sets active/trial, so a
+        # dangling add-on with no Core still reads as no-Core here.)
+        core_active = self.subscription_status in ("active", "trial")
+        if not core_active:
+            self.subscription_tier = "free"
+            self.echo_vault_quota_gb = 0.0
+            return
+        quota = CORE_QUOTA_GB
+        tier = "trial" if self.subscription_status == "trial" else "core"
+        if self.storage_add_on_active:
+            quota += STORAGE_ADD_ON_QUOTA_GB
+            tier = "core_plus"
+        self.subscription_tier = tier
+        self.echo_vault_quota_gb = quota
 
     @property
     def full_name(self) -> str:
