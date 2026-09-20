@@ -117,7 +117,9 @@ async def test_newer_notification_is_processed_and_recorded():
 
     assert result["message"] == "Webhook processed"
     handler.assert_awaited_once()
-    svc.dynamodb_service.put_item.assert_awaited()  # signedDate recorded
+    # Recording is now a targeted update_item (SET only the tracking fields) so
+    # it can't clobber the handler's just-applied change with a stale GSI read.
+    svc.dynamodb_service.update_item.assert_awaited()  # signedDate recorded
 
 
 @pytest.mark.asyncio

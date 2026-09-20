@@ -124,3 +124,14 @@ async def test_webhook_merges_autorenew_from_renewal_info():
     assert result["success"] is True
     # autoRenewStatus from signedRenewalInfo reached the handler.
     assert captured.get("autoRenewStatus") == 0
+
+
+@pytest.mark.asyncio
+async def test_record_notification_uses_update_not_full_put():
+    """_record_apple_notification_applied must use a targeted update_item — a
+    full put_item would clobber a handler's just-applied change (e.g. a cancel)
+    with a stale GSI read."""
+    svc, _ = _service(_stored())
+    await svc._record_apple_notification_applied(OTID, "uuid-x", 123456)
+    svc.dynamodb_service.update_item.assert_awaited()
+    svc.dynamodb_service.put_item.assert_not_awaited()
