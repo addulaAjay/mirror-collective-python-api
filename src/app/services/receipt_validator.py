@@ -427,6 +427,9 @@ def _payload_to_dict(payload: Any) -> Dict[str, Any]:
         "in_app_ownership_type": "inAppOwnershipType",
         "is_trial_period": "isTrialPeriod",
         "auto_renew_status": "autoRenewStatus",
+        "auto_renew_product_id": "autoRenewProductId",
+        "expiration_intent": "expirationIntent",
+        "grace_period_expires_date": "gracePeriodExpiresDate",
     }
     for snake, camel in snake_to_camel.items():
         if snake in data and camel not in data:
@@ -447,6 +450,44 @@ def verify_apple_transaction_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
     expect. Raises ``JWSVerificationError`` on any failure (fail-closed).
     """
     return _verify_apple_jws(jws, sandbox=sandbox)
+
+
+def verify_apple_renewal_info_jws(jws: str, *, sandbox: bool) -> Dict[str, Any]:
+    """Verify a signedRenewalInfo JWS + return it as a dict.
+
+    Renewal info (where autoRenewStatus / autoRenewProductId / expirationIntent
+    live) uses a DIFFERENT SDK decoder than a transaction — passing it through
+    ``verify_and_decode_signed_transaction`` fails as INVALID. This uses
+    ``verify_and_decode_renewal_info``. Raises ``JWSVerificationError`` on any
+    failure; the caller decides whether that's fatal (the outer notification is
+    already signature-verified, so a renewal decode hiccup need not drop it).
+    """
+    if not jws or not isinstance(jws, str):
+        raise JWSVerificationError("Empty or non-string JWS")
+    try:
+        from appstoreserverlibrary.signed_data_verifier import VerificationException
+    except ImportError as e:
+        raise JWSVerificationError(
+            "app-store-server-library not installed; JWS verification "
+            "cannot proceed."
+        ) from e
+    verifier = _get_apple_signed_data_verifier(sandbox=sandbox)
+    try:
+        payload = verifier.verify_and_decode_renewal_info(jws)
+    except VerificationException as e:
+        logger.warning(
+            f"Apple renewal-info JWS verification failed (sandbox={sandbox}): {e}"
+        )
+        raise JWSVerificationError(
+            f"Apple renewal-info verification failed: {e}"
+        ) from e
+    except Exception as e:  # noqa: BLE001 - defensively fail closed
+        logger.error(
+            f"Unexpected error during Apple renewal-info verification "
+            f"(sandbox={sandbox}): {e}"
+        )
+        raise JWSVerificationError(f"Renewal-info verification error: {e}") from e
+    return _payload_to_dict(payload)
 
 
 def verify_and_decode_apple_notification(

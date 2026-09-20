@@ -112,7 +112,11 @@ async def test_webhook_merges_autorenew_from_renewal_info():
         ),
         patch(
             "src.app.services.subscription_service.verify_apple_transaction_jws",
-            side_effect=[tx, renewal],  # 1st: transaction, 2nd: renewal
+            return_value=tx,  # signedTransactionInfo
+        ),
+        patch(
+            "src.app.services.subscription_service.verify_apple_renewal_info_jws",
+            return_value=renewal,  # signedRenewalInfo (correct decoder)
         ),
     ):
         result = await svc.handle_apple_webhook({"signedPayload": "x"})
