@@ -44,39 +44,56 @@ def _stored(auto_renew=True):
 def _service(stored):
     db = AsyncMock()
     db.query_items = AsyncMock(return_value=[stored.to_dynamodb_item()])
-    saved: dict = {}
-
-    async def _put(_table, item):
-        # The handler also writes a SubscriptionEvent row; capture only the
-        # subscription record (the one carrying auto_renew_enabled).
-        if "auto_renew_enabled" in item:
-            saved["item"] = item
-
-    db.put_item = AsyncMock(side_effect=_put)
     db.get_item = AsyncMock(return_value=None)
+    db.update_item = AsyncMock(return_value=True)  # conditional write applied
+    db.put_item = AsyncMock()
     svc = SubscriptionService(db)
-    return svc, saved
+    return svc, db
+
+
+def _update_values(db) -> dict:
+    """ExpressionAttributeValues from the last update_item call (positional #4)."""
+    call = db.update_item.await_args
+    if call is None:
+        return {}
+    if len(call.args) > 3:
+        return call.args[3]
+    return call.kwargs.get("expression_values", {})
 
 
 # ── Fix 2: the handler applies auto-renew OFF (0), instead of dropping it ──────
 @pytest.mark.asyncio
 async def test_handler_applies_auto_renew_off():
-    """autoRenewStatus=0 (cancel) must set auto_renew_enabled=False and persist.
-    Regression guards `0 or ...` discarding the value."""
-    svc, saved = _service(_stored(auto_renew=True))
+    """autoRenewStatus=0 (cancel) sets auto_renew_enabled=False via a targeted,
+    ordered update_item (never a full put_item). Guards `0 or ...` too."""
+    svc, db = _service(_stored(auto_renew=True))
     await svc._handle_renewal_status_change(
-        {"originalTransactionId": OTID, "autoRenewStatus": 0}
+        {"originalTransactionId": OTID, "autoRenewStatus": 0, "signedDate": 1000}
     )
-    assert saved["item"]["auto_renew_enabled"] is False
+    assert _update_values(db)[":ar"] is False
 
 
 @pytest.mark.asyncio
 async def test_handler_applies_auto_renew_on():
-    svc, saved = _service(_stored(auto_renew=False))
+    svc, db = _service(_stored(auto_renew=False))
     await svc._handle_renewal_status_change(
-        {"originalTransactionId": OTID, "autoRenewStatus": 1}
+        {"originalTransactionId": OTID, "autoRenewStatus": 1, "signedDate": 1000}
     )
-    assert saved["item"]["auto_renew_enabled"] is True
+    assert _update_values(db)[":ar"] is True
+
+
+@pytest.mark.asyncio
+async def test_handler_orders_by_signed_date():
+    """The write is conditional on signedDate so a stale/out-of-order event
+    can't overwrite a newer one (Apple retries + reorders notifications)."""
+    svc, db = _service(_stored(auto_renew=True))
+    await svc._handle_renewal_status_change(
+        {"originalTransactionId": OTID, "autoRenewStatus": 0, "signedDate": 9999}
+    )
+    call = db.update_item.await_args
+    cond = call.kwargs.get("condition_expression", "")
+    assert "last_notification_signed_date_ms" in cond  # ordered write
+    assert _update_values(db)[":sd"] == 9999
 
 
 # ── Fix 1: the webhook decodes signedRenewalInfo and merges autoRenewStatus ────

@@ -1437,35 +1437,78 @@ class SubscriptionService:
                 )
                 return
 
-            # Update auto-renewal status
+            # Update auto-renewal status via an ATOMIC, ORDERED conditional write.
+            # Two DID_CHANGE_RENEWAL_STATUS events (e.g. ON then OFF) can arrive
+            # near-simultaneously in separate Lambda invocations. The old
+            # load-then-full-put let the OLDER event's write land last and win
+            # (and clobber other fields). Instead, SET only auto_renew_enabled +
+            # the ordering timestamp, applied ONLY when this event's signedDate
+            # is >= the last applied one — so the newest status always wins
+            # regardless of delivery order or GSI read staleness.
             if auto_renew_status is not None:
-                # Apple sends "1" for enabled, "0" for disabled
-                # Google sends boolean
+                # Apple sends 0/1 (int or IntEnum) or "0"/"1"; Google sends bool.
                 if isinstance(auto_renew_status, str):
-                    subscription.auto_renew_enabled = auto_renew_status == "1"
+                    new_auto = auto_renew_status == "1"
                 else:
-                    subscription.auto_renew_enabled = bool(auto_renew_status)
+                    new_auto = bool(auto_renew_status)
 
-                subscription.add_event("auto_renew_status_changed", transaction_info)
+                raw_signed = transaction_info.get("signedDate")
+                try:
+                    signed_ms = int(raw_signed) if raw_signed is not None else None
+                except (TypeError, ValueError):
+                    signed_ms = None
 
-                # Save updated subscription
-                await self.dynamodb_service.put_item(
-                    self.subscriptions_table, subscription.to_dynamodb_item()
-                )
+                key = {
+                    "user_id": subscription.user_id,
+                    "subscription_id": subscription.subscription_id,
+                }
+                if signed_ms is None:
+                    # No ordering timestamp — targeted (still non-clobbering)
+                    # unconditional set.
+                    applied = await self.dynamodb_service.update_item(
+                        self.subscriptions_table,
+                        key,
+                        "SET auto_renew_enabled = :ar",
+                        {":ar": new_auto},
+                    )
+                else:
+                    applied = await self.dynamodb_service.update_item(
+                        self.subscriptions_table,
+                        key,
+                        "SET auto_renew_enabled = :ar, "
+                        "last_notification_signed_date_ms = :sd",
+                        {":ar": new_auto, ":sd": signed_ms},
+                        condition_expression=(
+                            "attribute_not_exists(last_notification_signed_date_ms) "
+                            "OR last_notification_signed_date_ms <= :sd"
+                        ),
+                    )
 
-                # Log status change event
-                await self._log_subscription_event(
-                    user_id=subscription.user_id,
-                    subscription_id=subscription.subscription_id,
-                    event_type="auto_renew_status_changed",
-                    platform=subscription.platform.value,
-                    metadata=transaction_info,
-                )
-
-                logger.info(
-                    f"Successfully processed renewal status change for subscription {subscription.subscription_id}: "
-                    f"auto_renew={subscription.auto_renew_enabled}"
-                )
+                if applied:
+                    subscription.auto_renew_enabled = new_auto
+                    # Minimal, serializable metadata — NOT the raw transaction_info
+                    # (it carries SDK enum objects that DynamoDB can't store).
+                    await self._log_subscription_event(
+                        user_id=subscription.user_id,
+                        subscription_id=subscription.subscription_id,
+                        event_type="auto_renew_status_changed",
+                        platform=subscription.platform.value,
+                        metadata={
+                            "auto_renew_enabled": new_auto,
+                            "signed_date_ms": signed_ms,
+                        },
+                    )
+                    logger.info(
+                        "Successfully processed renewal status change for "
+                        f"subscription {subscription.subscription_id}: "
+                        f"auto_renew={new_auto}"
+                    )
+                else:
+                    logger.info(
+                        "Skipped stale/out-of-order renewal status change for "
+                        f"subscription {subscription.subscription_id} "
+                        f"(signedDate={signed_ms})"
+                    )
 
         except Exception as e:
             logger.error(f"Error handling renewal status change: {e}", exc_info=True)
