@@ -45,6 +45,32 @@ def _ms_to_iso(ms: Optional[Any]) -> Optional[str]:
     )
 
 
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO 8601 string to an aware datetime, or None on any failure."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _later_iso(a: Optional[str], b: Optional[str]) -> Optional[str]:
+    """Return whichever ISO 8601 timestamp is later.
+
+    Used so a subscription's stored ``expiry_date`` is only ever advanced, never
+    moved backward — a stale single-transaction lookup (the original period)
+    must not clobber a correct, later renewal expiry. None/unparseable operands
+    defer to the other value.
+    """
+    da, db = _parse_iso(a), _parse_iso(b)
+    if da is None:
+        return b
+    if db is None:
+        return a
+    return a if da >= db else b
+
+
 class SubscriptionService:
     """
     Service for managing subscription lifecycle:
@@ -161,11 +187,30 @@ class SubscriptionService:
                 or transaction_data.get("is_in_intro_offer_period")
             )
 
+            original_txn_id = (
+                transaction_data.get("original_transaction_id")
+                or transaction_data["transaction_id"]
+            )
+
+            # 3c. Resolve the *effective* expiry before writing the record.
+            # A ``/transactions/{id}`` lookup only reports the period of the id
+            # we were given, and clients resend the ORIGINAL transaction id — so
+            # ``expiry_date_iso`` here can be the first period, weeks in the past,
+            # for an actively-renewing subscription. Two guards fix that:
+            #   (#2) ask Apple for the latest expiry across all renewals, and
+            #   (#1) never let the stored expiry regress below what we already
+            #        recorded (a stale lookup must not move it backward).
+            expiry_date_iso = await self._effective_expiry_iso(
+                platform=platform,
+                user_id=user_id,
+                subscription_id=original_txn_id,
+                single_txn_expiry_iso=expiry_date_iso,
+            )
+
             # 4. Create or update subscription record
             subscription = Subscription(
                 user_id=user_id,
-                subscription_id=transaction_data.get("original_transaction_id")
-                or transaction_data["transaction_id"],
+                subscription_id=original_txn_id,
                 product_id=product_id,
                 subscription_type=subscription_type,
                 platform=(
@@ -788,6 +833,53 @@ class SubscriptionService:
             billing_period = BillingPeriod.MONTHLY
 
         return subscription_type, billing_period
+
+    async def _effective_expiry_iso(
+        self,
+        *,
+        platform: str,
+        user_id: str,
+        subscription_id: str,
+        single_txn_expiry_iso: Optional[str],
+    ) -> Optional[str]:
+        """Resolve the expiry to persist: the latest of the single-transaction
+        expiry, Apple's current subscription-status expiry (#2), and whatever we
+        already stored (#1 — never regress).
+
+        Every step is best-effort and falls back to the single-transaction value
+        on error, so a lookup or read failure can never fail the purchase or move
+        a valid expiry backward.
+        """
+        effective = single_txn_expiry_iso
+
+        # (#2) iOS only: fetch the newest verified expiry across all renewals and
+        # take whichever is later than the single-transaction value.
+        if platform.lower() == "ios" and subscription_id:
+            try:
+                latest_ms = await self.receipt_validator.get_apple_latest_expiry_ms(
+                    subscription_id
+                )
+                effective = _later_iso(effective, _ms_to_iso(latest_ms))
+            except Exception as e:  # noqa: BLE001 - best-effort; keep fallback
+                logger.warning(
+                    f"latest-expiry lookup failed for {subscription_id}: {e}"
+                )
+
+        # (#1) Never regress below the stored expiry — a stale write must not move
+        # a previously-recorded, later expiry backward.
+        try:
+            existing = await self.dynamodb_service.get_item(
+                self.subscriptions_table,
+                {"user_id": user_id, "subscription_id": subscription_id},
+            )
+            if existing:
+                effective = _later_iso(effective, existing.get("expiry_date"))
+        except Exception as e:  # noqa: BLE001 - best-effort; keep fallback
+            logger.warning(
+                f"expiry non-regression read failed for {subscription_id}: {e}"
+            )
+
+        return effective
 
     async def _update_user_subscription_status(
         self, user_id: str, subscription: Subscription

@@ -97,6 +97,13 @@ async def _paid_subscription_lapsed(profile: Any) -> bool:
         return False
     if not item:
         return False
+    # A record that still reads active AND is set to auto-renew is not a proven
+    # lapse — a past expiry_date on it means the stored field is stale (a missed/
+    # reordered renewal or a single-transaction lookup that reported the original
+    # period), not that the user stopped paying. The EXPIRED/REFUND webhook flips
+    # status when the subscription genuinely ends, and that's what should gate.
+    if item.get("status") == "active" and item.get("auto_renew_enabled"):
+        return False
     expiry = item.get("expiry_date")
     if not expiry:
         return False
