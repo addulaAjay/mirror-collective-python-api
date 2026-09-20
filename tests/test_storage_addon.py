@@ -174,3 +174,12 @@ def test_parse_product_id_storage_vs_core():
     assert svc._parse_product_id("com.themirrorcollective.mirror.yearly")[0] == (
         SubscriptionType.MIRROR_CORE
     )
+
+
+def test_existing_core_user_without_primary_id_not_downgraded():
+    """Backward-compat: an existing active-Core user whose primary_subscription_id
+    was never populated must stay core/50 — driven by status, not the id ref."""
+    p = _profile(subscription_status="active", primary_subscription_id=None)
+    p.recompute_entitlement()
+    assert p.subscription_tier == "core"
+    assert p.echo_vault_quota_gb == 50.0

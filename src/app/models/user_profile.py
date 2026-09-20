@@ -114,9 +114,12 @@ class UserProfile:
         bumps core -> core_plus) on top of Core. A dangling add-on with no Core
         grants nothing.
         """
-        core_active = bool(self.primary_subscription_id) and (
-            self.subscription_status in ("active", "trial")
-        )
+        # "Has Core" is driven by subscription_status (active/trial), NOT the
+        # primary_subscription_id reference — so EXISTING users whose reference
+        # field predates this feature are never wrongly downgraded to free.
+        # (The add-on only sets its own flag; it never sets active/trial, so a
+        # dangling add-on with no Core still reads as no-Core here.)
+        core_active = self.subscription_status in ("active", "trial")
         if not core_active:
             self.subscription_tier = "free"
             self.echo_vault_quota_gb = 0.0
