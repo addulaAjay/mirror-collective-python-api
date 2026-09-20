@@ -286,6 +286,62 @@ async def test_guard_blocks_paid_tier_when_subscription_expired():
 
 
 @pytest.mark.asyncio
+async def test_guard_allows_active_autorenew_despite_stale_past_expiry():
+    """An actively-renewing subscription must NOT be paywalled when its stored
+    ``expiry_date`` is stale (in the past).
+
+    Regression: a subscription record that still reads ``status=active`` +
+    ``auto_renew_enabled=True`` but whose ``expiry_date`` was never advanced past
+    the first period (a single-transaction lookup reporting the original period)
+    used to be treated as a proven lapse → 403 on a genuinely-active subscriber.
+    """
+    profile = _paid_profile()
+    with (
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=profile)
+        ),
+        patch.object(
+            ent._dynamodb,
+            "get_item",
+            AsyncMock(
+                return_value={
+                    "status": "active",
+                    "auto_renew_enabled": True,
+                    "expiry_date": _iso(timedelta(days=-40)),  # stale, weeks old
+                }
+            ),
+        ),
+    ):
+        result = await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+    assert result == {"id": "u1"}
+
+
+@pytest.mark.asyncio
+async def test_guard_blocks_cancelled_sub_past_expiry():
+    """A cancelled (auto_renew off) sub past its expiry is still a proven lapse."""
+    profile = _paid_profile()
+    with (
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=profile)
+        ),
+        patch.object(
+            ent._dynamodb,
+            "get_item",
+            AsyncMock(
+                return_value={
+                    "status": "active",
+                    "auto_renew_enabled": False,  # user cancelled
+                    "expiry_date": _iso(timedelta(days=-1)),
+                }
+            ),
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_guard_allows_paid_tier_when_subscription_current():
     profile = _paid_profile()
     with (

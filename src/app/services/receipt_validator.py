@@ -583,6 +583,42 @@ async def _apple_get_transaction(
         return await resp.json()
 
 
+async def _apple_get_subscription_statuses(
+    original_transaction_id: str, jwt_token: str, *, sandbox: bool
+) -> Optional[Dict]:
+    """GET /inApps/v1/subscriptions/{originalTransactionId} — Apple's "Get All
+    Subscription Statuses" endpoint.
+
+    Unlike ``/transactions/{id}`` (which returns only the single period of the
+    id you pass), this returns the current status + latest transaction for the
+    whole auto-renewable subscription, so the caller can read the *current*
+    renewal's expiry rather than the original period's.
+
+    Same fail-closed contract as ``_apple_get_transaction``: dict on 200,
+    None on 404, and AppleTransactionError on any other 4xx/5xx (so a sandbox
+    200 can never be reached by silently swallowing a production auth error).
+    """
+    base = _APPLE_API_SANDBOX if sandbox else _APPLE_API_PRODUCTION
+    url = f"{base}/inApps/v1/subscriptions/{original_transaction_id}"
+    headers = {"Authorization": f"Bearer {jwt_token}"}
+    session = await _get_session()
+    async with session.get(url, headers=headers) as resp:
+        if resp.status == 404:
+            return None
+        if resp.status >= 400:
+            body = await resp.text()
+            env = "sandbox" if sandbox else "production"
+            logger.error(
+                f"Apple {env} subscriptions GET failed: "
+                f"status={resp.status} body={body[:300]}"
+            )
+            raise AppleTransactionError(
+                f"Apple {env} subscriptions API returned HTTP {resp.status}",
+                status_code=resp.status,
+            )
+        return await resp.json()
+
+
 # --------------------------------------------------------------------------- #
 # Public class — interface stable for subscription_service.py
 # --------------------------------------------------------------------------- #
@@ -720,6 +756,75 @@ class ReceiptValidator:
             "data": self.parse_apple_transaction(decoded),
             "error": None,
         }
+
+    async def get_apple_latest_expiry_ms(
+        self, original_transaction_id: str
+    ) -> Optional[int]:
+        """Return the newest verified ``expiresDate`` (epoch ms) across all of a
+        subscription's renewals, or None if it can't be determined.
+
+        A ``/transactions/{id}`` lookup only reports the period of the id passed
+        — and clients resend the ORIGINAL transaction id, which is the *first*
+        period — so it can hand back a long-past expiry for an actively-renewing
+        sub. This calls Get All Subscription Statuses instead and takes the
+        latest verified transaction's expiry. Every candidate's
+        ``signedTransactionInfo`` is JWS-verified before its expiry is trusted.
+
+        Best-effort: returns None (never raises) so callers fall back to the
+        single-transaction expiry rather than failing the purchase.
+        """
+        creds = _apple_jwt_credentials()
+        if creds is None or not original_transaction_id:
+            return None
+        try:
+            token = _build_apple_jwt(creds)
+            is_sandbox = False
+            try:
+                body = await _apple_get_subscription_statuses(
+                    original_transaction_id, token, sandbox=False
+                )
+            except AppleTransactionError as e:
+                if e.status_code != 401:
+                    raise
+                body = None
+            if body is None:
+                body = await _apple_get_subscription_statuses(
+                    original_transaction_id, token, sandbox=True
+                )
+                is_sandbox = True
+            if not body:
+                return None
+
+            latest_ms: Optional[int] = None
+            for group in body.get("data", []):
+                for last_tx in group.get("lastTransactions", []):
+                    signed = last_tx.get("signedTransactionInfo")
+                    if not signed:
+                        continue
+                    try:
+                        decoded = _verify_apple_jws(signed, sandbox=is_sandbox)
+                    except JWSVerificationError as e:
+                        logger.warning(
+                            "subscription-status JWS verify failed for "
+                            f"{original_transaction_id}: {e}"
+                        )
+                        continue
+                    exp = decoded.get("expiresDate")
+                    if exp is None:
+                        continue
+                    try:
+                        exp_ms = int(exp)
+                    except (TypeError, ValueError):
+                        continue
+                    if latest_ms is None or exp_ms > latest_ms:
+                        latest_ms = exp_ms
+            return latest_ms
+        except Exception as e:  # noqa: BLE001 - best-effort; caller falls back
+            logger.warning(
+                "get_apple_latest_expiry_ms failed for "
+                f"{original_transaction_id}: {e}"
+            )
+            return None
 
     async def _validate_apple_legacy_or_error(self, receipt_data: str) -> Dict:
         """Fallback path — only used if the legacy escape hatch is enabled."""
