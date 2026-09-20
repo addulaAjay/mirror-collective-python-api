@@ -529,6 +529,30 @@ class SubscriptionService:
                         "error": "Invalid transaction signature",
                     }
 
+            # autoRenewStatus / autoRenewProductId / expirationIntent live in
+            # signedRenewalInfo, NOT signedTransactionInfo. Decode it too and
+            # merge those fields into transaction_info so DID_CHANGE_RENEWAL_STATUS
+            # (and the renewal/expiry handlers) can actually read them — without
+            # this a cancellation is received but never applied, and the record's
+            # auto_renew_enabled never flips.
+            signed_renewal_info = data.get("signedRenewalInfo")
+            if signed_renewal_info and transaction_info is not None:
+                try:
+                    renewal_info = verify_apple_transaction_jws(
+                        signed_renewal_info, sandbox=sandbox
+                    )
+                except JWSVerificationError as e:
+                    logger.error(f"Apple webhook renewal-info verification failed: {e}")
+                    return {"success": False, "error": "Invalid renewal signature"}
+                for _k in (
+                    "autoRenewStatus",
+                    "autoRenewProductId",
+                    "expirationIntent",
+                    "gracePeriodExpiresDate",
+                ):
+                    if renewal_info.get(_k) is not None:
+                        transaction_info.setdefault(_k, renewal_info.get(_k))
+
             logger.info(f"Processing Apple webhook: {notification_type}")
 
             # Handle different notification types
@@ -1363,9 +1387,12 @@ class SubscriptionService:
             transaction_id = transaction_info.get(
                 "originalTransactionId"
             ) or transaction_info.get("transactionId")
-            auto_renew_status = transaction_info.get(
-                "autoRenewStatus"
-            ) or transaction_info.get("autoRenewing")
+            # NB: use an explicit None check, not ``or`` — autoRenewStatus is 0
+            # when auto-renew is OFF (a cancellation), and ``0 or ...`` would
+            # discard it and drop the cancel.
+            auto_renew_status = transaction_info.get("autoRenewStatus")
+            if auto_renew_status is None:
+                auto_renew_status = transaction_info.get("autoRenewing")
 
             # Find subscription
             subscription = None
