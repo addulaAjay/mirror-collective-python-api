@@ -23,6 +23,7 @@ from .receipt_validator import (
     JWSVerificationError,
     ReceiptValidator,
     verify_and_decode_apple_notification,
+    verify_apple_renewal_info_jws,
     verify_apple_transaction_jws,
 )
 from .storage_quota_service import get_storage_quota_service
@@ -538,12 +539,19 @@ class SubscriptionService:
             signed_renewal_info = data.get("signedRenewalInfo")
             if signed_renewal_info and transaction_info is not None:
                 try:
-                    renewal_info = verify_apple_transaction_jws(
+                    renewal_info = verify_apple_renewal_info_jws(
                         signed_renewal_info, sandbox=sandbox
                     )
                 except JWSVerificationError as e:
-                    logger.error(f"Apple webhook renewal-info verification failed: {e}")
-                    return {"success": False, "error": "Invalid renewal signature"}
+                    # Non-fatal: the OUTER notification is already signature-
+                    # verified, so a renewal-info decode failure must not drop the
+                    # whole event. Proceed without the renewal fields rather than
+                    # regressing to "nothing applied".
+                    logger.warning(
+                        "Apple webhook renewal-info decode failed; continuing "
+                        f"without renewal fields: {e}"
+                    )
+                    renewal_info = {}
                 for _k in (
                     "autoRenewStatus",
                     "autoRenewProductId",
