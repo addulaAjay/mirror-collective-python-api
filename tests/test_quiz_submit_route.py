@@ -48,7 +48,7 @@ def _answer(qid, text, at_suffix="00"):
 
 # Canonical answers that map to Seeker on the bundled questions.json.
 SEEKER_ANSWERS = [
-    _answer(1, "A quiet aha when something finally clicks", "00"),
+    _answer(1, 'A quiet "A-HA" when something finally clicks', "00"),
     _answer(2, "A glowing crystal sphere", "10"),
     _answer(3, "I want to understand myself better.", "20"),
     _answer(4, "I give them clarity or insight they didn't see before.", "30"),

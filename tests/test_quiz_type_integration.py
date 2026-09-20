@@ -47,7 +47,7 @@ class TestQuizTypeEndpoint:
                     {
                         "questionId": 1,
                         "question": "Q1",
-                        "answer": "A quiet aha when something finally clicks",
+                        "answer": 'A quiet "A-HA" when something finally clicks',
                         "answeredAt": "2026-04-19T10:00:00Z",
                         "type": "text",
                     },
@@ -109,7 +109,7 @@ class TestQuizTypeEndpoint:
                     {
                         "questionId": 1,
                         "question": "Q1",
-                        "answer": "A quiet aha when something finally clicks",
+                        "answer": 'A quiet "A-HA" when something finally clicks',
                         "answeredAt": "2026-04-19T10:00:00Z",
                         "type": "text",
                     },
@@ -229,7 +229,7 @@ class TestQuizTypeStorage:
                     {
                         "questionId": 1,
                         "question": "Q1",
-                        "answer": "A quiet aha when something finally clicks",
+                        "answer": 'A quiet "A-HA" when something finally clicks',
                         "answeredAt": "2026-04-19T10:00:00Z",
                         "type": "text",
                     },
