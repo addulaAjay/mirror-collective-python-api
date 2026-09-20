@@ -41,12 +41,17 @@ def _stored(auto_renew=True):
     )
 
 
-def _service(stored):
+def _service(stored, applied=True):
     db = AsyncMock()
-    db.query_items = AsyncMock(return_value=[stored.to_dynamodb_item()])
+    db.query_items = AsyncMock(
+        return_value=[stored.to_dynamodb_item()] if stored else []
+    )
     db.get_item = AsyncMock(return_value=None)
-    db.update_item = AsyncMock(return_value=True)  # conditional write applied
+    # applied=False simulates a failed ConditionExpression (stale/out-of-order).
+    db.update_item = AsyncMock(return_value=applied)
     db.put_item = AsyncMock()
+    db.get_user_profile = AsyncMock(return_value=None)
+    db.update_user_profile = AsyncMock()
     svc = SubscriptionService(db)
     return svc, db
 
@@ -70,7 +75,7 @@ async def test_handler_applies_auto_renew_off():
     await svc._handle_renewal_status_change(
         {"originalTransactionId": OTID, "autoRenewStatus": 0, "signedDate": 1000}
     )
-    assert _update_values(db)[":ar"] is False
+    assert _update_values(db)[":v0"] is False  # auto_renew_enabled set False
 
 
 @pytest.mark.asyncio
@@ -79,7 +84,7 @@ async def test_handler_applies_auto_renew_on():
     await svc._handle_renewal_status_change(
         {"originalTransactionId": OTID, "autoRenewStatus": 1, "signedDate": 1000}
     )
-    assert _update_values(db)[":ar"] is True
+    assert _update_values(db)[":v0"] is True  # auto_renew_enabled set True
 
 
 @pytest.mark.asyncio
@@ -152,3 +157,66 @@ async def test_record_notification_uses_update_not_full_put():
     await svc._record_apple_notification_applied(OTID, "uuid-x", 123456)
     svc.dynamodb_service.update_item.assert_awaited()
     svc.dynamodb_service.put_item.assert_not_awaited()
+
+
+# ── Lifecycle handlers: renewal / expired / refund / fail all use the shared ──
+# ── atomic, signedDate-ordered write and gate profile changes on `applied`. ───
+from src.app.models.subscription import SubscriptionStatus  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_renewal_sets_active_and_updates_profile_when_applied():
+    svc, db = _service(_stored())
+    svc._update_user_subscription_status = AsyncMock()  # type: ignore[method-assign]
+    await svc._handle_subscription_renewal(
+        {
+            "originalTransactionId": OTID,
+            "expiresDate": 1789931099000,
+            "signedDate": 5000,
+        }
+    )
+    vals = _update_values(db)
+    assert SubscriptionStatus.ACTIVE.value in vals.values()
+    assert vals[":sd"] == 5000  # ordered by signedDate
+    svc._update_user_subscription_status.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_expired_sets_expired_and_revokes_when_applied():
+    svc, db = _service(_stored())
+    svc._revoke_profile_access = AsyncMock()  # type: ignore[method-assign]
+    await svc._handle_subscription_expired(
+        {"originalTransactionId": OTID, "signedDate": 5000}
+    )
+    assert SubscriptionStatus.EXPIRED.value in _update_values(db).values()
+    svc._revoke_profile_access.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refund_sets_refunded_and_revokes_when_applied():
+    svc, db = _service(_stored())
+    svc._revoke_profile_access = AsyncMock()  # type: ignore[method-assign]
+    await svc._handle_refund({"originalTransactionId": OTID, "signedDate": 5000})
+    assert SubscriptionStatus.REFUNDED.value in _update_values(db).values()
+    svc._revoke_profile_access.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_renewal_failure_sets_grace_period():
+    svc, db = _service(_stored())
+    await svc._handle_renewal_failure(
+        {"originalTransactionId": OTID, "signedDate": 5000}
+    )
+    assert SubscriptionStatus.GRACE_PERIOD.value in _update_values(db).values()
+
+
+@pytest.mark.asyncio
+async def test_stale_expired_is_skipped_no_profile_downgrade():
+    """A stale/out-of-order EXPIRED (condition fails → update_item False) must
+    NOT revoke access — the newer state stands."""
+    svc, db = _service(_stored(), applied=False)
+    svc._revoke_profile_access = AsyncMock()  # type: ignore[method-assign]
+    await svc._handle_subscription_expired(
+        {"originalTransactionId": OTID, "signedDate": 1}
+    )
+    svc._revoke_profile_access.assert_not_awaited()
