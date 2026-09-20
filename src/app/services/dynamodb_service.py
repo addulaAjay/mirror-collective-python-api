@@ -1777,6 +1777,7 @@ class DynamoDBService:
         update_expression: str,
         expression_values: Dict[str, Any],
         expression_names: Optional[Dict[str, str]] = None,
+        condition_expression: Optional[str] = None,
     ) -> bool:
         """
         Generic update item method
@@ -1787,9 +1788,13 @@ class DynamoDBService:
             update_expression: UpdateExpression
             expression_values: ExpressionAttributeValues
             expression_names: ExpressionAttributeNames
+            condition_expression: Optional ConditionExpression. When the
+                condition is not met the write is skipped and this returns
+                False (NOT an error) — used for atomic, ordered writes.
 
         Returns:
-            True if successful
+            True if the write was applied; False if a condition_expression
+            gate rejected it (or on error).
         """
         try:
             dynamodb = await self._get_resource()
@@ -1804,11 +1809,25 @@ class DynamoDBService:
             if expression_names:
                 update_kwargs["ExpressionAttributeNames"] = expression_names
 
+            if condition_expression:
+                update_kwargs["ConditionExpression"] = condition_expression
+
             await table.update_item(**update_kwargs)
 
             return True
 
         except ClientError as e:
+            # A failed ConditionExpression is expected (ordered-write gate lost),
+            # not an error — surface it as a benign False without noise.
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                logger.info(
+                    f"Conditional update skipped in {table_name} "
+                    "(condition not met — stale/out-of-order write)"
+                )
+                return False
             logger.error(f"DynamoDB error updating item in {table_name}: {e}")
             return False
         except Exception as e:
