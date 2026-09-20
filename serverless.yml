@@ -377,6 +377,17 @@ functions:
       - httpApi:
           method: POST
           path: /verify-purchase
+      # Apple/Google App Store Server Notifications V2. The store signs the
+      # payload (JWS verified in handle_apple_webhook / handle_google_webhook)
+      # and sends NO Cognito JWT, so these must bypass cognitoJwtAuthorizer —
+      # otherwise Apple's calls get 401'd at the gateway and never reach the
+      # handler (renewals/cancels/expiry never sync).
+      - httpApi:
+          method: POST
+          path: /api/subscriptions/webhook/apple
+      - httpApi:
+          method: POST
+          path: /api/subscriptions/webhook/google
       # Archetype Discovery Quiz — runs BEFORE signup as part of the
       # onboarding flow, so the client has no Cognito JWT yet. The
       # submission carries an optional ``anonymousId`` so the backend can
