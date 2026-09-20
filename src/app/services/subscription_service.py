@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import InternalServerError
 from ..models.subscription import (
@@ -572,6 +572,11 @@ class SubscriptionService:
                 # that is older than the last event applied to this subscription.
                 notification_uuid = decoded_payload.get("notificationUUID")
                 signed_date = decoded_payload.get("signedDate")
+                # Fall back to the transaction's signedDate if the notification
+                # body omits it, so the idempotency guard + ordered writes always
+                # have an ordering timestamp.
+                if signed_date is None:
+                    signed_date = transaction_info.get("signedDate")
                 original_txid = transaction_info.get(
                     "originalTransactionId"
                 ) or transaction_info.get("transactionId")
@@ -598,6 +603,14 @@ class SubscriptionService:
                     await self._handle_refund(transaction_info)
                 elif notification_type == "DID_CHANGE_RENEWAL_STATUS":
                     await self._handle_renewal_status_change(transaction_info)
+                elif notification_type == "DID_CHANGE_RENEWAL_PREF":
+                    # Plan change (monthly<->yearly). Intentionally NOT persisted:
+                    # the entitlement gate keys on tier (core), not the specific
+                    # product, and the app sources the active plan from
+                    # StoreKit/Apple (getAvailablePurchases + Apple's Manage
+                    # Subscriptions sheet). So product_id/billing_period are not
+                    # webhook-maintained — no-op by design.
+                    pass
 
                 # Record this event as applied so a later replay / out-of-order
                 # delivery is ignored by the guard above.
@@ -1031,6 +1044,125 @@ class SubscriptionService:
             logger.error(f"Error logging subscription event: {e}")
             # Don't raise - event logging is non-critical
 
+    @staticmethod
+    def _event_signed_ms(transaction_info: Dict) -> Optional[int]:
+        """The event's signedDate as epoch-ms (used for advance-only ordering),
+        or None if absent/unparseable."""
+        raw = transaction_info.get("signedDate")
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _ordered_subscription_set(
+        self,
+        subscription: "Subscription",
+        signed_ms: Optional[int],
+        set_fields: Dict[str, Any],
+        event_type: str,
+    ) -> bool:
+        """Atomically SET ``set_fields`` (+ the ordering timestamp) on the
+        subscription, applied ONLY when this event's ``signedDate`` is >= the
+        stored ``last_notification_signed_date_ms`` (advance-only).
+
+        This is the single safe way to mutate a subscription from a webhook:
+        - TARGETED update (never a full put) so it can't clobber other fields
+          that a concurrent handler just wrote,
+        - CONDITIONAL on signedDate so a retried/out-of-order Apple notification
+          can't overwrite newer state (Apple retries and does NOT guarantee
+          order),
+        so the newest event always wins regardless of delivery order, GSI read
+        staleness, or Lambda concurrency.
+
+        Returns True if applied, False if skipped (stale/out-of-order). Logs a
+        subscription event on apply. ``set_fields`` keys are stored attribute
+        names, each aliased via ExpressionAttributeNames so DynamoDB reserved
+        words (e.g. ``status``) are safe.
+        """
+        key = {
+            "user_id": subscription.user_id,
+            "subscription_id": subscription.subscription_id,
+        }
+        parts: List[str] = []
+        values: Dict[str, Any] = {}
+        names: Dict[str, str] = {}
+        for i, (field, val) in enumerate(set_fields.items()):
+            nm, ph = f"#f{i}", f":v{i}"
+            names[nm] = field
+            values[ph] = val
+            parts.append(f"{nm} = {ph}")
+
+        condition = None
+        if signed_ms is not None:
+            values[":sd"] = signed_ms
+            parts.append("last_notification_signed_date_ms = :sd")
+            condition = (
+                "attribute_not_exists(last_notification_signed_date_ms) "
+                "OR last_notification_signed_date_ms <= :sd"
+            )
+
+        applied = await self.dynamodb_service.update_item(
+            self.subscriptions_table,
+            key,
+            "SET " + ", ".join(parts),
+            values,
+            expression_names=names,
+            condition_expression=condition,
+        )
+        if not applied:
+            logger.info(
+                "Skipped stale/out-of-order %s for subscription %s (signedDate=%s)",
+                event_type,
+                subscription.subscription_id,
+                signed_ms,
+            )
+            return False
+
+        # Reflect applied fields on the in-memory object so downstream profile
+        # logic (e.g. _update_user_subscription_status) sees the new values.
+        for field, val in set_fields.items():
+            setattr(subscription, field, val)
+
+        await self._log_subscription_event(
+            user_id=subscription.user_id,
+            subscription_id=subscription.subscription_id,
+            event_type=event_type,
+            platform=subscription.platform.value,
+            metadata={"signed_date_ms": signed_ms},
+        )
+        return True
+
+    async def _revoke_profile_access(self, subscription: "Subscription") -> None:
+        """Revoke Echo Vault access on the user profile when a subscription ends
+        (expired / refunded) and the user has no OTHER active sub. Shared by the
+        expiry and refund handlers."""
+        user_profile = await self.dynamodb_service.get_user_profile(
+            subscription.user_id
+        )
+        if not user_profile:
+            return
+        user_subscriptions = await self.dynamodb_service.query_items(
+            table_name=self.subscriptions_table,
+            key_condition="user_id = :uid",
+            expression_values={":uid": subscription.user_id},
+        )
+        has_other_active = any(
+            sub.get("status") in ["active", "trial"]
+            for sub in user_subscriptions
+            if sub.get("subscription_id") != subscription.subscription_id
+        )
+        if has_other_active:
+            return
+        user_profile.subscription_status = "expired"
+        user_profile.subscription_tier = "free"
+        user_profile.echo_vault_quota_gb = 0.0
+        if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
+            user_profile.primary_subscription_id = None
+        elif subscription.subscription_type == SubscriptionType.STORAGE_ADD_ON:
+            user_profile.storage_subscription_id = None
+            user_profile.storage_add_on_active = False
+        await self.dynamodb_service.update_user_profile(user_profile)
+
     async def _handle_subscription_renewal(self, transaction_info: Dict) -> None:
         """
         Handle successful subscription renewal webhook
@@ -1071,51 +1203,35 @@ class SubscriptionService:
                 logger.warning(f"Subscription not found for renewal: {transaction_id}")
                 return
 
-            # Update subscription with new expiry date
+            # Compute the renewed expiry (Apple: expiresDate ms; Google:
+            # expiryTimeMillis).
+            expiry_iso = None
             if transaction_info.get("expiresDate"):
-                # Apple format: milliseconds since epoch
-                expiry_ms = int(transaction_info["expiresDate"])
-                expiry_date = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
-                subscription.expiry_date = expiry_date.isoformat().replace(
-                    "+00:00", "Z"
-                )
+                expiry_iso = _ms_to_iso(transaction_info["expiresDate"])
             elif transaction_info.get("expiryTimeMillis"):
-                # Google format: milliseconds since epoch
-                expiry_ms = int(transaction_info["expiryTimeMillis"])
-                expiry_date = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
-                subscription.expiry_date = expiry_date.isoformat().replace(
-                    "+00:00", "Z"
+                expiry_iso = _ms_to_iso(transaction_info["expiryTimeMillis"])
+
+            # A paid renewal is no longer a trial/intro period unless the renewal
+            # transaction itself carries an intro offerType (1=free-trial, 2/3=
+            # intro) — otherwise a converted user stays wrongly classified as
+            # "trial".
+            fields: Dict[str, Any] = {
+                "status": SubscriptionStatus.ACTIVE.value,
+                "is_in_trial": transaction_info.get("offerType") in (1, 2, 3),
+            }
+            if expiry_iso:
+                fields["expiry_date"] = expiry_iso
+
+            applied = await self._ordered_subscription_set(
+                subscription,
+                self._event_signed_ms(transaction_info),
+                fields,
+                "renewed",
+            )
+            if applied:
+                await self._update_user_subscription_status(
+                    subscription.user_id, subscription
                 )
-
-            # Update status to active
-            subscription.status = SubscriptionStatus.ACTIVE
-            # A paid renewal is no longer a trial/intro period. The stored record
-            # keeps is_in_trial=True from the original intro purchase, so without
-            # resetting it here the user stays classified as "trial" after
-            # converting to paid (client keeps showing the trial/subscribe copy).
-            # Derive from the renewal transaction's offerType (1=intro/free-trial,
-            # 2/3=intro); a normal paid renewal has no offerType.
-            subscription.is_in_trial = transaction_info.get("offerType") in (1, 2, 3)
-            subscription.add_event("renewed", transaction_info)
-
-            # Save updated subscription
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, subscription.to_dynamodb_item()
-            )
-
-            # Update user profile
-            await self._update_user_subscription_status(
-                subscription.user_id, subscription
-            )
-
-            # Log renewal event
-            await self._log_subscription_event(
-                user_id=subscription.user_id,
-                subscription_id=subscription.subscription_id,
-                event_type="renewed",
-                platform=subscription.platform.value,
-                metadata=transaction_info,
-            )
 
             logger.info(
                 f"Successfully processed renewal for subscription {subscription.subscription_id}"
@@ -1161,34 +1277,19 @@ class SubscriptionService:
                 )
                 return
 
-            # Update status to grace period (user still has access during grace period)
-            subscription.status = SubscriptionStatus.GRACE_PERIOD
-            subscription.add_event("renewal_failed", transaction_info)
-
-            # Save updated subscription
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, subscription.to_dynamodb_item()
+            # Grace period — the user still has access while Apple retries billing.
+            applied = await self._ordered_subscription_set(
+                subscription,
+                self._event_signed_ms(transaction_info),
+                {"status": SubscriptionStatus.GRACE_PERIOD.value},
+                "renewal_failed",
             )
-
-            # Get user profile to send notification
-            user_profile = await self.dynamodb_service.get_user_profile(
-                subscription.user_id
-            )
-            if user_profile:
-                # TODO: Send push notification about payment failure
-                # This would integrate with your notification service
+            if applied:
+                # TODO: send a push notification about the payment failure
+                # (best-effort; integrate with the notification service).
                 logger.info(
                     f"Should send payment failure notification to user {subscription.user_id}"
                 )
-
-            # Log renewal failure event
-            await self._log_subscription_event(
-                user_id=subscription.user_id,
-                subscription_id=subscription.subscription_id,
-                event_type="renewal_failed",
-                platform=subscription.platform.value,
-                metadata=transaction_info,
-            )
 
             logger.info(
                 f"Successfully processed renewal failure for subscription {subscription.subscription_id}"
@@ -1234,61 +1335,17 @@ class SubscriptionService:
                 )
                 return
 
-            # Update subscription status to expired
-            subscription.status = SubscriptionStatus.EXPIRED
-            subscription.auto_renew_enabled = False
-            subscription.add_event("expired", transaction_info)
-
-            # Save updated subscription
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, subscription.to_dynamodb_item()
+            applied = await self._ordered_subscription_set(
+                subscription,
+                self._event_signed_ms(transaction_info),
+                {
+                    "status": SubscriptionStatus.EXPIRED.value,
+                    "auto_renew_enabled": False,
+                },
+                "expired",
             )
-
-            # Update user profile - revoke access
-            user_profile = await self.dynamodb_service.get_user_profile(
-                subscription.user_id
-            )
-            if user_profile:
-                # Determine if user has other active subscriptions
-                user_subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="user_id = :uid",
-                    expression_values={":uid": subscription.user_id},
-                )
-
-                # Check for other active subscriptions
-                has_other_active = any(
-                    sub.get("status") in ["active", "trial"]
-                    for sub in user_subscriptions
-                    if sub.get("subscription_id") != subscription.subscription_id
-                )
-
-                if not has_other_active:
-                    # No other active subscriptions - revoke all access
-                    user_profile.subscription_status = "expired"
-                    user_profile.subscription_tier = "free"
-                    user_profile.echo_vault_quota_gb = 0.0
-
-                    # Clear subscription references
-                    if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
-                        user_profile.primary_subscription_id = None
-                    elif (
-                        subscription.subscription_type
-                        == SubscriptionType.STORAGE_ADD_ON
-                    ):
-                        user_profile.storage_subscription_id = None
-                        user_profile.storage_add_on_active = False
-
-                    await self.dynamodb_service.update_user_profile(user_profile)
-
-            # Log expiration event
-            await self._log_subscription_event(
-                user_id=subscription.user_id,
-                subscription_id=subscription.subscription_id,
-                event_type="expired",
-                platform=subscription.platform.value,
-                metadata=transaction_info,
-            )
+            if applied:
+                await self._revoke_profile_access(subscription)
 
             logger.info(
                 f"Successfully processed expiration for subscription {subscription.subscription_id}"
@@ -1332,60 +1389,18 @@ class SubscriptionService:
                 logger.warning(f"Subscription not found for refund: {transaction_id}")
                 return
 
-            # Update subscription status to refunded
-            subscription.status = SubscriptionStatus.REFUNDED
-            subscription.auto_renew_enabled = False
-            subscription.add_event("refunded", transaction_info)
-
-            # Save updated subscription
-            await self.dynamodb_service.put_item(
-                self.subscriptions_table, subscription.to_dynamodb_item()
+            applied = await self._ordered_subscription_set(
+                subscription,
+                self._event_signed_ms(transaction_info),
+                {
+                    "status": SubscriptionStatus.REFUNDED.value,
+                    "auto_renew_enabled": False,
+                },
+                "refunded",
             )
-
-            # IMMEDIATELY revoke access (refunds require instant access removal)
-            user_profile = await self.dynamodb_service.get_user_profile(
-                subscription.user_id
-            )
-            if user_profile:
-                # Check for other active subscriptions
-                user_subscriptions = await self.dynamodb_service.query_items(
-                    table_name=self.subscriptions_table,
-                    key_condition="user_id = :uid",
-                    expression_values={":uid": subscription.user_id},
-                )
-
-                has_other_active = any(
-                    sub.get("status") in ["active", "trial"]
-                    for sub in user_subscriptions
-                    if sub.get("subscription_id") != subscription.subscription_id
-                )
-
-                if not has_other_active:
-                    # Immediately revoke all access
-                    user_profile.subscription_status = "expired"
-                    user_profile.subscription_tier = "free"
-                    user_profile.echo_vault_quota_gb = 0.0
-
-                    # Clear subscription references
-                    if subscription.subscription_type == SubscriptionType.MIRROR_CORE:
-                        user_profile.primary_subscription_id = None
-                    elif (
-                        subscription.subscription_type
-                        == SubscriptionType.STORAGE_ADD_ON
-                    ):
-                        user_profile.storage_subscription_id = None
-                        user_profile.storage_add_on_active = False
-
-                    await self.dynamodb_service.update_user_profile(user_profile)
-
-            # Log refund event
-            await self._log_subscription_event(
-                user_id=subscription.user_id,
-                subscription_id=subscription.subscription_id,
-                event_type="refunded",
-                platform=subscription.platform.value,
-                metadata=transaction_info,
-            )
+            if applied:
+                # Refunds require immediate access removal.
+                await self._revoke_profile_access(subscription)
 
             logger.info(
                 f"Successfully processed refund for subscription {subscription.subscription_id}"
@@ -1437,14 +1452,9 @@ class SubscriptionService:
                 )
                 return
 
-            # Update auto-renewal status via an ATOMIC, ORDERED conditional write.
-            # Two DID_CHANGE_RENEWAL_STATUS events (e.g. ON then OFF) can arrive
-            # near-simultaneously in separate Lambda invocations. The old
-            # load-then-full-put let the OLDER event's write land last and win
-            # (and clobber other fields). Instead, SET only auto_renew_enabled +
-            # the ordering timestamp, applied ONLY when this event's signedDate
-            # is >= the last applied one — so the newest status always wins
-            # regardless of delivery order or GSI read staleness.
+            # Apply the auto-renew flip via the shared atomic, signedDate-ordered
+            # write (see _ordered_subscription_set) so a retried/out-of-order
+            # DID_CHANGE_RENEWAL_STATUS can't clobber newer state.
             if auto_renew_status is not None:
                 # Apple sends 0/1 (int or IntEnum) or "0"/"1"; Google sends bool.
                 if isinstance(auto_renew_status, str):
@@ -1452,62 +1462,17 @@ class SubscriptionService:
                 else:
                     new_auto = bool(auto_renew_status)
 
-                raw_signed = transaction_info.get("signedDate")
-                try:
-                    signed_ms = int(raw_signed) if raw_signed is not None else None
-                except (TypeError, ValueError):
-                    signed_ms = None
-
-                key = {
-                    "user_id": subscription.user_id,
-                    "subscription_id": subscription.subscription_id,
-                }
-                if signed_ms is None:
-                    # No ordering timestamp — targeted (still non-clobbering)
-                    # unconditional set.
-                    applied = await self.dynamodb_service.update_item(
-                        self.subscriptions_table,
-                        key,
-                        "SET auto_renew_enabled = :ar",
-                        {":ar": new_auto},
-                    )
-                else:
-                    applied = await self.dynamodb_service.update_item(
-                        self.subscriptions_table,
-                        key,
-                        "SET auto_renew_enabled = :ar, "
-                        "last_notification_signed_date_ms = :sd",
-                        {":ar": new_auto, ":sd": signed_ms},
-                        condition_expression=(
-                            "attribute_not_exists(last_notification_signed_date_ms) "
-                            "OR last_notification_signed_date_ms <= :sd"
-                        ),
-                    )
-
+                applied = await self._ordered_subscription_set(
+                    subscription,
+                    self._event_signed_ms(transaction_info),
+                    {"auto_renew_enabled": new_auto},
+                    "auto_renew_status_changed",
+                )
                 if applied:
-                    subscription.auto_renew_enabled = new_auto
-                    # Minimal, serializable metadata — NOT the raw transaction_info
-                    # (it carries SDK enum objects that DynamoDB can't store).
-                    await self._log_subscription_event(
-                        user_id=subscription.user_id,
-                        subscription_id=subscription.subscription_id,
-                        event_type="auto_renew_status_changed",
-                        platform=subscription.platform.value,
-                        metadata={
-                            "auto_renew_enabled": new_auto,
-                            "signed_date_ms": signed_ms,
-                        },
-                    )
                     logger.info(
                         "Successfully processed renewal status change for "
                         f"subscription {subscription.subscription_id}: "
                         f"auto_renew={new_auto}"
-                    )
-                else:
-                    logger.info(
-                        "Skipped stale/out-of-order renewal status change for "
-                        f"subscription {subscription.subscription_id} "
-                        f"(signedDate={signed_ms})"
                     )
 
         except Exception as e:
