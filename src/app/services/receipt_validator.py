@@ -867,6 +867,72 @@ class ReceiptValidator:
             )
             return None
 
+    async def get_apple_subscription_state(
+        self, original_transaction_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return Apple's authoritative subscription state for reconciliation.
+
+        Result: ``{"status": int, "expires_date_ms": Optional[int]}`` where
+        ``status`` is the App Store status code — 1=active, 2=expired,
+        3=billing-retry, 4=grace-period, 5=revoked — or None if it can't be
+        determined. This is the source of truth the reconciliation cron diffs
+        the DB against to catch subs whose EXPIRED/REFUND webhook was missed.
+
+        Uses Get All Subscription Statuses and picks the lastTransaction whose
+        originalTransactionId matches the query; the expiry comes from the
+        JWS-verified ``signedTransactionInfo``. Best-effort: never raises
+        (returns None) so a single flaky lookup can't abort the whole batch.
+        """
+        creds = _apple_jwt_credentials()
+        if creds is None or not original_transaction_id:
+            return None
+        try:
+            token = _build_apple_jwt(creds)
+            is_sandbox = False
+            try:
+                body = await _apple_get_subscription_statuses(
+                    original_transaction_id, token, sandbox=False
+                )
+            except AppleTransactionError as e:
+                if e.status_code != 401:
+                    raise
+                body = None
+            if body is None:
+                body = await _apple_get_subscription_statuses(
+                    original_transaction_id, token, sandbox=True
+                )
+                is_sandbox = True
+            if not body:
+                return None
+
+            for group in body.get("data", []):
+                for last_tx in group.get("lastTransactions", []):
+                    # The queried sub yields one lastTransaction; when Apple
+                    # echoes an originalTransactionId, only trust the match.
+                    otid = last_tx.get("originalTransactionId")
+                    if otid not in (None, original_transaction_id):
+                        continue
+                    status = last_tx.get("status")
+                    if status is None:
+                        continue
+                    expires_ms: Optional[int] = None
+                    signed = last_tx.get("signedTransactionInfo")
+                    if signed:
+                        try:
+                            decoded = _verify_apple_jws(signed, sandbox=is_sandbox)
+                            exp = decoded.get("expiresDate")
+                            expires_ms = int(exp) if exp is not None else None
+                        except (JWSVerificationError, TypeError, ValueError):
+                            expires_ms = None
+                    return {"status": int(status), "expires_date_ms": expires_ms}
+            return None
+        except Exception as e:  # noqa: BLE001 - best-effort; caller skips this sub
+            logger.warning(
+                "get_apple_subscription_state failed for "
+                f"{original_transaction_id}: {e}"
+            )
+            return None
+
     async def _validate_apple_legacy_or_error(self, receipt_data: str) -> Dict:
         """Fallback path — only used if the legacy escape hatch is enabled."""
         legacy_enabled = (

@@ -1162,6 +1162,47 @@ class DynamoDBService:
             logger.error(f"Error scanning active device user_ids: {e}")
         return list(user_ids)
 
+    async def scan_items(
+        self,
+        table_name: str,
+        filter_expression: Optional[str] = None,
+        expression_values: Optional[Dict[str, Any]] = None,
+        expression_names: Optional[Dict[str, str]] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generic paginated scan. Returns all matching items (following
+        LastEvaluatedKey), or up to ``limit`` when given.
+
+        A full-table scan — use only for low-frequency batch jobs (e.g. the
+        daily reconciliation cron), never on a request path. Returns [] on
+        error so a transient DDB failure can't crash the caller.
+        """
+        try:
+            dynamodb = await self._get_resource()
+            table = await dynamodb.Table(table_name)
+            scan_kwargs: Dict[str, Any] = {}
+            if filter_expression:
+                scan_kwargs["FilterExpression"] = filter_expression
+            if expression_values:
+                scan_kwargs["ExpressionAttributeValues"] = expression_values
+            if expression_names:
+                scan_kwargs["ExpressionAttributeNames"] = expression_names
+
+            items: List[Dict[str, Any]] = []
+            while True:
+                response = await table.scan(**scan_kwargs)
+                items.extend(response.get("Items", []))
+                if limit is not None and len(items) >= limit:
+                    return items[:limit]
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
+            return items
+        except Exception as e:
+            logger.error(f"Error scanning {table_name}: {e}")
+            return []
+
     async def save_soul_ping(self, ping: "SoulPing") -> bool:
         """Persist a sent Soul Ping (source of truth for the one-per-hour
         throttle + future in-app feed)."""
