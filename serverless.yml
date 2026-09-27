@@ -429,6 +429,18 @@ functions:
           rate: cron(0 12 * * ? *)  # Run daily at 12:00 UTC
           description: Check trial expirations and send notifications
 
+  # Scheduled job: reconcile subscriptions against Apple's authoritative status
+  # (backstop for missed/delayed App Store Server Notifications).
+  subscriptionReconciliation:
+    handler: src/app/jobs/subscription_reconciliation_job.lambda_handler
+    description: Daily reconcile of subscription state vs Apple (drift correction)
+    timeout: 600
+    memorySize: 512
+    events:
+      - schedule:
+          rate: cron(0 6 * * ? *)  # Run daily at 06:00 UTC
+          description: Reconcile subscriptions against Apple subscription status
+
   # Scheduled job: auto-release DRAFT echoes whose release_date has passed
   echoReleaseScheduler:
     handler: src/app/jobs/echo_release_job.lambda_handler

@@ -72,6 +72,16 @@ def _later_iso(a: Optional[str], b: Optional[str]) -> Optional[str]:
     return a if da >= db else b
 
 
+# App Store status codes returned by Get All Subscription Statuses. These are
+# Apple's authoritative live view of a subscription — the reconciliation cron
+# diffs the DB against them to catch state a missed webhook left stale.
+_APPLE_STATUS_ACTIVE = 1
+_APPLE_STATUS_EXPIRED = 2
+_APPLE_STATUS_BILLING_RETRY = 3
+_APPLE_STATUS_GRACE_PERIOD = 4
+_APPLE_STATUS_REVOKED = 5
+
+
 class SubscriptionService:
     """
     Service for managing subscription lifecycle:
@@ -1045,6 +1055,156 @@ class SubscriptionService:
             return int(raw) if raw is not None else None
         except (TypeError, ValueError):
             return None
+
+    async def reconcile_subscriptions(
+        self, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Reconcile DB subscription state against Apple's authoritative status.
+
+        The belt-and-suspenders backstop for missed/delayed App Store Server
+        Notifications: a sub that lapsed but whose EXPIRED/REFUND webhook never
+        arrived still reads "active" in the DB, so the user keeps access they no
+        longer pay for (and a stale ``expiry_date`` can wrongly 403 an entitled
+        user on echo save). This scans every sub in an active-ish state, asks
+        Apple, and corrects drift through the SAME mutation + downgrade paths the
+        webhooks use.
+
+        Corrections (iOS only — Get All Subscription Statuses is Apple-specific;
+        Google renewals are handled on their own path):
+          - Apple EXPIRED  -> mark expired  + revoke profile access
+          - Apple REVOKED  -> mark refunded + revoke profile access
+          - Apple BILLING_RETRY / GRACE_PERIOD -> mark grace_period (keep access)
+          - Apple ACTIVE   -> advance a stale expiry_date to the latest verified
+                              renewal expiry (never regresses)
+
+        Best-effort per sub: one Apple lookup or write failure is counted and
+        skipped, never aborting the batch. Returns
+        ``{checked, corrected, errors}``.
+
+        Args:
+            limit: Optional cap on subscriptions to check (for testing / partial
+                runs). None scans all active-ish subs.
+        """
+        result: Dict[str, int] = {"checked": 0, "corrected": 0, "errors": 0}
+        subs = await self.dynamodb_service.scan_items(
+            self.subscriptions_table,
+            filter_expression="#s IN (:active, :grace, :trial)",
+            expression_values={
+                ":active": SubscriptionStatus.ACTIVE.value,
+                ":grace": SubscriptionStatus.GRACE_PERIOD.value,
+                ":trial": SubscriptionStatus.TRIAL.value,
+            },
+            expression_names={"#s": "status"},
+            limit=limit,
+        )
+        logger.info("Reconciliation: scanned %d active-ish subscriptions", len(subs))
+
+        for item in subs:
+            # Get All Subscription Statuses is Apple-only — skip Google subs.
+            if item.get("platform") != Platform.IOS.value:
+                continue
+            otid = item.get("subscription_id")
+            if not otid:
+                continue
+            result["checked"] += 1
+            try:
+                await self._reconcile_one(item, otid, result)
+            except Exception as e:  # noqa: BLE001 - isolate per-sub failures
+                result["errors"] += 1
+                logger.warning("Reconcile failed for %s: %s", otid, e)
+
+        logger.info(
+            "Reconciliation complete: checked=%d, corrected=%d, errors=%d",
+            result["checked"],
+            result["corrected"],
+            result["errors"],
+        )
+        return result
+
+    async def _reconcile_one(
+        self, item: Dict[str, Any], otid: str, result: Dict[str, int]
+    ) -> None:
+        """Reconcile a single subscription against Apple's live status,
+        mutating the ``result`` counters in place.
+
+        Mutations go through ``_ordered_subscription_set`` with ``signed_ms=None``:
+        Apple's Get All Subscription Statuses IS the freshest authoritative view
+        (fresher than any stored webhook), so this write is unconditional rather
+        than signedDate-ordered — but still a TARGETED update that can't clobber
+        unrelated fields.
+        """
+        state = await self.receipt_validator.get_apple_subscription_state(otid)
+        if not state:
+            return  # Couldn't determine Apple's view — leave the DB untouched.
+
+        apple_status = state["status"]
+        db_status = item.get("status")
+        subscription = Subscription.from_dynamodb_item(item)
+
+        if apple_status in (_APPLE_STATUS_EXPIRED, _APPLE_STATUS_REVOKED):
+            new_status = (
+                SubscriptionStatus.EXPIRED.value
+                if apple_status == _APPLE_STATUS_EXPIRED
+                else SubscriptionStatus.REFUNDED.value
+            )
+            if db_status == new_status:
+                return
+            applied = await self._ordered_subscription_set(
+                subscription,
+                None,
+                {"status": new_status, "auto_renew_enabled": False},
+                f"reconciled_{new_status}",
+            )
+            if applied:
+                await self._revoke_profile_access(subscription)
+                result["corrected"] += 1
+                logger.info(
+                    "Reconciled %s: Apple=%d -> %s (access revoked)",
+                    otid,
+                    apple_status,
+                    new_status,
+                )
+
+        elif apple_status in (
+            _APPLE_STATUS_BILLING_RETRY,
+            _APPLE_STATUS_GRACE_PERIOD,
+        ):
+            # Billing retry / grace still grants access — only reflect the state.
+            if db_status == SubscriptionStatus.GRACE_PERIOD.value:
+                return
+            applied = await self._ordered_subscription_set(
+                subscription,
+                None,
+                {"status": SubscriptionStatus.GRACE_PERIOD.value},
+                "reconciled_grace_period",
+            )
+            if applied:
+                result["corrected"] += 1
+                logger.info(
+                    "Reconciled %s: Apple=%d -> grace_period", otid, apple_status
+                )
+
+        elif apple_status == _APPLE_STATUS_ACTIVE:
+            # Healthy at Apple. Only fix a stale expiry_date — the exact drift
+            # that wrongly 403s an entitled user on echo save. Never regresses.
+            latest_iso = _ms_to_iso(state.get("expires_date_ms"))
+            stored_iso = item.get("expiry_date")
+            advanced = _later_iso(stored_iso, latest_iso)
+            if advanced and advanced != stored_iso:
+                applied = await self._ordered_subscription_set(
+                    subscription,
+                    None,
+                    {"expiry_date": advanced},
+                    "reconciled_expiry_advanced",
+                )
+                if applied:
+                    result["corrected"] += 1
+                    logger.info(
+                        "Reconciled %s: expiry advanced %s -> %s",
+                        otid,
+                        stored_iso,
+                        advanced,
+                    )
 
     async def _ordered_subscription_set(
         self,
