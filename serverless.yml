@@ -432,6 +432,12 @@ functions:
   # Scheduled job: reconcile subscriptions against Apple's authoritative status
   # (backstop for missed/delayed App Store Server Notifications).
   subscriptionReconciliation:
+    # Explicit physical name: the default `${service}-${stage}-subscriptionReconciliation`
+    # is 69 chars on the production-v2 stage and Lambda caps functionName at 64.
+    # The service+stage prefix is 43 chars, leaving 21 for the suffix, so shorten
+    # only the function part ("subscriptionRecon" = 17 → 60 total). The CloudFormation
+    # logical ID is unchanged; this only renames the physical Lambda.
+    name: ${self:service}-${self:provider.stage}-subscriptionRecon
     handler: src/app/jobs/subscription_reconciliation_job.lambda_handler
     description: Daily reconcile of subscription state vs Apple (drift correction)
     timeout: 600
