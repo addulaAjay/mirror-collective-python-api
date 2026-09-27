@@ -77,6 +77,15 @@ def _extract_client_key(request: Optional[Request]) -> Optional[str]:
     return key
 
 
+def extract_client_key(request: Optional[Request]) -> Optional[str]:
+    """Public wrapper over :func:`_extract_client_key` for handlers that opt
+    into idempotency without the decorator (e.g. routes using
+    ``from __future__ import annotations``, where the decorator's wrapper
+    breaks FastAPI's forward-ref resolution). Same 400-on-oversize contract.
+    """
+    return _extract_client_key(request)
+
+
 def _extract_user_id(kwargs: Dict[str, Any]) -> Optional[str]:
     """Pull user_id out of the resolved `current_user` dependency. The
     auth dependency in this codebase puts the Cognito sub at
@@ -98,7 +107,7 @@ def idempotent(route_id: str) -> Callable[..., Callable[..., Awaitable[Any]]]:
     """
 
     def decorator(
-        handler: Callable[..., Awaitable[Any]]
+        handler: Callable[..., Awaitable[Any]],
     ) -> Callable[..., Awaitable[Any]]:
         # Verify the decorated function exposes the Request parameter so
         # FastAPI's dependency injection wires it for us.

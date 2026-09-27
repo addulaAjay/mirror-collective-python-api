@@ -31,6 +31,15 @@ class Practice(BaseModel):
     type: PracticeType
     duration_sec: conint(ge=0)
     steps: List[str]
+    # Safety metadata: True when the practice is breath-focused, regardless of
+    # its `type`. Drives the no_breathwork filter so breath-centric practices
+    # tagged as somatic (e.g. heart_hand_breath) are excluded too (spec §9.3).
+    breath_focused: bool = False
+
+    @property
+    def is_breath_focused(self) -> bool:
+        """A practice is breath-focused if explicitly tagged, or typed breath."""
+        return self.breath_focused or self.type == "breath"
 
 
 class PracticeCatalog(BaseModel):

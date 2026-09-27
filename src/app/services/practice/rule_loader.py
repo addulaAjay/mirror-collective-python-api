@@ -11,7 +11,7 @@ and ``narrative_stage_in`` are reserved for V2 and ignored here (per spec
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, confloat, conint
 
@@ -48,10 +48,38 @@ class FallbackConfig(BaseModel):
     rule_id: str = "fallback"
 
 
+class FamilyFallback(BaseModel):
+    """Per-family (spec §6) fallback pool for one loop family.
+
+    ``candidates`` is the pool to draw from when no primary rule matches (or
+    every matched rule's candidates were filtered). ``cooldown_hours`` applies
+    the family cooldown (12h default; grief 24h; transition 18h)."""
+
+    candidates: List[str]
+    cooldown_hours: conint(ge=0)
+
+
+class PerFamilyFallbackConfig(BaseModel):
+    """Spec §6 starred per-family fallbacks (reversible via ``enabled``).
+
+    When ``enabled`` is False the recommender keeps the legacy GLOBAL
+    ``fallback`` block. When True, a family with no matching primary rule draws
+    from its own ``families`` pool; a family absent from ``families`` yields a
+    typed ``no_eligible_practice`` reason instead of substituting a different
+    family."""
+
+    enabled: bool = False
+    rule_id: str = "family_fallback"
+    families: Dict[str, FamilyFallback] = Field(default_factory=dict)
+
+
 class PracticeRulesDoc(BaseModel):
     version: int
     rules: List[PracticeRule]
     fallback: FallbackConfig
+    per_family_fallback: PerFamilyFallbackConfig = Field(
+        default_factory=PerFamilyFallbackConfig
+    )
 
     def rule_by_id(self, rule_id: str) -> Optional[PracticeRule]:
         for r in self.rules:

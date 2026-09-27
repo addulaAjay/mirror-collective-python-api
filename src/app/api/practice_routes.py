@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, confloat
 
 from ..core.exceptions import NotFoundError, SessionExpired
+from ..core.idempotency import MAX_CLIENT_KEY_LEN
 from ..core.security import get_current_user
 from ..models.practice_completion import PracticeCompletion
 from ..repositories.echo_loop_state_repo import EchoLoopStateRepo
@@ -23,6 +24,7 @@ from ..repositories.reflection_session_repo import ReflectionSessionRepo
 from ..repositories.user_personalization_repo import UserPersonalizationRepo
 from ..services.echo.loop_state_updater import apply_completion_delta
 from ..services.echo.snapshot_service import V1_SUPPORTED_LOOPS, build_snapshot
+from ..services.idempotency_service import IdempotencyService, get_idempotency_service
 from ..services.practice.personalization_loader import load_personalization_defaults
 from ..services.practice.personalizer import bucket_for_now
 from ..services.reflection.session_lifecycle import is_active
@@ -38,6 +40,11 @@ from ..services.telemetry.reflection_events import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Practice"])
+
+# Idempotency route namespace for POST /practice/complete. The client-supplied
+# completion_event_id is scoped under (user_id, this route) so a token cannot
+# collide with another route's cache or another user's namespace.
+_COMPLETE_ROUTE_ID = "complete_practice"
 
 
 # ============================================================
@@ -60,6 +67,10 @@ class CompletePracticeRequest(BaseModel):
     rule_id: str
     helpful: Optional[bool] = None
     completed_at: Optional[str] = None
+    # Client-generated dedup token (UUID). When present, a retried or
+    # double-tapped submission with the same value replays the original
+    # response verbatim instead of recording a second completion + cooldown.
+    completion_event_id: Optional[str] = None
 
 
 class LoopStateOut(BaseModel):
@@ -125,6 +136,10 @@ def get_telemetry_emitter() -> TelemetryEmitter:
     return get_default_emitter()
 
 
+def get_idempotency() -> IdempotencyService:
+    return get_idempotency_service()
+
+
 # ============================================================
 # Helpers
 # ============================================================
@@ -132,6 +147,24 @@ def get_telemetry_emitter() -> TelemetryEmitter:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_event_id(raw: Optional[str]) -> Optional[str]:
+    """Validate the client dedup token. Returns the trimmed key, or None when
+    absent/blank (dedup is opt-in). Raises 400 on an oversize key, mirroring
+    the Idempotency-Key header contract in core.idempotency.
+    """
+    if not raw:
+        return None
+    key = raw.strip()
+    if not key:
+        return None
+    if len(key) > MAX_CLIENT_KEY_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"completion_event_id exceeds {MAX_CLIENT_KEY_LEN} chars",
+        )
+    return key
 
 
 def _parse_iso(s: Optional[str]) -> Optional[datetime]:
@@ -193,7 +226,9 @@ async def _build_snapshot_out(
     description=(
         "Spec §6.4. Inserts a completion row, updates personalization, "
         "applies the loop-state delta (spec §8.3), emits telemetry, and "
-        "returns the refreshed snapshot inline."
+        "returns the refreshed snapshot inline. Idempotency: clients MAY send "
+        "``completion_event_id`` so a retried/double-tapped submission replays "
+        "the original response and records exactly one completion + cooldown."
     ),
 )
 async def complete_practice(
@@ -204,6 +239,7 @@ async def complete_practice(
     completions: PracticeCompletionRepo = Depends(get_practice_completion_repo),
     prefs: UserPersonalizationRepo = Depends(get_user_personalization_repo),
     telemetry: TelemetryEmitter = Depends(get_telemetry_emitter),
+    idempotency: IdempotencyService = Depends(get_idempotency),
 ):
     """Log a practice completion (spec §6.4). Side effects in order:
     1. Insert into ``mc_practice_completions``.
@@ -212,10 +248,31 @@ async def complete_practice(
     3. Apply state delta to ``mc_echo_loop_state`` per spec §8.3.
     4. Emit telemetry events.
     5. Recompute and return the snapshot inline.
+
+    Dedup: when ``completion_event_id`` is supplied, the first submission's
+    response is cached under ``(user_id, complete_practice, event_id)``. A
+    retry with the same token returns that cached response before any side
+    effect runs, so exactly one completion row + one cooldown delta is ever
+    recorded (spec §6.4 double-tap guard).
     """
     user_id = current_user.get("id") or current_user.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="missing user id in claims")
+
+    # Idempotency guard — replay the cached response before touching any
+    # side effect (completion insert, cooldown delta, telemetry).
+    dedup_key = _normalize_event_id(request.completion_event_id)
+    if dedup_key:
+        cached = await idempotency.get_cached(
+            user_id=user_id, route=_COMPLETE_ROUTE_ID, client_key=dedup_key
+        )
+        if cached is not None:
+            logger.info(
+                "practice.complete idempotency HIT user=%s event=%s",
+                user_id,
+                dedup_key,
+            )
+            return cached["body"]
 
     if request.loop_id not in V1_SUPPORTED_LOOPS:
         raise HTTPException(
@@ -309,11 +366,25 @@ async def complete_practice(
     response = CompletePracticeResponse(
         completion_id=completion.completion_id, snapshot=snapshot_out
     )
-    return {
+    body = {
         "success": True,
         "data": response.model_dump(),
         "message": "Practice completion logged",
     }
+
+    # Record the response so a retry with the same completion_event_id
+    # replays it verbatim (see the guard at the top of the handler). Best
+    # effort — a cache failure must not fail the write we already committed.
+    if dedup_key:
+        await idempotency.cache(
+            user_id=user_id,
+            route=_COMPLETE_ROUTE_ID,
+            client_key=dedup_key,
+            status_code=200,
+            body=body,
+        )
+
+    return body
 
 
 # ============================================================

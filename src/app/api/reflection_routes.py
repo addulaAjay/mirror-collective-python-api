@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
 
 from ..core.exceptions import (
@@ -22,10 +22,12 @@ from ..core.exceptions import (
     NotFoundError,
     OverrideNotAllowed,
 )
+from ..core.idempotency import extract_client_key
 from ..core.security import get_current_user
 from ..models.reflection_session import ReflectionSession
 from ..repositories.echo_loop_state_repo import EchoLoopStateRepo
 from ..repositories.reflection_session_repo import ReflectionSessionRepo
+from ..services.idempotency_service import IdempotencyService, get_idempotency_service
 from ..services.reflection import session_lifecycle
 from ..services.reflection.loop_seeder import seed_loops_from_quiz
 from ..services.reflection.motif_mapper import (
@@ -116,6 +118,16 @@ def get_echo_loop_state_repo() -> EchoLoopStateRepo:
     return EchoLoopStateRepo()
 
 
+def get_idempotency() -> IdempotencyService:
+    return get_idempotency_service()
+
+
+# Idempotency route namespace for POST /reflection/quiz. Scopes the client's
+# Idempotency-Key under (user_id, this route) so a retried submission replays
+# the original response without re-seeding loop state.
+_QUIZ_ROUTE_ID = "submit_quiz"
+
+
 # ============================================================
 # Helpers
 # ============================================================
@@ -181,15 +193,20 @@ def _build_tied_payloads(
         "Spec §6.1. Same answers within an active session reuse the existing "
         "session; different answers overwrite the session in place; expired "
         "sessions create a new one. Sets initial loop state via the seeder "
-        "(spec §8.3)."
+        "(spec §8.3). Idempotency: clients MAY send an ``Idempotency-Key`` "
+        "header so a retried submission returns the original response verbatim "
+        "without re-seeding loop state (dedup on top of the same-answers reuse "
+        "rules below)."
     ),
 )
 async def submit_quiz(
-    request: QuizRequest,
+    payload: QuizRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(get_current_user),
     x_user_timezone: Optional[str] = Header(default=None, alias="X-User-Timezone"),
     sessions: ReflectionSessionRepo = Depends(get_reflection_session_repo),
     loop_states: EchoLoopStateRepo = Depends(get_echo_loop_state_repo),
+    idempotency: IdempotencyService = Depends(get_idempotency),
 ):
     """Score quiz, resolve motif, seed/refresh loop state.
 
@@ -197,17 +214,53 @@ async def submit_quiz(
       * No active session → create new (full seed).
       * Active session + same answers + same motif → reuse (no reseed).
       * Active session + different answers → overwrite same session_id (full reseed).
+
+    Idempotency: when the client sends an ``Idempotency-Key`` header, the first
+    submission's response is cached under ``(user_id, submit_quiz, key)``. A
+    retry with the same key replays that response before any scoring/seeding
+    runs, deduping identical same-session submissions on top of the reuse rules.
     """
     user_id = current_user.get("id") or current_user.get("sub")
     if not user_id:
         raise InvalidQuizAnswer("authenticated user has no id/sub claim")
 
-    answers_dict = _quiz_answers_dict(request.answers)
+    # Idempotency guard — replay cached response before scoring/seeding.
+    dedup_key = extract_client_key(request)
+    if dedup_key:
+        cached = await idempotency.get_cached(
+            user_id=user_id, route=_QUIZ_ROUTE_ID, client_key=dedup_key
+        )
+        if cached is not None:
+            logger.info(
+                "reflection.quiz idempotency HIT user=%s key=%s", user_id, dedup_key
+            )
+            return cached["body"]
+
+    async def _finalize(
+        data: QuizResponseData,
+        tied_tags: List[str],
+        scores: Dict[str, int],
+        explanation: List[str],
+    ) -> Dict[str, Any]:
+        """Build the envelope and, when a dedup key was supplied, cache it so a
+        retry replays this exact response without re-seeding loop state."""
+        body = _quiz_response(data, tied_tags, scores, explanation)
+        if dedup_key:
+            await idempotency.cache(
+                user_id=user_id,
+                route=_QUIZ_ROUTE_ID,
+                client_key=dedup_key,
+                status_code=200,
+                body=body,
+            )
+        return body
+
+    answers_dict = _quiz_answers_dict(payload.answers)
 
     # --- Score the quiz ---
     rules = load_quiz_rules()
     scoring = score_quiz(
-        answers_dict, rules, user_override_tag=request.user_override_tag
+        answers_dict, rules, user_override_tag=payload.user_override_tag
     )
     motif_payload = build_motif_payload(
         scoring.winning_tag,
@@ -238,7 +291,7 @@ async def submit_quiz(
                 motif=response_payload,
                 tied_motifs=None,
             )
-            return _quiz_response(
+            return await _finalize(
                 data, scoring.tied_tags, scoring.scores, scoring.explanation
             )
 
@@ -264,7 +317,7 @@ async def submit_quiz(
                 else None
             ),
         )
-        return _quiz_response(
+        return await _finalize(
             data, scoring.tied_tags, scoring.scores, scoring.explanation
         )
 
@@ -297,7 +350,7 @@ async def submit_quiz(
             else None
         ),
     )
-    return _quiz_response(data, scoring.tied_tags, scoring.scores, scoring.explanation)
+    return await _finalize(data, scoring.tied_tags, scoring.scores, scoring.explanation)
 
 
 def _quiz_response(

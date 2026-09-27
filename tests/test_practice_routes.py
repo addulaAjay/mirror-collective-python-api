@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from src.app.api.practice_routes import (
     get_echo_loop_state_repo,
+    get_idempotency,
     get_practice_completion_repo,
     get_reflection_session_repo,
     get_telemetry_emitter,
@@ -29,6 +30,7 @@ from src.app.repositories.reflection_session_repo import (
 )
 from src.app.repositories.user_personalization_repo import UserPersonalizationRepo
 from tests._fakes.fake_dynamodb import FakeAioSession, FakeTable
+from tests._fakes.fake_idempotency import FakeIdempotencyService
 
 SESSIONS = "mc_reflection_sessions-test"
 LOOPS = "mc_echo_loop_state-test"
@@ -87,7 +89,12 @@ def emitter() -> _SpyEmitter:
 
 
 @pytest.fixture
-def client(repos, emitter) -> Iterator[TestClient]:
+def idempotency() -> FakeIdempotencyService:
+    return FakeIdempotencyService()
+
+
+@pytest.fixture
+def client(repos, emitter, idempotency) -> Iterator[TestClient]:
     app.dependency_overrides[get_current_user] = _fake_user
     app.dependency_overrides[get_reflection_session_repo] = lambda: repos["sessions"]
     app.dependency_overrides[get_echo_loop_state_repo] = lambda: repos["loop_states"]
@@ -96,6 +103,7 @@ def client(repos, emitter) -> Iterator[TestClient]:
     ]
     app.dependency_overrides[get_user_personalization_repo] = lambda: repos["prefs"]
     app.dependency_overrides[get_telemetry_emitter] = lambda: emitter
+    app.dependency_overrides[get_idempotency] = lambda: idempotency
     try:
         with TestClient(app) as c:
             yield c
@@ -106,12 +114,13 @@ def client(repos, emitter) -> Iterator[TestClient]:
             get_practice_completion_repo,
             get_user_personalization_repo,
             get_telemetry_emitter,
+            get_idempotency,
         ):
             app.dependency_overrides.pop(dep, None)
 
 
 def _seed_session(repos, **overrides) -> ReflectionSession:
-    base = dict(
+    base: Dict[str, Any] = dict(
         user_id="test-user-123",
         motif_id="spiral",
         motif_name="Spiral",
@@ -135,7 +144,7 @@ def _seed_session(repos, **overrides) -> ReflectionSession:
 
 
 def _seed_loop(repos, **overrides) -> EchoLoopState:
-    base = dict(
+    base: Dict[str, Any] = dict(
         user_id="test-user-123",
         loop_id="pressure",
         tone_state="rising",
@@ -339,3 +348,116 @@ class TestUpdateHelpful:
             json={"helpful": True},
         )
         assert response.status_code == 404
+
+
+# ============================================================
+# POST /practice/complete — idempotency / dedup (completion_event_id)
+# ============================================================
+
+
+class TestCompleteIdempotency:
+    def _body(self, session_id: str, **overrides) -> Dict[str, Any]:
+        base = {
+            "session_id": session_id,
+            "loop_id": "pressure",
+            "tone_state": "rising",
+            "practice_id": "breath_4_6",
+            "rule_id": "pressure_loop_v1",
+            "helpful": True,
+            "completion_event_id": "evt-abc-123",
+        }
+        base.update(overrides)
+        return base
+
+    def test_retry_records_exactly_one_completion_and_one_cooldown(
+        self, client, repos, fake_tables
+    ):
+        session = _seed_session(repos)
+        _seed_loop(repos, loop_id="pressure", intensity_score=0.74)
+        body = self._body(session.session_id)
+
+        first = client.post("/api/practice/complete", json=body)
+        second = client.post("/api/practice/complete", json=body)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        # Exactly ONE completion row persisted (double submit deduped).
+        assert len(fake_tables[COMPLETIONS]._items) == 1
+        # Exactly ONE cooldown applied: 0.74 → 0.64, not 0.54.
+        loop = asyncio.run(repos["loop_states"].get("test-user-123", "pressure"))
+        assert loop.intensity_score == pytest.approx(0.64, abs=1e-3)
+
+    def test_retry_replays_identical_response(self, client, repos):
+        session = _seed_session(repos)
+        _seed_loop(repos, loop_id="pressure", intensity_score=0.74)
+        body = self._body(session.session_id)
+
+        first = client.post("/api/practice/complete", json=body).json()
+        second = client.post("/api/practice/complete", json=body).json()
+        # Same completion_id + snapshot returned verbatim on the retry.
+        assert first == second
+
+    def test_retry_does_not_emit_duplicate_telemetry(self, client, repos, emitter):
+        session = _seed_session(repos)
+        _seed_loop(repos, loop_id="pressure", intensity_score=0.74)
+        body = self._body(session.session_id)
+
+        client.post("/api/practice/complete", json=body)
+        events_after_first = len(emitter.events)
+        client.post("/api/practice/complete", json=body)
+        # Cache hit short-circuits before telemetry — no new events.
+        assert len(emitter.events) == events_after_first
+
+    def test_distinct_event_ids_record_two_completions(
+        self, client, repos, fake_tables
+    ):
+        session = _seed_session(repos)
+        _seed_loop(repos, loop_id="pressure", intensity_score=0.74)
+
+        client.post(
+            "/api/practice/complete",
+            json=self._body(session.session_id, completion_event_id="evt-1"),
+        )
+        client.post(
+            "/api/practice/complete",
+            json=self._body(session.session_id, completion_event_id="evt-2"),
+        )
+        assert len(fake_tables[COMPLETIONS]._items) == 2
+
+    def test_no_event_id_is_not_deduped(self, client, repos, fake_tables):
+        session = _seed_session(repos)
+        _seed_loop(repos, loop_id="pressure", intensity_score=0.74)
+        body = self._body(session.session_id)
+        body.pop("completion_event_id")
+
+        client.post("/api/practice/complete", json=body)
+        client.post("/api/practice/complete", json=body)
+        # Without a dedup token the double submit records two rows (opt-in).
+        assert len(fake_tables[COMPLETIONS]._items) == 2
+
+    def test_late_patch_after_deduped_post_no_extra_completion(
+        self, client, repos, fake_tables
+    ):
+        """Preserve late-helpful PATCH behavior: a later helpfulness update on a
+        deduped completion must not create another completion, though it does
+        apply the deferred vote's state delta once (existing PATCH semantics)."""
+        session = _seed_session(repos)
+        _seed_loop(repos, loop_id="pressure", intensity_score=0.74)
+        # POST twice with helpful=None + same event id → one completion, no cooldown.
+        body = self._body(session.session_id, helpful=None)
+        first = client.post("/api/practice/complete", json=body).json()
+        client.post("/api/practice/complete", json=body)
+        completion_id = first["data"]["completion_id"]
+        assert len(fake_tables[COMPLETIONS]._items) == 1
+        loop = asyncio.run(repos["loop_states"].get("test-user-123", "pressure"))
+        assert loop.intensity_score == 0.74  # no cooldown yet
+
+        # Late helpful vote applies the deferred delta exactly once.
+        patch = client.patch(
+            f"/api/practice/complete/{quote(completion_id, safe='')}/helpful",
+            json={"helpful": True},
+        )
+        assert patch.status_code == 200
+        assert len(fake_tables[COMPLETIONS]._items) == 1  # still one row
+        loop = asyncio.run(repos["loop_states"].get("test-user-123", "pressure"))
+        assert loop.intensity_score == pytest.approx(0.64, abs=1e-3)

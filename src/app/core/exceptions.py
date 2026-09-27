@@ -197,6 +197,21 @@ class OverrideTagNotInTie(BaseAPIException):
         super().__init__(message, 409, "OVERRIDE_TAG_NOT_IN_TIE")
 
 
+class NoEligiblePractice(BaseAPIException):
+    """Raised by the per-family fallback path (spec §6) when a family has no
+    fallback pool defined, or its fallback pool is fully filtered by
+    safety/cooldown. Unlike the GLOBAL fallback, this never substitutes a
+    different family — it returns a typed, family-scoped reason."""
+
+    def __init__(
+        self,
+        message: str = "No eligible practice for this loop family",
+        retry_after_seconds: int = 3600,
+    ):
+        super().__init__(message, 409, "NO_ELIGIBLE_PRACTICE")
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ConfigLoadError(BaseAPIException):
     """Raised when a YAML/JSON config file fails to parse at startup or first read."""
 

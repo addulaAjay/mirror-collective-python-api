@@ -52,6 +52,23 @@ def test_no_filter_preserves_all_candidates(catalog_ids):
     assert {p.id for p in out} == {"breath_4_6", "name_and_need", "heart_hand_breath"}
 
 
+def test_no_breathwork_removes_breath_focused_by_metadata(catalog_ids):
+    # heart_hand_breath + posture_reset are typed somatic but breath-focused;
+    # no_breathwork must drop them by the breath_focused tag, not just type.
+    candidates = _practices(
+        catalog_ids,
+        ["breath_4_6", "heart_hand_breath", "posture_reset", "name_and_need"],
+    )
+    prefs = UserPersonalization(user_id="u1", flags=UserFlags(no_breathwork=True))
+    out = apply(candidates, prefs)
+    assert {p.id for p in out} == {"name_and_need"}
+
+
+def test_breath_focused_tag_present_on_breath_practices(catalog_ids):
+    for pid in ("breath_4_6", "breath_box_4", "heart_hand_breath", "posture_reset"):
+        assert catalog_ids.get(pid).is_breath_focused, pid
+
+
 def test_combined_user_and_global_disallow(catalog_ids):
     candidates = _practices(
         catalog_ids, ["breath_4_6", "heart_hand_breath", "one_percent_first_call"]

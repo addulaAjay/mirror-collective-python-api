@@ -2,7 +2,9 @@
 
 Drop candidate practices for which the user has opted out by type:
 
-  * ``flags.no_breathwork=True`` removes any practice with ``type=breath``.
+  * ``flags.no_breathwork=True`` removes any breath-focused practice — every
+    practice with ``type=breath`` *or* the ``breath_focused`` safety tag set
+    (e.g. ``heart_hand_breath`` / ``posture_reset``, which are typed somatic).
   * Each entry in ``user.disallow_types`` removes that type.
   * Each entry in ``personalization_defaults.global.disallow_types`` removes
     that type globally.
@@ -26,8 +28,11 @@ def apply(
     global_disallow_types: Iterable[str] = (),
 ) -> List[Practice]:
     blocked = set()
-    if prefs.flags.no_breathwork:
-        blocked.add("breath")
     blocked.update(prefs.disallow_types or [])
     blocked.update(global_disallow_types or [])
-    return [p for p in candidates if p.type not in blocked]
+    no_breathwork = prefs.flags.no_breathwork
+    return [
+        p
+        for p in candidates
+        if p.type not in blocked and not (no_breathwork and p.is_breath_focused)
+    ]
