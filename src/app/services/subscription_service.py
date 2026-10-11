@@ -978,6 +978,32 @@ class SubscriptionService:
                 if getattr(subscription, "is_in_trial", False):
                     user_profile.subscription_status = "trial"
                     user_profile.has_used_trial = True
+                    # Record WHEN the trial ends, not just that one is running.
+                    #
+                    # The entitlement guard evaluates a trial by timestamp
+                    # (core/entitlements.py::_trial_has_lapsed) and fails
+                    # closed when it is missing. Without this, activation
+                    # produced subscription_status="trial" and
+                    # subscription_tier="trial" — entitled by every outward
+                    # sign — while the guard read the absent timestamp as
+                    # "lapsed" and returned 403. Apple trial subscribers were
+                    # locked out of Echo Vault the moment they subscribed
+                    # (observed in production 2026-10-11).
+                    #
+                    # For an intro offer the subscription's expiry IS the
+                    # trial end, so expiry_date is the fallback when Apple
+                    # does not populate the trial window separately. Nothing
+                    # is invented: if neither is present the field stays unset
+                    # and the guard correctly keeps failing closed, because we
+                    # genuinely have no evidence the trial is live.
+                    trial_end = getattr(
+                        subscription, "trial_end_date", None
+                    ) or getattr(subscription, "expiry_date", None)
+                    if trial_end:
+                        user_profile.trial_expires_at = trial_end
+                        user_profile.trial_started_at = getattr(
+                            subscription, "trial_start_date", None
+                        ) or getattr(subscription, "purchase_date", None)
                 else:
                     user_profile.subscription_status = "active"
                 user_profile.primary_subscription_id = subscription.subscription_id
