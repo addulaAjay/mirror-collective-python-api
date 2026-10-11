@@ -1,3 +1,20 @@
+# NOTE: every dependency is pinned exactly.
+#
+# These ranges used to float. Combined with `--no-cache-dir` in
+# serverless.yml, every CI run re-resolved to whatever was newest, so the
+# deployment package grew without a single line of code changing — until
+# 2026-10-11, when it crossed Lambda's hard 250 MB unzipped limit and
+# CloudFormation rolled back a production deploy. A build you cannot
+# reproduce is a build you cannot diagnose.
+#
+# The pins below are the versions resolved by the last SUCCESSFUL production
+# deploy, i.e. what production is running today — chosen over "latest" so
+# this change alters package size and nothing else. Drift had already carried
+# openai from the 1.12 floor to 3.29; the test suite mocks OpenAI, so it would
+# not have caught a breaking change there.
+#
+# Bump deliberately, one dependency at a time, with a staging deploy.
+
 fastapi==0.111.0
 mangum==0.17.0
 python-jose==3.3.0
@@ -7,26 +24,26 @@ passlib[bcrypt]==1.7.4
 uvicorn==0.30.1
 email-validator==2.1.1
 requests==2.31.0
-openai>=1.12.0
+openai==3.19.2
 python-dotenv==1.0.0
-google-auth>=2.0.0
-google-auth-oauthlib>=1.0.0
-google-auth-httplib2>=0.1.0
-google-api-python-client>=2.0.0
+google-auth==2.58.1
+google-auth-oauthlib==1.4.1
+google-auth-httplib2==0.4.2
+google-api-python-client==2.200.0
 aioboto3==13.1.1
 # Renders the compiled MJML echo-share email templates (emails/dist/*.html).
-jinja2>=3.1.4,<4
+jinja2==3.1.6
 PyYAML==6.0.2
 apscheduler==3.10.4
 PyJWT==2.8.0
-aiohttp>=3.8.0
+aiohttp==3.14.3
 # Apple App Store Server SDK — provides SignedDataVerifier for x5c chain
 # verification of signedTransactionInfo JWS payloads returned by Apple's
 # transactions API. Required for payment integrity; the previous code
 # decoded JWS without signature verification, which would let an
 # infrastructure-level MITM inject forged transactions.
-app-store-server-library>=3.0.0,<4.0.0
+app-store-server-library==3.1.2
 # cryptography is a transitive dep of app-store-server-library but
 # pinning here makes the x5c chain validation behavior predictable
 # across deploys.
-cryptography>=42.0.0
+cryptography==50.0.1
