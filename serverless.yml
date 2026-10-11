@@ -1248,6 +1248,19 @@ custom:
     # 250 MB unzipped ceiling for a while; floating dependency versions pushed
     # it over without any code change. See requirements.txt.
     slim: true
+    # Override the plugin's default slim patterns, which include
+    # '**/*.dist-info*'. Removing dist-info broke production on 2026-10-11:
+    # EmailStr calls importlib.metadata.version("email-validator") at import
+    # time, so the handler failed with
+    #   Runtime.ImportModuleError: No package metadata was found for
+    #   email-validator
+    # Provisioned Concurrency then could not stabilise and CloudFormation
+    # rolled the deploy back. Several dependencies here read their own
+    # metadata at import, so dist-info must stay.
+    slimPatternsAppendDefaults: false
+    slimPatterns:
+      - '**/*.py[c|o]'
+      - '**/__pycache__*'
     # ...but do NOT run `strip` on the compiled extensions. slim strips .so
     # symbols by default, and several dependencies here ship native code
     # (cryptography, pydantic-core, aiohttp). Stripping those saves little
