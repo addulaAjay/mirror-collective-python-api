@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -32,8 +33,22 @@ if TYPE_CHECKING:
     from ..services.conversation_service import ConversationService
 
 from ..core.enhanced_auth import get_user_with_profile
+from ..core.exceptions import RateLimitExceededError, ValidationError
 from ..core.security import get_current_user, get_current_user_optional
 from ..repositories.life_anchor_repo import LifeAnchorRepo
+from ..services.chat_attachment_service import (
+    compose_attachment_turn_content,
+    decode_audio_attachment,
+    decode_image_attachment,
+)
+from ..services.chat_media_quota import get_chat_media_quota_service
+from ..services.telemetry.chat_media_events import emit_chat_media
+from ..services.transcription_service import STT_MODEL, get_transcription_service
+
+# Reported in chat_media telemetry so cost analysis can attribute spend to a
+# model. Mirrors the orchestrator's own default; read from the same env var so
+# the two cannot silently disagree.
+_VISION_TELEMETRY_MODEL = os.getenv("MIRRORGPT_VISION_MODEL", "gpt-4o-mini")
 from ..services.dynamodb_service import (  # noqa: F401  (DynamoDBService patched in tests/conftest)
     DynamoDBService,
     get_dynamodb_service,
@@ -75,6 +90,9 @@ from .models import (
     MirrorMomentResponse,
     PatternLoopData,
     PatternLoopResponse,
+    TranscribeData,
+    TranscribeRequest,
+    TranscribeResponse,
     UserInsightsData,
     UserInsightsResponse,
 )
@@ -413,6 +431,75 @@ async def mirrorgpt_chat(
     - Personalized responses based on archetype
     """
 
+    # Decode + validate any inline attachment BEFORE the main try block.
+    #
+    # Chat media arrives in the request body and is never stored (see the
+    # client repo's docs/CHAT_MEDIA_V1_PLAN.md D6/D7), so this is the only
+    # gate between a caller-supplied blob and the OpenAI call.
+    #
+    # Deliberately OUTSIDE the try: that block ends in a broad
+    # `except Exception -> HTTPException(500)`, which would turn a
+    # ValidationError about a bad image into "Mirror chat failed". Out here it
+    # reaches the registered BaseAPIException handler and returns a 400 that
+    # tells the client what was actually wrong with their attachment.
+    media_started_at = time.monotonic()
+    decoded_attachments = None
+    if request.attachments:
+        try:
+            decoded_attachments = [
+                decode_image_attachment(att.mime_type, att.data_base64)
+                for att in request.attachments
+            ]
+        except ValidationError as exc:
+            # Record the rejection before re-raising. Chat media is never
+            # stored, so if this line isn't written there is no record the
+            # attempt happened at all — and a climbing rejection rate is how
+            # we learn the client's validation has drifted from ours.
+            #
+            # `str(exc)` is safe here: chat_attachment_service never
+            # interpolates payload bytes into its messages (it has a test
+            # pinning that).
+            emit_chat_media(
+                user_id=current_user["id"],
+                kind="image",
+                mime_type=request.attachments[0].mime_type,
+                decoded_bytes=0,
+                status="rejected",
+                duration_ms=int((time.monotonic() - media_started_at) * 1000),
+                reject_reason=str(exc),
+            )
+            raise
+
+        # Shape only — never the bytes, never the base64. A 400KB string in a
+        # CloudWatch line is both a cost and a privacy problem.
+        logger.info(
+            "mirrorgpt_chat attachment: kind=%s mime=%s bytes=%d",
+            decoded_attachments[0].kind,
+            decoded_attachments[0].mime_type,
+            decoded_attachments[0].size_bytes,
+        )
+
+        # Daily per-user cap, checked BEFORE the orchestrator runs. Vision is
+        # the one path here where a single user can spend real money per
+        # request, and enforcing the cap after the OpenAI call would mean
+        # paying for every turn we then refuse.
+        #
+        # Fails open on infrastructure trouble (see chat_media_quota), so this
+        # raises only when the user is genuinely over the limit.
+        try:
+            await get_chat_media_quota_service().consume_vision_turn(current_user["id"])
+        except RateLimitExceededError:
+            emit_chat_media(
+                user_id=current_user["id"],
+                kind=decoded_attachments[0].kind,
+                mime_type=decoded_attachments[0].mime_type,
+                decoded_bytes=decoded_attachments[0].size_bytes,
+                status="rejected",
+                duration_ms=int((time.monotonic() - media_started_at) * 1000),
+                reject_reason="daily_cap",
+            )
+            raise
+
     try:
         session_id = request.session_id or str(uuid.uuid4())
         conversation_id = request.conversation_id
@@ -464,7 +551,20 @@ async def mirrorgpt_chat(
             conversation_id=conversation_id,
             use_enhanced_response=request.use_enhanced_response,
             user_context=user_context,
+            attachments=decoded_attachments,
         )
+
+        if decoded_attachments:
+            emit_chat_media(
+                user_id=current_user["id"],
+                kind=decoded_attachments[0].kind,
+                mime_type=decoded_attachments[0].mime_type,
+                decoded_bytes=decoded_attachments[0].size_bytes,
+                status="degraded" if result.get("vision_degraded") else "success",
+                duration_ms=int((time.monotonic() - media_started_at) * 1000),
+                model=_VISION_TELEMETRY_MODEL,
+                description_returned=bool(result.get("image_description")),
+            )
 
         if not result.get("success"):
             logger.error(
@@ -504,12 +604,26 @@ async def mirrorgpt_chat(
                 # of two). Both must complete before we return: on Lambda the
                 # container freezes after the response, so a fire-and-forget
                 # write would be lost.
+                # On an attachment turn the persisted user content is the
+                # caption plus a one-line description of the photo — the image
+                # bytes are never stored (D7), so this text is the only
+                # lasting record, and it is what later turns replay and what
+                # the (text-only) archetype engine reads.
+                persisted_user_content = (
+                    compose_attachment_turn_content(
+                        message=request.message,
+                        image_description=result.get("image_description", ""),
+                    )
+                    if decoded_attachments
+                    else request.message
+                )
+
                 await asyncio.gather(
                     conversation_service.add_message_with_mirrorgpt_analysis(
                         conversation_id=conversation_id,
                         user_id=current_user["id"],
                         role="user",
-                        content=request.message,
+                        content=persisted_user_content,
                         mirrorgpt_analysis=result.get("mirrorgpt_analysis"),
                     ),
                     conversation_service.add_message(
@@ -559,6 +673,94 @@ async def mirrorgpt_chat(
             "Mirror chat failed for user_id=%s: %s", current_user.get("id"), e
         )
         raise HTTPException(status_code=500, detail="Mirror chat failed")
+
+
+@router.post("/transcribe", response_model=TranscribeResponse)
+async def mirrorgpt_transcribe(
+    request: TranscribeRequest,
+    current_user: Dict[str, Any] = Depends(get_user_with_profile),
+):
+    """Transcribe an inline voice recording to text.
+
+    Voice input is transcribe-to-text (plan D1): the client records, posts the
+    audio here, gets text back, and the user reads and edits it before sending
+    it as an ordinary chat turn. The transcript becomes the message, so
+    nothing downstream of ``/chat`` changes for voice — history, continuity
+    summaries and the (text-only) archetype engine all keep working.
+
+    A separate endpoint from ``/chat`` on purpose (plan D5): ``/chat`` already
+    runs p95 25-35s against a 30s API Gateway integration ceiling, so chaining
+    transcription in front of it would produce 504s.
+
+    The recording is never stored. It exists in this request body and in
+    ``/tmp`` for the life of one invocation.
+    """
+    started_at = time.monotonic()
+    user_id = current_user["id"]
+
+    def elapsed_ms() -> int:
+        return int((time.monotonic() - started_at) * 1000)
+
+    # 1. Validate and decode. Chat media is never stored, so this is the only
+    #    gate between a caller-supplied blob and the /tmp file we write.
+    try:
+        attachment = decode_audio_attachment(request.mime_type, request.data_base64)
+    except ValidationError as exc:
+        # `str(exc)` is safe: chat_attachment_service never interpolates
+        # payload bytes into its messages (pinned by a test).
+        emit_chat_media(
+            user_id=user_id,
+            kind="audio",
+            mime_type=request.mime_type,
+            decoded_bytes=0,
+            status="rejected",
+            duration_ms=elapsed_ms(),
+            reject_reason=str(exc),
+        )
+        raise
+
+    # 2. Daily cap, BEFORE the OpenAI call. Transcription is the largest cost
+    #    lever in this feature (it bills per minute and outruns vision by
+    #    ~10x), so enforcing it afterwards would mean paying for every turn we
+    #    then refuse.
+    try:
+        await get_chat_media_quota_service().consume_transcription_turn(user_id)
+    except RateLimitExceededError:
+        emit_chat_media(
+            user_id=user_id,
+            kind=attachment.kind,
+            mime_type=attachment.mime_type,
+            decoded_bytes=attachment.size_bytes,
+            status="rejected",
+            duration_ms=elapsed_ms(),
+            reject_reason="daily_cap",
+        )
+        raise
+
+    # 3. Transcribe. Raises InternalServerError on failure, which the
+    #    registered handler turns into a 500 — deliberately not swallowed into
+    #    an empty transcript, which would look to the user like the Mirror
+    #    heard silence.
+    result = await get_transcription_service().transcribe(attachment)
+
+    emit_chat_media(
+        user_id=user_id,
+        kind=attachment.kind,
+        mime_type=attachment.mime_type,
+        decoded_bytes=attachment.size_bytes,
+        status="success",
+        duration_ms=elapsed_ms(),
+        model=STT_MODEL,
+        audio_duration_ms=result.duration_ms,
+    )
+
+    # The transcript itself is deliberately NOT logged: it is the user's own
+    # words about something personal, and it is about to be persisted as a
+    # chat message anyway via the normal /chat path.
+    return TranscribeResponse(
+        success=True,
+        data=TranscribeData(text=result.text, duration_ms=result.duration_ms),
+    )
 
 
 @router.post("/analyze", response_model=ArchetypeAnalysisResponse)

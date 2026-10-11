@@ -2,7 +2,7 @@ import re
 import string
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 # Characters accepted as a "special character" in passwords. This deliberately
 # mirrors the set the mobile SignUp form accepts (any common ASCII symbol) so the
@@ -180,12 +180,87 @@ class DeviceUnregistrationRequest(BaseModel):
 # ========================================
 
 
+# Schema-level ceiling on an inline attachment's base64 string. This is the
+# OUTER guard: it lets pydantic refuse an absurd payload before any handler
+# code runs. The precise decoded-byte caps (and the MIME/magic-byte checks)
+# live in ``services.chat_attachment_service``.
+#
+# 2.1M base64 chars ≈ 1.57MB decoded, just above MAX_CHAT_IMAGE_BYTES so the
+# service layer — not the schema — produces the user-facing size message in
+# the common "slightly too big" case, while the schema still stops a payload
+# that would threaten Lambda's 6MB request ceiling.
+MAX_ATTACHMENT_BASE64_CHARS = 2_100_000
+
+
+class ChatAttachment(BaseModel):
+    """An inline media attachment on a chat turn.
+
+    Carries the bytes themselves rather than a reference: chat media is never
+    stored, so there is nothing to reference. See the client repo's
+    ``docs/CHAT_MEDIA_V1_PLAN.md`` (D6, D7).
+    """
+
+    kind: Literal["image"]
+    mime_type: str = Field(min_length=1, max_length=100)
+    data_base64: str = Field(min_length=1, max_length=MAX_ATTACHMENT_BASE64_CHARS)
+
+
+class TranscribeRequest(BaseModel):
+    """Inline audio for speech-to-text.
+
+    Same transport as a chat attachment (base64 in the body, never stored),
+    but its own endpoint rather than a step inside /chat: that path already
+    runs p95 25-35s against a 30s API Gateway ceiling, so chaining
+    transcription in front of it would produce 504s. See the client repo's
+    docs/CHAT_MEDIA_V1_PLAN.md D5.
+    """
+
+    mime_type: str = Field(min_length=1, max_length=100)
+    data_base64: str = Field(min_length=1, max_length=MAX_ATTACHMENT_BASE64_CHARS)
+
+
+class TranscribeData(BaseModel):
+    # May be empty: silence is a legitimate outcome, and the client shows
+    # "we didn't catch that" rather than treating it as an error.
+    text: str
+    # Audio length as reported by the model. None when it doesn't say.
+    duration_ms: Optional[int] = None
+
+
+class TranscribeResponse(BaseModel):
+    success: bool = True
+    data: TranscribeData
+
+
 class MirrorGPTChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=5000)
+    # NOTE: `message` deliberately has no `min_length`. An image-only turn —
+    # user picks a photo and sends without typing — is valid, so emptiness is
+    # enforced conditionally in `_require_message_or_attachment` below rather
+    # than by the field constraint that used to sit here (`min_length=1`).
+    message: str = Field(max_length=5000)
     session_id: Optional[str] = None
     conversation_id: Optional[str] = None
     include_archetype_analysis: bool = True
     use_enhanced_response: bool = True
+
+    # V1 is single-attachment. Capped in the schema so the orchestrator never
+    # has to decide what two images mean for one turn, and so the request can
+    # never approach the payload ceiling by stacking attachments.
+    attachments: Optional[List[ChatAttachment]] = Field(default=None, max_length=1)
+
+    @model_validator(mode="after")
+    def _require_message_or_attachment(self) -> "MirrorGPTChatRequest":
+        """A turn must carry words, an attachment, or both.
+
+        Whitespace does not count as words: without this, " " would be a valid
+        turn and the Mirror would be asked to reflect on nothing. An empty
+        `attachments` list is likewise not a loophole for an empty message.
+        """
+        if not self.message.strip() and not self.attachments:
+            raise ValueError(
+                "message must not be empty unless an attachment is provided"
+            )
+        return self
 
 
 class ArchetypeAnalysisRequest(BaseModel):
