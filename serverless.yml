@@ -1239,7 +1239,21 @@ plugins:
 
 custom:
   pythonRequirements:
-    slim: false
+    # Strip *.pyc, __pycache__, dist-info and bundled tests out of the
+    # vendored dependencies.
+    #
+    # This was false, and on 2026-10-11 a production deploy was rolled back by
+    # CloudFormation with "Unzipped size must be smaller than 262144000 bytes".
+    # The artifact is ~70 MB zipped, so it had been sitting on Lambda's hard
+    # 250 MB unzipped ceiling for a while; floating dependency versions pushed
+    # it over without any code change. See requirements.txt.
+    slim: true
+    # ...but do NOT run `strip` on the compiled extensions. slim strips .so
+    # symbols by default, and several dependencies here ship native code
+    # (cryptography, pydantic-core, aiohttp). Stripping those saves little
+    # next to removing .pyc/tests, and a mis-stripped binary fails at import
+    # time in the Lambda — i.e. in production, not in CI.
+    strip: false
     layer: false
     dockerizePip: true
     useDocker: true
