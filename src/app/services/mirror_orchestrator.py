@@ -5,15 +5,18 @@ response generation, and data persistence
 """
 
 import asyncio
+import json
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from ..utils.archetype_data import ArchetypeDefinitions
 from .archetype_engine import ArchetypeEngine, ChangeDetector, ConfidenceCalculator
+from .chat_attachment_service import DecodedAttachment
 from .dynamodb_service import DynamoDBService
 from .mirrorgpt_prompts import MIRRORGPT_SYSTEM_PROMPT
 from .openai_service import ChatMessage, OpenAIService
@@ -22,7 +25,78 @@ logger = logging.getLogger(__name__)
 
 # Re-exported for backwards compatibility — callers should import from
 # mirrorgpt_prompts directly going forward.
-__all__ = ["MIRRORGPT_SYSTEM_PROMPT", "ResponseGenerator", "MirrorOrchestrator"]
+__all__ = [
+    "MIRRORGPT_SYSTEM_PROMPT",
+    "ResponseGenerator",
+    "MirrorOrchestrator",
+    "VisionResponse",
+]
+
+# ── Vision (chat photo attachments) ───────────────────────────────────────────
+#
+# gpt-4o-mini is already the conversational default and is vision-capable, so
+# an image turn needs no model migration. Overridable in case a future photo
+# feature wants more reasoning than the mini model gives.
+_VISION_MODEL = os.getenv("MIRRORGPT_VISION_MODEL", "gpt-4o-mini")
+
+# Vision turns get a slightly larger budget than the 450-token conversational
+# default: the single completion returns BOTH the reply and the image
+# description (see D4), so the description's tokens must not eat the reply's.
+_VISION_MAX_TOKENS = int(os.getenv("MIRRORGPT_VISION_MAX_TOKENS", "600"))
+
+_VISION_TEMPERATURE = float(os.getenv("MIRRORGPT_VISION_TEMPERATURE", "0.7"))
+
+# `detail: 'low'` fixes the image at a flat token cost regardless of its
+# dimensions. The Mirror responds to the emotional and symbolic content of a
+# photo rather than fine detail, so low is the right fidelity for the product
+# — and it means the client's 1536px cap is about upload time, not cost.
+_VISION_IMAGE_DETAIL = "low"
+
+# Appended to the archetype system prompt on an image turn.
+#
+# Two jobs. (1) Ask for JSON with both fields, which is what makes D4's
+# "vision runs once" possible — a second call would re-send the image and
+# re-pay its cost. (2) Keep the Mirror's voice: without the instruction the
+# model drifts into literal description ("This image shows a lake...") which
+# is off-register for this product.
+#
+# The literal word "json" must appear here: OpenAI rejects
+# response_format={"type": "json_object"} unless the prompt mentions it.
+_VISION_INSTRUCTION = """
+The person has shared a photo with you.
+
+Respond with a json object containing exactly two keys:
+
+  "reply" — your reflection, in your own voice, speaking to what the photo
+    evokes rather than cataloguing what it contains. Same length and register
+    as always: 1-3 sentences. Do not describe the image back to them.
+
+  "image_description" — one plain, factual sentence naming what is in the
+    photo, written for your own future reference. This is the only record of
+    the image that is kept, so it should be literal and specific where the
+    reply is evocative.
+"""
+
+
+@dataclass(frozen=True)
+class VisionResponse:
+    """Result of a single vision completion.
+
+    ``image_description`` is persisted into the stored user turn so later
+    turns can replay the photo as text; the bytes are never stored and never
+    replayed (D4/D7). Empty string when the model did not return one — the
+    caller substitutes a generic label rather than inventing detail.
+    """
+
+    reply: str
+    image_description: str
+    # True when the vision call itself failed and `reply` is the template
+    # fallback — i.e. the user paid the latency but the photo was effectively
+    # ignored. Kept distinct from "model returned no description": this one is
+    # an outage, that one is prompt drift, and they need different responses.
+    # Telemetry reports them as `degraded` vs `description_returned`.
+    degraded: bool = False
+
 
 # Memory Preflight (Phase 1) — bounds for the pattern/summary packet injected
 # as a background system message. See docs/MIRRORGPT_MEMORY_PLAN.md Phase 1.
@@ -196,6 +270,131 @@ class ResponseGenerator:
             )
             return fallback["response_text"]
 
+    async def generate_vision_response(
+        self,
+        user_message: str,
+        attachments: List[DecodedAttachment],
+        analysis_result: Dict[str, Any],
+        change_analysis: Dict[str, Any],
+        user_context: Optional[Dict[str, Any]] = None,
+        history: Optional[List[ChatMessage]] = None,
+    ) -> "VisionResponse":
+        """Generate a reply to a turn that carries a photo.
+
+        Kept separate from ``generate_enhanced_response`` rather than bolted
+        onto it with an optional arg: this path returns two values, uses a
+        different model override, and forces JSON mode. Folding that into the
+        text path would mean every existing caller pays for a branch it never
+        takes.
+
+        One OpenAI call produces both the reply and the image description
+        (D4). The description is what gets persisted, so the image is read
+        once and never replayed into later turns — which is what keeps both
+        the token budget and the cost flat as a conversation grows.
+
+        Never raises: a failure degrades to the template response, matching
+        ``generate_enhanced_response``. The user sent a photo and deserves an
+        answer more than they deserve an error.
+        """
+        try:
+            primary_archetype = analysis_result["signal_3_archetype_blend"]["primary"]
+            archetype_data = self.archetypes.get(primary_archetype, {})
+
+            system_prompt = (
+                self._build_system_prompt(
+                    archetype_data, analysis_result, change_analysis, user_context
+                )
+                + _VISION_INSTRUCTION
+            )
+
+            messages = [ChatMessage("system", system_prompt)]
+            if history:
+                # History is text-only by construction (D4) — stored turns
+                # hold the description, not the image.
+                messages.extend(history)
+
+            messages.append(
+                ChatMessage(
+                    "user", self._build_vision_content(user_message, attachments)
+                )
+            )
+
+            raw = await self.openai_service.send_with_overrides_async(
+                messages=messages,
+                model=_VISION_MODEL,
+                temperature=_VISION_TEMPERATURE,
+                max_tokens=_VISION_MAX_TOKENS,
+                response_format={"type": "json_object"},
+            )
+
+            return self._parse_vision_response(raw)
+
+        except Exception as e:
+            logger.error(f"Error generating vision response: {e}")
+            fallback = self.generate_response(
+                user_message or "(shared a photo)",
+                analysis_result,
+                change_analysis,
+                user_context,
+            )
+            return VisionResponse(
+                reply=fallback["response_text"],
+                image_description="",
+                degraded=True,
+            )
+
+    @staticmethod
+    def _build_vision_content(
+        user_message: str, attachments: List[DecodedAttachment]
+    ) -> List[Dict[str, Any]]:
+        """Build OpenAI content parts for an image turn.
+
+        The text part is omitted entirely when the user typed nothing, rather
+        than sent as an empty string — an empty text part is wasted tokens and
+        reads to the model as a blank question.
+        """
+        parts: List[Dict[str, Any]] = []
+
+        if user_message and user_message.strip():
+            parts.append({"type": "text", "text": user_message})
+
+        for attachment in attachments:
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": attachment.to_data_url(),
+                        "detail": _VISION_IMAGE_DETAIL,
+                    },
+                }
+            )
+
+        return parts
+
+    @staticmethod
+    def _parse_vision_response(raw: str) -> "VisionResponse":
+        """Parse the JSON-mode payload, tolerating a model that ignores it.
+
+        JSON mode is a strong request, not a guarantee — and a malformed
+        payload must not cost the user their reply. When parsing fails we
+        treat the whole response as the reply and leave the description empty,
+        so the turn still persists sensibly (the caller substitutes a generic
+        label).
+        """
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                reply = str(parsed.get("reply") or "").strip()
+                description = str(parsed.get("image_description") or "").strip()
+                if reply:
+                    return VisionResponse(reply=reply, image_description=description)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.warning(
+                "Vision response was not valid JSON; treating it as plain text."
+            )
+
+        return VisionResponse(reply=raw.strip(), image_description="")
+
     def _build_system_prompt(
         self,
         archetype_data: Dict[str, Any],
@@ -251,8 +450,17 @@ class MirrorOrchestrator:
         conversation_id: Optional[str] = None,
         use_enhanced_response: bool = True,
         user_context: Optional[Dict[str, Any]] = None,
+        attachments: Optional[List[DecodedAttachment]] = None,
     ) -> Dict[str, Any]:
-        """Process complete MirrorGPT chat with all 5 signals"""
+        """Process complete MirrorGPT chat with all 5 signals.
+
+        ``attachments`` carries already-decoded, already-validated inline
+        media (see ``chat_attachment_service``). When present, response
+        generation routes through the vision path instead of the text path,
+        and the returned dict gains ``image_description`` — the one-line text
+        record of the photo that the caller persists in place of the bytes
+        (D4/D7).
+        """
 
         try:
             # 1. Fetch profile, signals, and conversation history in parallel.
@@ -344,7 +552,42 @@ class MirrorOrchestrator:
             )
 
             # 5. Generate response
-            if use_enhanced_response:
+            #
+            # An attachment turn takes the vision path regardless of
+            # `use_enhanced_response`: the template generator has no way to
+            # respond to a photo, so honouring the flag here would silently
+            # ignore the image the user just sent.
+            image_description = ""
+            vision_degraded = False
+            if attachments:
+                vision = await self.response_generator.generate_vision_response(
+                    user_message=message,
+                    attachments=attachments,
+                    analysis_result=analysis_result,
+                    change_analysis=change_analysis,
+                    user_context=user_context,
+                    history=history,
+                )
+                image_description = vision.image_description
+                vision_degraded = vision.degraded
+                response_data = {
+                    "response_text": vision.reply,
+                    "archetype_context": analysis_result["signal_3_archetype_blend"][
+                        "primary"
+                    ],
+                    "confidence_level": confidence_scores["overall"],
+                    "mirror_moment": change_analysis.get(
+                        "mirror_moment_triggered", False
+                    ),
+                    "suggested_practice": (
+                        change_analysis.get("changes", [{}])[0].get(
+                            "suggested_practice"
+                        )
+                        if change_analysis.get("changes")
+                        else None
+                    ),
+                }
+            elif use_enhanced_response:
                 response_text = (
                     await self.response_generator.generate_enhanced_response(
                         user_message=message,
@@ -407,6 +650,14 @@ class MirrorOrchestrator:
             return {
                 "success": True,
                 "response": response_data["response_text"],
+                # Empty unless this turn carried a photo. The caller composes
+                # it into the persisted user message (D4) — the image itself
+                # is never stored.
+                "image_description": image_description,
+                # True when the vision call failed and the reply is a
+                # template fallback. Surfaced so telemetry can separate an
+                # outage from ordinary prompt drift.
+                "vision_degraded": vision_degraded,
                 "archetype_analysis": {
                     "primary_archetype": analysis_result["signal_3_archetype_blend"][
                         "primary"
