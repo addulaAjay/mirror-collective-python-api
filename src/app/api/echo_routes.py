@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Router-level guard: every Echo Vault mutation (create/upload/modify) requires
 # an active entitlement (trial or paid). Reads pass through — see
-# require_echo_vault_access. Returns 403 {"code": "subscription_required"}.
+# require_echo_vault_access. Returns 403 whose body shape depends on
+# ECHO_VAULT_EMIT_SUBSCRIPTION_CODE — see subscription_required_detail().
 router = APIRouter(
     tags=["Echo Vault"],
     dependencies=[Depends(require_echo_vault_access)],
