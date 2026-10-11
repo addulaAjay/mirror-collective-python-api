@@ -625,27 +625,43 @@ class MirrorOrchestrator:
             # 6. Store MirrorGPT analysis in conversation message
             suggested_practice = response_data.get("suggested_practice")
 
-            # Return the analysis data to be stored with the user message
-            mirrorgpt_analysis = {
-                "user_id": user_id,
-                "session_id": session_id,
-                "analysis_result": analysis_result,
-                "confidence_scores": confidence_scores,
-                "change_analysis": change_analysis,
-                "suggested_practice": suggested_practice,
-            }
+            # An image turn is analysed only far enough to pick a register for
+            # the reply — nothing derived from it is persisted or allowed to
+            # move the archetype profile.
+            #
+            # Why: D4 persists a MODEL-WRITTEN sentence describing the photo
+            # (the bytes are never stored, so that text is the whole record).
+            # `archetype_engine.analyze_message` is pure text regex, so
+            # feeding it that sentence would mean the user's signal history
+            # and archetype profile absorb the model's own vocabulary instead
+            # of theirs — drifting the profile on evidence the user never
+            # supplied. The reply still gets the right voice; only the
+            # writes are skipped.
+            persist_signals = not attachments
 
-            # Convert float values to Decimal for DynamoDB compatibility
-            mirrorgpt_analysis = self._convert_floats_to_decimal(mirrorgpt_analysis)
+            mirrorgpt_analysis = None
+            if persist_signals:
+                # Returned to the caller to be stored with the user message.
+                mirrorgpt_analysis = {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "analysis_result": analysis_result,
+                    "confidence_scores": confidence_scores,
+                    "change_analysis": change_analysis,
+                    "suggested_practice": suggested_practice,
+                }
 
-            # 7. Update user profile
-            await self._update_user_profile(
-                user_id, analysis_result, confidence_scores, change_analysis
-            )
+                # Convert float values to Decimal for DynamoDB compatibility
+                mirrorgpt_analysis = self._convert_floats_to_decimal(mirrorgpt_analysis)
 
-            # 8. Handle Mirror Moments
-            if change_analysis.get("mirror_moment_triggered"):
-                await self._create_mirror_moment(user_id, change_analysis)
+                # 7. Update user profile
+                await self._update_user_profile(
+                    user_id, analysis_result, confidence_scores, change_analysis
+                )
+
+                # 8. Handle Mirror Moments
+                if change_analysis.get("mirror_moment_triggered"):
+                    await self._create_mirror_moment(user_id, change_analysis)
 
             return {
                 "success": True,

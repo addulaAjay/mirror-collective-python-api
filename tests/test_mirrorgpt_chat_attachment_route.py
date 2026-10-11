@@ -450,3 +450,66 @@ class TestDailyCap:
         assert len(lines) == 1
         assert lines[0]["status"] == "rejected"
         assert lines[0]["reject_reason"] == "daily_cap"
+
+
+class TestImageTurnsDoNotPolluteSignalHistory:
+    """An image turn must not write archetype signals.
+
+    D4 persists a MODEL-WRITTEN sentence describing the photo. Feeding that
+    through archetype analysis would mean the user's signal history and
+    archetype profile absorb the model's own words rather than theirs — so
+    image turns are analysed only far enough to pick a voice for the reply,
+    and nothing derived from them is persisted or allowed to move the
+    profile.
+    """
+
+    def _orchestrator(self):
+        from src.app.api.mirrorgpt_routes import get_mirror_orchestrator
+        from src.app.handler import app
+
+        return app.dependency_overrides[get_mirror_orchestrator]()
+
+    def test_an_image_turn_persists_no_archetype_analysis(self):
+        client, captured = build_client()
+
+        post(client, message="look", attachments=[an_image()])
+
+        user_turn = next(m for m in captured["messages"] if m["role"] == "user")
+        assert user_turn.get("mirrorgpt_analysis") is None
+
+    def test_an_image_turn_does_not_update_the_archetype_profile(self):
+        client, _ = build_client()
+        orchestrator = self._orchestrator()
+
+        post(client, message="look", attachments=[an_image()])
+
+        orchestrator._update_user_profile.assert_not_awaited()
+
+    def test_an_image_turn_does_not_create_a_mirror_moment(self):
+        client, _ = build_client()
+        orchestrator = self._orchestrator()
+
+        post(client, message="look", attachments=[an_image()])
+
+        orchestrator._create_mirror_moment.assert_not_awaited()
+
+    def test_an_image_turn_still_returns_archetype_context_in_the_response(self):
+        # Analysis still runs — it picks the register for the reply. What
+        # changes is that nothing derived from it is written.
+        client, _ = build_client()
+
+        resp = post(client, message="look", attachments=[an_image()])
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["archetype_analysis"]
+
+    def test_a_TEXT_turn_still_persists_analysis_and_updates_the_profile(self):
+        # The guard must be scoped to attachment turns only.
+        client, captured = build_client()
+        orchestrator = self._orchestrator()
+
+        post(client, message="just words")
+
+        user_turn = next(m for m in captured["messages"] if m["role"] == "user")
+        assert user_turn.get("mirrorgpt_analysis") is not None
+        orchestrator._update_user_profile.assert_awaited()

@@ -57,9 +57,30 @@ from ..core.exceptions import RateLimitExceededError
 
 logger = logging.getLogger(__name__)
 
-# Default 25/day against a usage model of ~2 photos/user/day (plan §7). The
-# cap is a runaway-cost backstop, not a rationing device — a normal user
-# should never meet it. Tune via env without a code change.
+# ── Enforcement switch ───────────────────────────────────────────────────────
+#
+# OFF by default, by product decision: the caps are not enforced while chat
+# media is being tracked at branch level, so early usage isn't shaped by a
+# limit nobody has calibrated yet.
+#
+# The accounting still runs — every chargeable turn is counted on the daily
+# activity row whether or not the limit is enforced. That is deliberate: it
+# means the counters (and the chat_media telemetry alongside them) produce the
+# real usage distribution needed to pick a sensible number, and turning
+# enforcement on later is one env var rather than a code change.
+#
+# COST EXPOSURE WHILE OFF: there is no other per-user limit anywhere in this
+# service — the only backstop is a GLOBAL API Gateway throttle (1000 rps),
+# which does nothing about one account running up OpenAI spend. Vision is
+# ~$0.0004/turn and transcription ~$0.006/minute, so a single determined
+# account could spend real money. Flip this on before any public launch.
+MEDIA_CAPS_ENABLED = (
+    os.getenv("MIRRORGPT_MEDIA_CAPS_ENABLED", "false").lower() == "true"
+)
+
+# Used only when MEDIA_CAPS_ENABLED is true. 25/day against a usage model of
+# ~2 photos/user/day (plan §7) — a runaway-cost backstop, not a rationing
+# device. Tune via env without a code change.
 DAILY_VISION_LIMIT = int(os.getenv("MIRRORGPT_DAILY_VISION_LIMIT", "25"))
 
 # Tighter than vision on purpose. Whisper bills per minute and works out at
@@ -152,11 +173,23 @@ class ChatMediaQuotaService:
             await table.update_item(
                 Key={"user_id": user_id, "activity_date": today},
                 UpdateExpression=f"ADD {counter_attr} :inc",
-                ConditionExpression=(
-                    f"attribute_not_exists({counter_attr}) "
-                    f"OR {counter_attr} < :limit"
+                # The condition is what enforces the cap. With enforcement
+                # off we still ADD — so usage is measured — but drop the
+                # condition so the write always succeeds.
+                **(
+                    {
+                        "ConditionExpression": (
+                            f"attribute_not_exists({counter_attr}) "
+                            f"OR {counter_attr} < :limit"
+                        ),
+                        "ExpressionAttributeValues": {
+                            ":inc": 1,
+                            ":limit": limit,
+                        },
+                    }
+                    if MEDIA_CAPS_ENABLED
+                    else {"ExpressionAttributeValues": {":inc": 1}}
                 ),
-                ExpressionAttributeValues={":inc": 1, ":limit": limit},
             )
 
         except ClientError as err:

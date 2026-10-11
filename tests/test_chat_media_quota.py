@@ -15,7 +15,7 @@ The consume is a SINGLE conditional ``ADD`` — check-then-increment in two
 round-trips would let concurrent requests both pass the check.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -35,6 +35,11 @@ def a_service(update_side_effect=None):
     service = ChatMediaQuotaService()
     service._get_resource = AsyncMock(return_value=resource)  # type: ignore[method-assign]
     return service, table
+
+
+def caps_on():
+    """Enforcement is OFF by default (product decision); turn it on here."""
+    return patch("src.app.services.chat_media_quota.MEDIA_CAPS_ENABLED", True)
 
 
 def conditional_failure():
@@ -66,7 +71,8 @@ class TestUnderTheLimit:
     async def test_guards_the_increment_with_a_condition_expression(self):
         service, table = a_service()
 
-        await service.consume_vision_turn("user-123")
+        with caps_on():
+            await service.consume_vision_turn("user-123")
 
         kwargs = table.update_item.await_args.kwargs
         condition = kwargs["ConditionExpression"]
@@ -90,7 +96,8 @@ class TestUnderTheLimit:
     async def test_passes_the_limit_as_the_condition_value(self):
         service, table = a_service()
 
-        await service.consume_vision_turn("user-123")
+        with caps_on():
+            await service.consume_vision_turn("user-123")
 
         values = table.update_item.await_args.kwargs["ExpressionAttributeValues"]
         assert DAILY_VISION_LIMIT in values.values()
@@ -100,13 +107,13 @@ class TestOverTheLimit:
     async def test_raises_rate_limit_when_the_condition_fails(self):
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError):
+        with caps_on(), pytest.raises(RateLimitExceededError):
             await service.consume_vision_turn("user-123")
 
     async def test_the_error_carries_a_429(self):
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError) as exc:
+        with caps_on(), pytest.raises(RateLimitExceededError) as exc:
             await service.consume_vision_turn("user-123")
 
         assert exc.value.status_code == 429
@@ -116,7 +123,7 @@ class TestOverTheLimit:
         # an internal limit name.
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError) as exc:
+        with caps_on(), pytest.raises(RateLimitExceededError) as exc:
             await service.consume_vision_turn("user-123")
 
         message = str(exc.value).lower()
@@ -127,7 +134,7 @@ class TestOverTheLimit:
         # Mentioning the number is fine; what matters is no stack detail.
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError) as exc:
+        with caps_on(), pytest.raises(RateLimitExceededError) as exc:
             await service.consume_vision_turn("user-123")
 
         assert "UpdateItem" not in str(exc.value)
@@ -158,7 +165,7 @@ class TestFailsOpen:
         # request through — that would make the cap decorative.
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError):
+        with caps_on(), pytest.raises(RateLimitExceededError):
             await service.consume_vision_turn("user-123")
 
 
@@ -186,7 +193,7 @@ class TestTranscriptionCap:
     async def test_raises_rate_limit_when_over(self):
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError):
+        with caps_on(), pytest.raises(RateLimitExceededError):
             await service.consume_transcription_turn("user-123")
 
     async def test_counts_against_a_DIFFERENT_attribute_than_vision(self):
@@ -205,7 +212,7 @@ class TestTranscriptionCap:
     async def test_the_message_refers_to_voice_not_photos(self):
         service, _ = a_service(update_side_effect=conditional_failure())
 
-        with pytest.raises(RateLimitExceededError) as exc:
+        with caps_on(), pytest.raises(RateLimitExceededError) as exc:
             await service.consume_transcription_turn("user-123")
 
         message = str(exc.value).lower()
@@ -228,3 +235,46 @@ class TestTranscriptionCap:
 
         assert DAILY_TRANSCRIPTION_LIMIT < DAILY_VISION_LIMIT
         assert DAILY_TRANSCRIPTION_LIMIT > 0
+
+
+class TestEnforcementDisabled:
+    """Default state: count usage, don't block anyone.
+
+    Enforcement is off by product decision while chat media is tracked at
+    branch level. The accounting must keep running regardless — those
+    counters are what make it possible to pick a calibrated limit later.
+    """
+
+    async def test_still_counts_the_turn(self):
+        service, table = a_service()
+
+        await service.consume_vision_turn("user-123")
+
+        kwargs = table.update_item.await_args.kwargs
+        assert "ADD" in kwargs["UpdateExpression"]
+        assert kwargs["ExpressionAttributeValues"][":inc"] == 1
+
+    def test_is_off_by_default(self):
+        from src.app.services.chat_media_quota import MEDIA_CAPS_ENABLED
+
+        assert MEDIA_CAPS_ENABLED is False
+
+    async def test_sends_no_condition_expression(self):
+        # Without the condition the write always succeeds, so no user is
+        # blocked — but the counter still moves.
+        service, table = a_service()
+
+        await service.consume_vision_turn("user-123")
+
+        assert "ConditionExpression" not in table.update_item.await_args.kwargs
+
+    async def test_never_raises_even_at_a_notional_limit(self):
+        # A ConditionalCheckFailed can't occur without a condition, but if the
+        # table somehow reported one we must not turn it into a 429 while
+        # enforcement is off.
+        service, table = a_service()
+
+        await service.consume_vision_turn("user-123")
+        await service.consume_transcription_turn("user-123")
+
+        assert table.update_item.await_count == 2
