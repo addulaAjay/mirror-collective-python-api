@@ -13,7 +13,7 @@ quota uploads return 507 with ``code`` ``"quota_exceeded"`` / ``"no_quota"``.
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from fastapi import Depends, HTTPException, Request
 
@@ -46,10 +46,47 @@ _ACCOUNT_UPLOAD_TYPES = frozenset({"profile", "user_profile"})
 # rather than the method alone.
 _UPLOAD_URL_SUFFIX = "/echoes/upload-url"
 
-SUBSCRIPTION_REQUIRED_DETAIL: Dict[str, str] = {
-    "code": "subscription_required",
-    "message": "An active trial or subscription is required to use Echo Vault.",
-}
+SUBSCRIPTION_REQUIRED_MESSAGE = (
+    "An active trial or subscription is required to use Echo Vault."
+)
+
+# ── TEMPORARY client-crash mitigation ────────────────────────────────────────
+#
+# Shipped app versions (<= 1.0.1) crash when this 403 carries the
+# machine-readable ``code``. Their BaseApiService matches on it and emits a
+# `subscriptionRequired` event, which navigates to the paywall — while the
+# calling screen ALSO fires its own `Alert.alert`. Presenting an alert from a
+# screen that is mid-transition is a hard crash on iOS, and it is
+# deterministic: every unentitled user who tries to add a recipient loses the
+# app. Observed in production 2026-10-11.
+#
+# Dropping the code to a plain string downgrades that to a readable error
+# message ("An active trial or subscription is required...") with no paywall
+# hop. Worse UX than intended, far better than a crash — and it needs no App
+# Store release.
+#
+# REVERT once a client carrying the fix (don't alert when the paywall event
+# already fired) is the minimum supported version: set
+# ECHO_VAULT_EMIT_SUBSCRIPTION_CODE=true. That is an env change, not a deploy.
+EMIT_SUBSCRIPTION_CODE = (
+    os.getenv("ECHO_VAULT_EMIT_SUBSCRIPTION_CODE", "false").lower() == "true"
+)
+
+
+def subscription_required_detail() -> Union[str, Dict[str, str]]:
+    """Body for the entitlement 403.
+
+    Read at raise time rather than bound at import, so the flag can be
+    toggled in tests (and so a Lambda env change takes effect on the next
+    cold start without a code deploy).
+    """
+    if EMIT_SUBSCRIPTION_CODE:
+        return {
+            "code": "subscription_required",
+            "message": SUBSCRIPTION_REQUIRED_MESSAGE,
+        }
+    return SUBSCRIPTION_REQUIRED_MESSAGE
+
 
 _dynamodb = get_dynamodb_service()
 _quota = get_storage_quota_service()
@@ -168,7 +205,7 @@ async def require_echo_vault_access(
 
     profile = await _dynamodb.get_user_profile(current_user["id"])
     if not _profile_is_entitled(profile):
-        raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
+        raise HTTPException(status_code=403, detail=subscription_required_detail())
 
     # Paid tiers were entitled purely by tier — a lapsed/refunded paid user kept
     # access whenever the EXPIRED webhook was missed/delayed/reordered. Also gate
@@ -177,7 +214,7 @@ async def require_echo_vault_access(
     # "core", so the trial_expires_at branch above doesn't apply).
     tier = getattr(profile, "subscription_tier", None) if profile else None
     if tier in _PAID_TIERS and await _paid_subscription_lapsed(profile):
-        raise HTTPException(status_code=403, detail=SUBSCRIPTION_REQUIRED_DETAIL)
+        raise HTTPException(status_code=403, detail=subscription_required_detail())
 
     return current_user
 

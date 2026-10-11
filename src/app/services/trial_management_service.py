@@ -258,8 +258,11 @@ class TrialManagementService:
                     data={
                         "type": "trial_expiration",
                         "days_remaining": days_remaining,
-                        # Deterministic route so a tap opens the paywall — same
-                        # destination as the 403 subscription_required guard.
+                        # Deterministic route so a tap opens the paywall. The
+                        # 403 entitlement guard normally routes there too, but
+                        # that auto-hop is currently suppressed client-side —
+                        # see subscription_required_detail(). This push is the
+                        # only paywall route until a fixed client ships.
                         "screen": "StartFreeTrial",
                     },
                 )

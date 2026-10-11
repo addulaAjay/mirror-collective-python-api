@@ -59,7 +59,9 @@ async def test_guard_blocks_non_entitled_tiers(tier):
         with pytest.raises(HTTPException) as exc:
             await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
     assert exc.value.status_code == 403
-    assert exc.value.detail["code"] == "subscription_required"
+    # Body shape is covered by TestSubscriptionRequiredDetailShape; here we
+    # only need to confirm it is the ENTITLEMENT 403 and not some other 403.
+    assert ent.SUBSCRIPTION_REQUIRED_MESSAGE in str(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -74,7 +76,9 @@ async def test_guard_blocks_expired_trial_before_cron_downgrades():
         with pytest.raises(HTTPException) as exc:
             await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
     assert exc.value.status_code == 403
-    assert exc.value.detail["code"] == "subscription_required"
+    # Body shape is covered by TestSubscriptionRequiredDetailShape; here we
+    # only need to confirm it is the ENTITLEMENT 403 and not some other 403.
+    assert ent.SUBSCRIPTION_REQUIRED_MESSAGE in str(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -171,6 +175,9 @@ async def test_enforce_upload_quota_raises_when_over():
         with pytest.raises(HTTPException) as exc:
             await ent.enforce_upload_quota("u1")
     assert exc.value.status_code == 507
+    # isinstance narrows HTTPException.detail (typed str) for mypy. Pre-existing
+    # error in this file; fixed here since the hook now checks it.
+    assert isinstance(exc.value.detail, dict)
     assert exc.value.detail["code"] == "quota_exceeded"
 
 
@@ -241,7 +248,7 @@ def test_e2e_echo_upload_blocked_for_unentitled(real_guard_client):
             json={"file_type": "image/jpeg", "upload_type": "echo"},
         )
     assert r.status_code == 403, r.text
-    assert r.json()["error"]["code"] == "subscription_required"
+    assert ent.SUBSCRIPTION_REQUIRED_MESSAGE in r.text
 
 
 def real_guard_client_module_echo_service():
@@ -282,7 +289,9 @@ async def test_guard_blocks_paid_tier_when_subscription_expired():
         with pytest.raises(HTTPException) as exc:
             await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
     assert exc.value.status_code == 403
-    assert exc.value.detail["code"] == "subscription_required"
+    # Body shape is covered by TestSubscriptionRequiredDetailShape; here we
+    # only need to confirm it is the ENTITLEMENT 403 and not some other 403.
+    assert ent.SUBSCRIPTION_REQUIRED_MESSAGE in str(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -386,3 +395,132 @@ async def test_guard_fails_open_when_subscription_read_errors():
     ):
         result = await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
     assert result == {"id": "u1"}
+
+
+# ── Temporary client-crash mitigation (2026-10-11) ───────────────────────────
+#
+# Shipped clients (<= 1.0.1) crash when the entitlement 403 carries the
+# machine-readable `code`: BaseApiService emits `subscriptionRequired` (which
+# navigates to the paywall) while the calling screen ALSO fires its own
+# Alert — presenting an alert from a screen mid-transition is a hard crash on
+# iOS, and it is deterministic for every unentitled user.
+#
+# So the default response shape is now a plain string. These tests pin BOTH
+# modes, so the revert (ECHO_VAULT_EMIT_SUBSCRIPTION_CODE=true) is covered and
+# cannot regress silently.
+
+
+def _free_profile():
+    return SimpleNamespace(subscription_tier="free", trial_expires_at=None)
+
+
+class TestSubscriptionRequiredDetailShape:
+    def test_defaults_to_emitting_no_machine_readable_code(self):
+        # The crash mitigation. If this flips to True by default, shipped
+        # clients start crashing again.
+        assert ent.EMIT_SUBSCRIPTION_CODE is False
+
+    def test_default_detail_is_a_plain_string(self):
+        detail = ent.subscription_required_detail()
+
+        assert isinstance(detail, str)
+
+    def test_default_detail_carries_the_human_readable_message(self):
+        # It reaches the user in an Alert, so it has to read as guidance.
+        detail = ent.subscription_required_detail()
+
+        assert detail == ent.SUBSCRIPTION_REQUIRED_MESSAGE
+        assert "trial or subscription" in detail
+
+    def test_default_detail_contains_no_code_token(self):
+        # The client matches on the literal string too (`error === 'subscription_required'`),
+        # not just `error.code` — so the token must not appear at all.
+        assert "subscription_required" not in ent.subscription_required_detail()
+
+    def test_flag_on_restores_the_machine_readable_code(self):
+        with patch.object(ent, "EMIT_SUBSCRIPTION_CODE", True):
+            detail = ent.subscription_required_detail()
+
+        assert isinstance(detail, dict)
+        assert detail["code"] == "subscription_required"
+        assert detail["message"] == ent.SUBSCRIPTION_REQUIRED_MESSAGE
+
+    def test_the_flag_is_read_at_raise_time_not_import_time(self):
+        # Otherwise toggling the Lambda env var would need a code deploy
+        # rather than just a cold start.
+        before = ent.subscription_required_detail()
+        with patch.object(ent, "EMIT_SUBSCRIPTION_CODE", True):
+            during = ent.subscription_required_detail()
+        after = ent.subscription_required_detail()
+
+        assert isinstance(before, str)
+        assert isinstance(during, dict)
+        assert isinstance(after, str)
+
+
+class TestGuardStillBlocksUnentitled:
+    """The mitigation changes the BODY only — never who gets blocked."""
+
+    @pytest.mark.asyncio
+    async def test_still_raises_403_for_a_free_tier(self):
+        with patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=_free_profile())
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_the_403_body_is_the_plain_message(self):
+        with patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=_free_profile())
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await ent.require_echo_vault_access(_req("POST"), {"id": "u1"})
+
+        assert exc.value.detail == ent.SUBSCRIPTION_REQUIRED_MESSAGE
+
+    @pytest.mark.asyncio
+    async def test_reads_are_still_open(self):
+        # An expired user must keep seeing their existing vault.
+        result = await ent.require_echo_vault_access(_req("GET"), {"id": "u1"})
+
+        assert result == {"id": "u1"}
+
+
+def test_e2e_403_body_has_no_code_by_default(real_guard_client):
+    """What the shipped client actually receives — the crash-avoiding shape."""
+    with patch.object(
+        ent._dynamodb, "get_user_profile", AsyncMock(return_value=_free_profile())
+    ):
+        r = real_guard_client.post(
+            "/api/echoes/upload-url",
+            json={"file_type": "image/jpeg", "upload_type": "echo"},
+        )
+
+    assert r.status_code == 403, r.text
+    body = r.json()
+    # `error` must be a STRING, not an object. An object would both re-trigger
+    # the crash AND render as "[object Object]" in the client's Alert, because
+    # the screen passes response.error straight to Alert.alert.
+    assert isinstance(body["error"], str)
+    assert "subscription_required" not in r.text
+
+
+def test_e2e_403_body_restores_the_code_when_flag_on(real_guard_client):
+    """The revert path: flipping the env var brings the code back over HTTP."""
+    with (
+        patch.object(ent, "EMIT_SUBSCRIPTION_CODE", True),
+        patch.object(
+            ent._dynamodb, "get_user_profile", AsyncMock(return_value=_free_profile())
+        ),
+    ):
+        r = real_guard_client.post(
+            "/api/echoes/upload-url",
+            json={"file_type": "image/jpeg", "upload_type": "echo"},
+        )
+
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["code"] == "subscription_required"
+    assert r.json()["error"]["message"] == ent.SUBSCRIPTION_REQUIRED_MESSAGE
