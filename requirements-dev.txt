@@ -18,3 +18,4 @@ bandit[toml]==1.8.6
 safety==3.6.1
 httpx==0.28.1  # For testing HTTP requests
 types-PyYAML==6.0.12.20260408  # mypy stubs for YAML loaders (Reflection Room V1)
+types-requests==2.33.0.20261030  # mypy stubs for requests (src/app/core/security.py)
