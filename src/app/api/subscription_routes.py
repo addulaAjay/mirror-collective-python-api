@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..core.enhanced_auth import get_user_with_profile
+from ..core.feature_flags import reflection_room_enabled_for
 from ..services.dynamodb_service import get_dynamodb_service
 from ..services.storage_quota_service import get_storage_quota_service
 from ..services.subscription_service import SubscriptionService
@@ -161,6 +162,10 @@ async def get_subscription_status(
             "mirror_gpt_enabled": True,  # Always enabled
             "echo_map_enabled": user_profile.subscription_tier
             in ["trial", "core", "core_plus"],
+            # Not tier-gated — a rollout flag. Hidden in production until
+            # REFLECTION_ROOM_ENABLED is set, visible meanwhile to the user
+            # ids in REFLECTION_ROOM_TESTER_IDS. See core/feature_flags.py.
+            "reflection_room_enabled": reflection_room_enabled_for(user_id),
         }
 
         return {
