@@ -51,26 +51,31 @@ def _mock_persistence(monkeypatch, *, existing=None, endpoint="arn:aws:sns:end")
         routes_module.dynamodb_service,
         "get_device_token",
         AsyncMock(return_value=existing),
+        raising=False,
     )
     monkeypatch.setattr(
         routes_module.dynamodb_service,
         "cleanup_guest_registration",
         AsyncMock(return_value=None),
+        raising=False,
     )
     monkeypatch.setattr(
         routes_module.dynamodb_service,
         "save_device_token",
         AsyncMock(return_value=True),
+        raising=False,
     )
     monkeypatch.setattr(
         routes_module.sns_service,
         "create_platform_endpoint",
         Mock(return_value=endpoint),
+        raising=False,
     )
     monkeypatch.setattr(
         routes_module.sns_service,
         "subscribe_to_topic",
         Mock(return_value="arn:aws:sns:sub"),
+        raising=False,
     )
 
 
