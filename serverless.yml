@@ -112,6 +112,19 @@ provider:
     MIRRORGPT_PREFLIGHT_PATTERNS: ${env:MIRRORGPT_PREFLIGHT_PATTERNS, 'true'}
     # Reflection Room V1 — config + tz
     REFLECTION_DEFAULT_USER_TZ: ${env:REFLECTION_DEFAULT_USER_TZ, 'America/New_York'}
+    # Reflection Room rollout gate (core/feature_flags.py). Surfaces as
+    # features.reflection_room_enabled on GET /api/subscriptions/status; the
+    # app hides both entry points when false. Not tier-gated — this is rollout
+    # readiness, not entitlement.
+    #
+    # ENABLED=true opens it to everyone (the launch switch). Until then only
+    # the ids below see it. Both are read per request, so a change takes
+    # effect on the next cold start.
+    REFLECTION_ROOM_ENABLED: ${env:REFLECTION_ROOM_ENABLED, 'false'}
+    # Internal test accounts for addula.ajay@gmail.com and
+    # mailtoajay44@gmail.com — several each, from duplicate signups during
+    # testing, so all are listed and whichever one is signed in works.
+    REFLECTION_ROOM_TESTER_IDS: ${env:REFLECTION_ROOM_TESTER_IDS, '84289458-e081-70f8-a76f-859cc488fdde,54f8a4b8-f061-7060-5a4c-2edca101decd,045854c8-b031-7020-ce2a-0df085220040,0428f478-e051-7025-1202-d3ab0994a2a4,d4980488-00e1-70a6-bfb0-903e7886b1b7,c4f85448-d0b1-70e3-39c0-0ecf857c5201,b40894c8-f001-7038-8de0-acbe62b269cd,44986408-4041-7096-c5e6-db447f7876e6'}
     # Apple/Google IAP credentials
     APPLE_SHARED_SECRET: ${env:APPLE_SHARED_SECRET, ''}
     # App Store Server API (modern receipt validation + notification JWS
