@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from functools import lru_cache
-from typing import Any, AsyncGenerator, Dict, List, Optional, cast
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union, cast
 
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -42,24 +42,89 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _openai_semaphore
 
 
+# Content for a message is either a plain string (every caller before chat
+# media) or OpenAI's multimodal content-parts list, e.g.
+#
+#   [{"type": "text", "text": "what do you see?"},
+#    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,…",
+#                                        "detail": "low"}}]
+#
+# Only the chat-media path builds the list form; everything else continues to
+# pass a string and is unaffected.
+MessageContent = Union[str, List[Dict[str, Any]]]
+
+
 class ChatMessage:
     """
-    Represents a single message in a conversation with role and content
+    Represents a single message in a conversation with role and content.
+
+    ``content`` accepts either a string or OpenAI's content-parts list (see
+    ``MessageContent``). The list form exists so a chat turn can carry an
+    inline image for the vision models; see the client repo's
+    ``docs/CHAT_MEDIA_V1_PLAN.md`` Phase 2.
     """
 
-    def __init__(self, role: str, content: str):
+    def __init__(self, role: str, content: MessageContent):
         if role not in ["system", "user", "assistant"]:
             msg = (
                 f"Invalid message role: {role}. "
                 f"Must be 'system', 'user', or 'assistant'"
             )
             raise ValueError(msg)
+
+        # Validate the content shape here rather than letting a malformed
+        # payload surface as an opaque OpenAI 400 several layers away. Note
+        # bool is excluded explicitly: it is a subclass of int, but more to
+        # the point `isinstance(True, str)` is False so it would otherwise
+        # fall through to the list check and raise a confusing message.
+        if isinstance(content, str):
+            pass
+        elif isinstance(content, list):
+            if not content:
+                raise ValueError(
+                    "ChatMessage content list must not be empty — "
+                    "OpenAI rejects a message with no content parts."
+                )
+            for part in content:
+                if not isinstance(part, dict):
+                    raise TypeError(
+                        "ChatMessage content list items must be dicts "
+                        f"(content parts), got {type(part).__name__}."
+                    )
+        else:
+            raise TypeError(
+                "ChatMessage content must be a string or a list of content "
+                f"parts, got {type(content).__name__}."
+            )
+
         self.role = role
         self.content = content
 
-    def to_dict(self) -> Dict[str, str]:
-        """Convert message to dictionary format for OpenAI API"""
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert message to dictionary format for OpenAI API.
+
+        The content is passed through unchanged — callers own its structure,
+        and reshaping content parts here would silently break the vision
+        payload the orchestrator built.
+        """
         return {"role": self.role, "content": self.content}
+
+    def __repr__(self) -> str:
+        """Summarise, never dump.
+
+        A vision message's content holds a base64 data URL that can run to
+        hundreds of KB. The default repr would put all of it into any
+        traceback or debug log line that touches this object — both a cost
+        and a privacy problem.
+        """
+        if isinstance(self.content, str):
+            shape = f"len={len(self.content)}"
+        else:
+            kinds = ",".join(str(p.get("type", "?")) for p in self.content)
+            shape = f"parts={len(self.content)}[{kinds}]"
+        return f"ChatMessage(role={self.role!r}, {shape})"
+
+    __str__ = __repr__
 
 
 class IMirrorChatRepository:
