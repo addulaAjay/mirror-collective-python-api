@@ -12,6 +12,7 @@ quota uploads return 507 with ``code`` ``"quota_exceeded"`` / ``"no_quota"``.
 """
 
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 
@@ -72,15 +73,78 @@ EMIT_SUBSCRIPTION_CODE = (
     os.getenv("ECHO_VAULT_EMIT_SUBSCRIPTION_CODE", "false").lower() == "true"
 )
 
+# First client version that survives receiving the code — i.e. the first build
+# carrying the fix that suppresses its own alert while the paywall redirect is
+# in flight. Clients at or above this may receive the machine-readable code;
+# everything else gets the plain string.
+MIN_CLIENT_FOR_SUBSCRIPTION_CODE = os.getenv(
+    "ECHO_VAULT_MIN_CLIENT_FOR_SUBSCRIPTION_CODE", "1.1.0"
+)
 
-def subscription_required_detail() -> Union[str, Dict[str, str]]:
+# Clients report themselves here. Absent on every build shipped before
+# 2026-11-01, which is precisely the population that must not get the code.
+APP_VERSION_HEADER = "x-app-version"
+
+
+def _parse_version(raw: Optional[str]) -> Optional[tuple]:
+    """``"1.1.0 (34)"`` -> ``(1, 1, 0)``. ``None`` when it can't be trusted.
+
+    Numeric tuple, not string compare: "1.10.0" must sort above "1.9.0".
+    The header is attacker-controlled, so anything unexpected yields None and
+    the caller fails closed.
+    """
+    if not raw:
+        return None
+    # Take the leading dotted-numeric run; ignore a build suffix like " (34)".
+    match = re.match(r"\s*(\d+(?:\.\d+)*)", raw)
+    if not match:
+        return None
+    try:
+        return tuple(int(part) for part in match.group(1).split("."))
+    except (ValueError, TypeError):  # pragma: no cover - re guarantees digits
+        return None
+
+
+def _client_can_handle_subscription_code(request: Any) -> bool:
+    """Does this caller identify as a build that survives the code?
+
+    Fails closed on every ambiguity — no request, no header, unparseable
+    header. A false negative costs a worse error message; a false positive
+    costs a hard crash on the user's device.
+    """
+    if request is None:
+        return False
+    try:
+        raw = request.headers.get(APP_VERSION_HEADER)
+    except Exception:  # noqa: BLE001 - any odd request object fails closed
+        return False
+
+    client = _parse_version(raw)
+    minimum = _parse_version(MIN_CLIENT_FOR_SUBSCRIPTION_CODE)
+    if client is None or minimum is None:
+        return False
+    return client >= minimum
+
+
+def subscription_required_detail(request: Any = None) -> Union[str, Dict[str, str]]:
     """Body for the entitlement 403.
 
-    Read at raise time rather than bound at import, so the flag can be
-    toggled in tests (and so a Lambda env change takes effect on the next
-    cold start without a code deploy).
+    The machine-readable code triggers a paywall redirect on the client. It is
+    only safe for builds that suppress their own error alert while that
+    redirect runs — older clients present an alert mid-transition and crash
+    (production, 2026-10-11). So it requires BOTH:
+
+      * ``ECHO_VAULT_EMIT_SUBSCRIPTION_CODE=true`` (master kill switch), and
+      * an ``X-App-Version`` at or above ``MIN_CLIENT_FOR_SUBSCRIPTION_CODE``.
+
+    Everything else gets the plain string, which is a worse experience than a
+    paywall hop and a far better one than a crash.
+
+    Both values are read at raise time rather than bound into the decision at
+    import, so a Lambda env change takes effect on the next cold start without
+    a code deploy.
     """
-    if EMIT_SUBSCRIPTION_CODE:
+    if EMIT_SUBSCRIPTION_CODE and _client_can_handle_subscription_code(request):
         return {
             "code": "subscription_required",
             "message": SUBSCRIPTION_REQUIRED_MESSAGE,
@@ -205,7 +269,9 @@ async def require_echo_vault_access(
 
     profile = await _dynamodb.get_user_profile(current_user["id"])
     if not _profile_is_entitled(profile):
-        raise HTTPException(status_code=403, detail=subscription_required_detail())
+        raise HTTPException(
+            status_code=403, detail=subscription_required_detail(request)
+        )
 
     # Paid tiers were entitled purely by tier — a lapsed/refunded paid user kept
     # access whenever the EXPIRED webhook was missed/delayed/reordered. Also gate
@@ -214,7 +280,9 @@ async def require_echo_vault_access(
     # "core", so the trial_expires_at branch above doesn't apply).
     tier = getattr(profile, "subscription_tier", None) if profile else None
     if tier in _PAID_TIERS and await _paid_subscription_lapsed(profile):
-        raise HTTPException(status_code=403, detail=subscription_required_detail())
+        raise HTTPException(
+            status_code=403, detail=subscription_required_detail(request)
+        )
 
     return current_user
 
