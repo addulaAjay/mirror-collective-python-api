@@ -438,8 +438,14 @@ class TestSubscriptionRequiredDetailShape:
         assert "subscription_required" not in ent.subscription_required_detail()
 
     def test_flag_on_restores_the_machine_readable_code(self):
+        # Since 2026-11-01 the flag alone is not enough: the client must also
+        # identify as a build that survives the code (see
+        # test_subscription_code_version_gate.py). A request with no version
+        # header is treated as old and still gets the plain string.
         with patch.object(ent, "EMIT_SUBSCRIPTION_CODE", True):
-            detail = ent.subscription_required_detail()
+            detail = ent.subscription_required_detail(
+                SimpleNamespace(headers={"x-app-version": "1.1.0"})
+            )
 
         assert isinstance(detail, dict)
         assert detail["code"] == "subscription_required"
@@ -448,10 +454,11 @@ class TestSubscriptionRequiredDetailShape:
     def test_the_flag_is_read_at_raise_time_not_import_time(self):
         # Otherwise toggling the Lambda env var would need a code deploy
         # rather than just a cold start.
-        before = ent.subscription_required_detail()
+        new_client = SimpleNamespace(headers={"x-app-version": "1.1.0"})
+        before = ent.subscription_required_detail(new_client)
         with patch.object(ent, "EMIT_SUBSCRIPTION_CODE", True):
-            during = ent.subscription_required_detail()
-        after = ent.subscription_required_detail()
+            during = ent.subscription_required_detail(new_client)
+        after = ent.subscription_required_detail(new_client)
 
         assert isinstance(before, str)
         assert isinstance(during, dict)
@@ -519,6 +526,7 @@ def test_e2e_403_body_restores_the_code_when_flag_on(real_guard_client):
         r = real_guard_client.post(
             "/api/echoes/upload-url",
             json={"file_type": "image/jpeg", "upload_type": "echo"},
+            headers={"X-App-Version": "1.1.0"},
         )
 
     assert r.status_code == 403, r.text
