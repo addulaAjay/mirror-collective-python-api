@@ -59,3 +59,34 @@ fallback:
   default_practice_id: breath_4_6
   alternate_for_no_breathwork_id: name_and_need
   rule_id: fallback   # used by telemetry/audit to distinguish fallback completions from rule-driven ones
+
+# Spec §6 starred per-family fallbacks. Reversible: while `enabled: false` the
+# recommender keeps the legacy GLOBAL `fallback` block above. Flip `enabled` to
+# true to route each ACTIVE family with no matching primary rule to its own pool
+# (safety + family cooldown still apply). A family absent from `families` yields
+# a typed no_eligible_practice reason — it is never substituted by another family.
+per_family_fallback:
+  enabled: false
+  rule_id: family_fallback   # telemetry/audit tag, distinct from GLOBAL "fallback"
+  families:
+    # P* / O* / S* / T* reuse their primary rule's candidate pool.
+    pressure:
+      candidates: [breath_4_6, reappraisal_alt_intent, one_percent_first_sentence]
+      cooldown_hours: 12
+    overwhelm:
+      candidates: [breath_box_4, name_and_need, boundary_prompt]
+      cooldown_hours: 12
+    self_silencing:
+      candidates: [speak_truth_sentence, reappraisal_self_compassion]
+      cooldown_hours: 12
+    transition:
+      candidates: [step_across_bridge, clarity_two_options, timebox_10min]
+      cooldown_hours: 18
+    # G* fixed pool per spec §6.
+    grief:
+      candidates: [heart_hand_breath, reappraisal_self_compassion]
+      cooldown_hours: 24
+    # A* fixed pool per spec §6.
+    agency:
+      candidates: [posture_reset, key_door_list]
+      cooldown_hours: 12

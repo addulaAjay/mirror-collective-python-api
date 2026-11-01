@@ -3,6 +3,7 @@ practices:
   - id: breath_4_6
     title: "Ease Pressure"           # Figma-confirmed (node 4654-3335)
     type: breath
+    breath_focused: true             # no_breathwork safety filter (spec §9.3)
     duration_sec: 120                # "TWO MINUTE PRACTICE" framing
     steps:
       - "Inhale for 4."
@@ -30,6 +31,7 @@ practices:
   - id: breath_box_4
     title: "Ease Overwhelm"          # Figma-confirmed (node 4654-3335)
     type: breath
+    breath_focused: true             # no_breathwork safety filter (spec §9.3)
     duration_sec: 120                # "TWO MINUTE PRACTICE" framing
     steps:
       - "Inhale 4. Hold 4."
@@ -57,6 +59,7 @@ practices:
   - id: heart_hand_breath
     title: "Soften Grief"            # Figma-confirmed (node 4654-3335)
     type: somatic
+    breath_focused: true             # "Inhale 4, exhale 6" — breath-led; no_breathwork must exclude (spec §9.3)
     duration_sec: 120                # "TWO MINUTE PRACTICE" framing
     steps:
       - "Hand to heart."
@@ -120,6 +123,7 @@ practices:
   - id: posture_reset
     title: "Stand up, two breaths"
     type: somatic
+    breath_focused: true             # directed-breath step ("Breathe in. Breathe out.") — no_breathwork must exclude (spec §9.3)
     duration_sec: 60
     steps:
       - "Stand. Roll your shoulders back."

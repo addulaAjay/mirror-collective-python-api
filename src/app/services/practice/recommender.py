@@ -20,6 +20,7 @@ from ...core.exceptions import (
     FallbackOnCooldown,
     LoopNotSupported,
     NoActiveLoops,
+    NoEligiblePractice,
     NoRuleMatched,
 )
 from ...repositories.echo_loop_state_repo import EchoLoopStateRepo
@@ -107,6 +108,21 @@ async def recommend(
 
     matched = match_rules(target, rules_doc.rules, now=n)
     if not matched:
+        # Spec §6 per-family fallback takes precedence when enabled (reversible
+        # via config); otherwise the legacy GLOBAL fallback / NoRuleMatched apply.
+        if rules_doc.per_family_fallback.enabled:
+            return await _per_family_fallback(
+                user_id=user_id,
+                target=target,
+                rules_doc=rules_doc,
+                catalog=catalog,
+                completions_repo=completions_repo,
+                prefs=prefs,
+                defaults=defaults,
+                user_tz=user_tz,
+                now=n,
+                private_mode=prefs.flags.private_mode,
+            )
         if settings.defaults.fallback_enabled:
             return await _fallback(
                 user_id=user_id,
@@ -157,6 +173,19 @@ async def recommend(
         )
 
     # Every matched rule's candidates were dropped by safety/cooldown.
+    if rules_doc.per_family_fallback.enabled:
+        return await _per_family_fallback(
+            user_id=user_id,
+            target=target,
+            rules_doc=rules_doc,
+            catalog=catalog,
+            completions_repo=completions_repo,
+            prefs=prefs,
+            defaults=defaults,
+            user_tz=user_tz,
+            now=n,
+            private_mode=prefs.flags.private_mode,
+        )
     if settings.defaults.fallback_enabled:
         return await _fallback(
             user_id=user_id,
@@ -205,7 +234,7 @@ async def _fallback(
     """
     fb_id = rules_doc.fallback.default_practice_id
     practice = catalog.get(fb_id)
-    if prefs.flags.no_breathwork and practice.type == "breath":
+    if prefs.flags.no_breathwork and practice.is_breath_focused:
         practice = catalog.get(rules_doc.fallback.alternate_for_no_breathwork_id)
 
     cutoff = now - timedelta(hours=cooldown_hours)
@@ -224,5 +253,68 @@ async def _fallback(
         ),
         practice=practice,
         rule_id=rules_doc.fallback.rule_id,  # "fallback"
+        private_mode_active=private_mode,
+    )
+
+
+async def _per_family_fallback(
+    *,
+    user_id: str,
+    target,
+    rules_doc: PracticeRulesDoc,
+    catalog: PracticeCatalog,
+    completions_repo: PracticeCompletionRepo,
+    prefs,
+    defaults: PersonalizationDefaults,
+    user_tz: str,
+    now: datetime,
+    private_mode: bool,
+) -> RecommendResult:
+    """Spec §6 starred per-family fallback.
+
+    Draws from the target family's own pool (never another family's). Applies
+    the same safety filter, family cooldown, and personalization scoring as the
+    primary-rule path. Raises ``NoEligiblePractice`` when the family has no pool
+    configured or its pool is fully filtered — no cross-family substitution.
+    """
+    cfg = rules_doc.per_family_fallback
+    family = cfg.families.get(target.loop_id)
+    if family is None:
+        raise NoEligiblePractice(
+            f"no per-family fallback configured for loop family '{target.loop_id}'"
+        )
+
+    candidates = [
+        catalog.get(pid) for pid in family.candidates if pid in set(catalog.all_ids())
+    ]
+    candidates = safety_apply(
+        candidates,
+        prefs,
+        global_disallow_types=defaults.global_config.disallow_types,
+    )
+    candidates = await cooldown_apply(
+        candidates,
+        user_id=user_id,
+        rule_cooldown_hours=int(family.cooldown_hours),
+        completions_repo=completions_repo,
+        now=now,
+    )
+    if not candidates:
+        raise NoEligiblePractice(
+            f"per-family fallback pool for '{target.loop_id}' filtered by "
+            "safety/cooldown"
+        )
+
+    scored = score_candidates(candidates, prefs, defaults, user_tz=user_tz, now=now)
+    winner = max(scored, key=lambda s: s.score)
+    return RecommendResult(
+        pattern=PatternInfo(
+            loop_id=target.loop_id,
+            strength=float(target.intensity_score),
+            trend=target.tone_state,
+            last_seen=str(target.last_seen),
+        ),
+        practice=winner.practice,
+        rule_id=cfg.rule_id,  # "family_fallback"
         private_mode_active=private_mode,
     )

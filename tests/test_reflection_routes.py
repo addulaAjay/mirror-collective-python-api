@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from src.app.api.reflection_routes import (
     get_echo_loop_state_repo,
+    get_idempotency,
     get_reflection_session_repo,
 )
 from src.app.core.security import get_current_user
@@ -25,6 +26,7 @@ from src.app.repositories.reflection_session_repo import (
 )
 from src.app.services.reflection import session_lifecycle
 from tests._fakes.fake_dynamodb import FakeAioSession, FakeTable
+from tests._fakes.fake_idempotency import FakeIdempotencyService
 
 
 # conftest.py installs a global ``mock_get_current_user(*args, **kwargs)`` whose
@@ -75,17 +77,26 @@ def repos(
 
 
 @pytest.fixture
-def client(repos: Dict[str, Any]) -> Iterator[TestClient]:
+def idempotency() -> FakeIdempotencyService:
+    return FakeIdempotencyService()
+
+
+@pytest.fixture
+def client(
+    repos: Dict[str, Any], idempotency: FakeIdempotencyService
+) -> Iterator[TestClient]:
     """TestClient with the fake repos + clean auth wired into FastAPI."""
     app.dependency_overrides[get_current_user] = _fake_user_no_varargs
     app.dependency_overrides[get_reflection_session_repo] = lambda: repos["sessions"]
     app.dependency_overrides[get_echo_loop_state_repo] = lambda: repos["loop_states"]
+    app.dependency_overrides[get_idempotency] = lambda: idempotency
     try:
         with TestClient(app) as c:
             yield c
     finally:
         app.dependency_overrides.pop(get_reflection_session_repo, None)
         app.dependency_overrides.pop(get_echo_loop_state_repo, None)
+        app.dependency_overrides.pop(get_idempotency, None)
 
 
 CANONICAL_SPIRAL = {
@@ -390,3 +401,66 @@ class TestRoomSkinOverride:
             json={"motif_id": "mirror", "apply_to": "session"},
         )
         assert response.status_code == 404
+
+
+# ============================================================
+# POST /reflection/quiz — idempotency (Idempotency-Key header)
+# ============================================================
+
+
+# A distinct answer set that scores to a different motif than CANONICAL_SPIRAL.
+CANONICAL_ALT = {
+    "answers": {
+        "q1": "grounded",
+        "q2": "clarity",
+        "q3": "mirror",
+        "q4": "insight",
+    }
+}
+
+
+class TestQuizIdempotency:
+    def test_retry_with_same_key_replays_response(self, client: TestClient):
+        headers = {"Idempotency-Key": "quiz-key-1"}
+        first = client.post(
+            "/api/reflection/quiz", json=CANONICAL_SPIRAL, headers=headers
+        ).json()
+        second = client.post(
+            "/api/reflection/quiz", json=CANONICAL_SPIRAL, headers=headers
+        ).json()
+        assert first == second
+
+    def test_same_key_different_answers_replays_original(self, client: TestClient):
+        """A retry reusing the key but sending different answers must NOT
+        re-score or re-seed — it replays the first response verbatim."""
+        headers = {"Idempotency-Key": "quiz-key-2"}
+        first = client.post(
+            "/api/reflection/quiz", json=CANONICAL_SPIRAL, headers=headers
+        ).json()
+        replay = client.post(
+            "/api/reflection/quiz", json=CANONICAL_ALT, headers=headers
+        ).json()
+        # Original spiral motif returned despite the different payload.
+        assert replay == first
+        assert replay["data"]["motif"]["motif_id"] == "spiral"
+
+    def test_no_key_scores_normally(self, client: TestClient):
+        # Sanity: without a key, behavior is unchanged (still 200 + motif).
+        resp = client.post("/api/reflection/quiz", json=CANONICAL_SPIRAL)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["motif"]["motif_id"] == "spiral"
+
+    def test_distinct_keys_score_independently(self, client: TestClient):
+        a = client.post(
+            "/api/reflection/quiz",
+            json=CANONICAL_SPIRAL,
+            headers={"Idempotency-Key": "k-a"},
+        ).json()
+        b = client.post(
+            "/api/reflection/quiz",
+            json=CANONICAL_ALT,
+            headers={"Idempotency-Key": "k-b"},
+        ).json()
+        # Distinct keys each score their own submission (no cross-key replay).
+        assert a["data"]["motif"]["motif_id"] == "spiral"
+        assert b["data"]["motif"]["motif_id"] != "spiral"
