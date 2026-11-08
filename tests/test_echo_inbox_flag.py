@@ -25,59 +25,58 @@ from src.app.core import feature_flags as ff
 
 
 class TestEchoInboxFlag:
-    def test_defaults_to_off(self):
+    def test_defaults_to_off(self, monkeypatch):
         # The feature is on product hold. If this ever defaults on, the inbox
         # appears for everyone without that hold being resolved.
         assert ff.ECHO_INBOX_ENABLED is False
 
-    def test_hidden_by_default_for_an_ordinary_user(self):
+    def test_hidden_by_default_for_an_ordinary_user(self, monkeypatch):
         assert ff.echo_inbox_enabled_for("someone") is False
 
-    def test_global_switch_opens_it_to_everyone(self):
+    def test_global_switch_opens_it_to_everyone(self, monkeypatch):
         with patch.object(ff, "ECHO_INBOX_ENABLED", True):
             assert ff.echo_inbox_enabled_for("anyone") is True
 
-    def test_global_switch_needs_no_user_id(self):
+    def test_global_switch_needs_no_user_id(self, monkeypatch):
         with patch.object(ff, "ECHO_INBOX_ENABLED", True):
             assert ff.echo_inbox_enabled_for(None) is True
 
-    def test_a_listed_tester_sees_it(self):
-        with patch.object(ff, "ECHO_INBOX_TESTER_IDS", frozenset({"u-1"})):
-            assert ff.echo_inbox_enabled_for("u-1") is True
+    def test_a_listed_tester_sees_it(self, monkeypatch):
+        monkeypatch.setenv("ECHO_INBOX_TESTER_IDS", "u-1")
+        assert ff.echo_inbox_enabled_for("u-1") is True
 
-    def test_an_unlisted_user_does_not(self):
-        with patch.object(ff, "ECHO_INBOX_TESTER_IDS", frozenset({"u-1"})):
-            assert ff.echo_inbox_enabled_for("u-2") is False
+    def test_an_unlisted_user_does_not(self, monkeypatch):
+        monkeypatch.setenv("ECHO_INBOX_TESTER_IDS", "u-1")
+        assert ff.echo_inbox_enabled_for("u-2") is False
 
-    def test_no_user_id_is_not_a_tester(self):
-        with patch.object(ff, "ECHO_INBOX_TESTER_IDS", frozenset({"u-1"})):
-            assert ff.echo_inbox_enabled_for(None) is False
-            assert ff.echo_inbox_enabled_for("") is False
+    def test_no_user_id_is_not_a_tester(self, monkeypatch):
+        monkeypatch.setenv("ECHO_INBOX_TESTER_IDS", "u-1")
+        assert ff.echo_inbox_enabled_for(None) is False
+        assert ff.echo_inbox_enabled_for("") is False
 
-    def test_returns_a_real_bool(self):
+    def test_returns_a_real_bool(self, monkeypatch):
         # Serialized straight into a JSON response.
-        with patch.object(ff, "ECHO_INBOX_TESTER_IDS", frozenset({"u-1"})):
-            for uid in ["u-1", "u-2", None, ""]:
-                assert isinstance(ff.echo_inbox_enabled_for(uid), bool)
+        monkeypatch.setenv("ECHO_INBOX_TESTER_IDS", "u-1")
+        for uid in ["u-1", "u-2", None, ""]:
+            assert isinstance(ff.echo_inbox_enabled_for(uid), bool)
 
 
 class TestFlagsAreIndependent:
     """Reflection Room and Echo Inbox must not share a switch."""
 
-    def test_reflection_room_on_does_not_open_the_inbox(self):
+    def test_reflection_room_on_does_not_open_the_inbox(self, monkeypatch):
         with patch.object(ff, "REFLECTION_ROOM_ENABLED", True):
             assert ff.echo_inbox_enabled_for("u-1") is False
 
-    def test_inbox_on_does_not_open_reflection_room(self):
+    def test_inbox_on_does_not_open_reflection_room(self, monkeypatch):
         with patch.object(ff, "ECHO_INBOX_ENABLED", True):
             assert ff.reflection_room_enabled_for("u-1") is False
 
-    def test_separate_allowlists(self):
-        with patch.object(ff, "ECHO_INBOX_TESTER_IDS", frozenset({"inbox-u"})):
-            with patch.object(
-                ff, "REFLECTION_ROOM_TESTER_IDS", frozenset({"reflect-u"})
-            ):
-                assert ff.echo_inbox_enabled_for("inbox-u") is True
-                assert ff.echo_inbox_enabled_for("reflect-u") is False
-                assert ff.reflection_room_enabled_for("reflect-u") is True
-                assert ff.reflection_room_enabled_for("inbox-u") is False
+    def test_separate_allowlists(self, monkeypatch):
+        monkeypatch.setenv("ECHO_INBOX_TESTER_IDS", "inbox-u")
+        monkeypatch.setenv("REFLECTION_ROOM_TESTER_IDS", "reflect-u")
+
+        assert ff.echo_inbox_enabled_for("inbox-u") is True
+        assert ff.echo_inbox_enabled_for("reflect-u") is False
+        assert ff.reflection_room_enabled_for("reflect-u") is True
+        assert ff.reflection_room_enabled_for("inbox-u") is False
