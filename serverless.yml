@@ -125,6 +125,17 @@ provider:
     # mailtoajay44@gmail.com — several each, from duplicate signups during
     # testing, so all are listed and whichever one is signed in works.
     REFLECTION_ROOM_TESTER_IDS: ${env:REFLECTION_ROOM_TESTER_IDS, '84289458-e081-70f8-a76f-859cc488fdde,54f8a4b8-f061-7060-5a4c-2edca101decd,045854c8-b031-7020-ce2a-0df085220040,0428f478-e051-7025-1202-d3ab0994a2a4,d4980488-00e1-70a6-bfb0-903e7886b1b7,c4f85448-d0b1-70e3-39c0-0ecf857c5201,b40894c8-f001-7038-8de0-acbe62b269cd,44986408-4041-7096-c5e6-db447f7876e6'}
+    # Echo Inbox rollout gate (core/feature_flags.py). Surfaces as
+    # features.echo_inbox_enabled; the app shows the Echo Inbox entry point on
+    # the vault library screen only when true. Gates the entry point ONLY —
+    # echoes already reach every recipient by email with a web-viewer link, so
+    # leaving this off strands nobody.
+    #
+    # Note there is no push notification for a received echo, so a user with
+    # the inbox enabled has no in-app signal that one arrived.
+    ECHO_INBOX_ENABLED: ${env:ECHO_INBOX_ENABLED, 'false'}
+    # Same internal test accounts as the Reflection Room list.
+    ECHO_INBOX_TESTER_IDS: ${env:ECHO_INBOX_TESTER_IDS, '84289458-e081-70f8-a76f-859cc488fdde,54f8a4b8-f061-7060-5a4c-2edca101decd,045854c8-b031-7020-ce2a-0df085220040,0428f478-e051-7025-1202-d3ab0994a2a4,d4980488-00e1-70a6-bfb0-903e7886b1b7,c4f85448-d0b1-70e3-39c0-0ecf857c5201,b40894c8-f001-7038-8de0-acbe62b269cd,44986408-4041-7096-c5e6-db447f7876e6'}
     # Apple/Google IAP credentials
     APPLE_SHARED_SECRET: ${env:APPLE_SHARED_SECRET, ''}
     # App Store Server API (modern receipt validation + notification JWS

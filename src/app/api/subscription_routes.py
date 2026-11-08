@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..core.enhanced_auth import get_user_with_profile
-from ..core.feature_flags import reflection_room_enabled_for
+from ..core.feature_flags import echo_inbox_enabled_for, reflection_room_enabled_for
 from ..services.dynamodb_service import get_dynamodb_service
 from ..services.storage_quota_service import get_storage_quota_service
 from ..services.subscription_service import SubscriptionService
@@ -166,6 +166,10 @@ async def get_subscription_status(
             # REFLECTION_ROOM_ENABLED is set, visible meanwhile to the user
             # ids in REFLECTION_ROOM_TESTER_IDS. See core/feature_flags.py.
             "reflection_room_enabled": reflection_room_enabled_for(user_id),
+            # Entry-point visibility only. Echoes already reach every
+            # recipient by email with a web-viewer link; the inbox is a
+            # second channel. See core/feature_flags.py.
+            "echo_inbox_enabled": echo_inbox_enabled_for(user_id),
         }
 
         return {
