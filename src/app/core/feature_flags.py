@@ -37,10 +37,24 @@ REFLECTION_ROOM_ENABLED = (
     os.getenv("REFLECTION_ROOM_ENABLED", "false").lower() == "true"
 )
 
-# Per-user allowlist, e.g. REFLECTION_ROOM_TESTER_IDS="cognito-sub-1,sub-2".
-# Lets testers exercise the feature in production while it stays hidden from
-# everyone else.
-REFLECTION_ROOM_TESTER_IDS = _parse_ids(os.getenv("REFLECTION_ROOM_TESTER_IDS"))
+
+def _tester_ids(feature: str) -> FrozenSet[str]:
+    """Allowlist for ``feature``, falling back to the shared list.
+
+    ``<FEATURE>_TESTER_IDS`` wins when set and non-empty; otherwise
+    ``FEATURE_TESTER_IDS`` applies. An empty per-feature value falls through
+    rather than meaning "nobody", so clearing one in the AWS console does not
+    silently lock testers out while the shared list is populated.
+
+    One shared list exists because two 8-UUID lists in provider.environment
+    pushed UpdateFunctionConfiguration past its 5120-byte request limit and
+    failed the production deploy on 2026-11-08 (HTTP 413). Only the shared
+    one is declared in serverless.yml, and only on the api function.
+
+    Read at call time so a Lambda env change needs only a cold start.
+    """
+    specific = _parse_ids(os.getenv(f"{feature}_TESTER_IDS"))
+    return specific if specific else _parse_ids(os.getenv("FEATURE_TESTER_IDS"))
 
 
 # Global switch for the Echo Inbox — the in-app view of echoes sent to you.
@@ -49,10 +63,6 @@ REFLECTION_ROOM_TESTER_IDS = _parse_ids(os.getenv("REFLECTION_ROOM_TESTER_IDS"))
 # point was compiled out with a literal `{false && ...}` pending a product
 # decision. This replaces that with something flippable without a release.
 ECHO_INBOX_ENABLED = os.getenv("ECHO_INBOX_ENABLED", "false").lower() == "true"
-
-# Per-user allowlist for the Echo Inbox. Separate from the Reflection Room
-# list on purpose — the two roll out independently.
-ECHO_INBOX_TESTER_IDS = _parse_ids(os.getenv("ECHO_INBOX_TESTER_IDS"))
 
 
 def _enabled_for(
@@ -74,7 +84,9 @@ def _enabled_for(
 
 def reflection_room_enabled_for(user_id: Optional[str]) -> bool:
     """Should this user see Reflection Room?"""
-    return _enabled_for(user_id, REFLECTION_ROOM_ENABLED, REFLECTION_ROOM_TESTER_IDS)
+    return _enabled_for(
+        user_id, REFLECTION_ROOM_ENABLED, _tester_ids("REFLECTION_ROOM")
+    )
 
 
 def echo_inbox_enabled_for(user_id: Optional[str]) -> bool:
@@ -88,4 +100,4 @@ def echo_inbox_enabled_for(user_id: Optional[str]) -> bool:
     There is no push notification for a received echo, so a user with the
     inbox enabled has no in-app signal that something arrived.
     """
-    return _enabled_for(user_id, ECHO_INBOX_ENABLED, ECHO_INBOX_TESTER_IDS)
+    return _enabled_for(user_id, ECHO_INBOX_ENABLED, _tester_ids("ECHO_INBOX"))
