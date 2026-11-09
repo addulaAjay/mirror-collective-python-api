@@ -563,6 +563,13 @@ class EchoService:
                                 echo_date=echo.release_date or echo.updated_at,
                                 **media_fields,
                             )
+                            # In-app signal for a recipient who has an account. Email
+                            # already went out above; this never raises.
+                            await self.push_echo_received(
+                                recipient,
+                                await self._resolve_sender_name(user_id),
+                                echo,
+                            )
                             logger.info(
                                 f"Sent auto-release notification for echo {echo.echo_id} (registered={is_registered})"
                             )
@@ -1248,6 +1255,11 @@ class EchoService:
                     quote=echo.letter_to_recipient or echo.content,
                     echo_date=echo.release_date or echo.updated_at,
                     **media_fields,
+                )
+                # In-app signal for a recipient who has an account. Email
+                # already went out above; this never raises.
+                await self.push_echo_received(
+                    recipient, await self._resolve_sender_name(user_id), echo
                 )
                 logger.info(
                     f"Sent echo notification for {echo_id} (registered={is_registered})"
@@ -2717,6 +2729,58 @@ class EchoService:
             if att.thumb_url:
                 att.thumb_url = await self._presign_get(att.thumb_url)
         return echo
+
+    @property
+    def _push(self):
+        """Lazily-built push service.
+
+        EchoService is a process-wide singleton built with no arguments, so the
+        dependency is constructed on first use rather than injected — the same
+        pattern the aioboto3 clients above use.
+        """
+        existing = getattr(self, "_push_service", None)
+        if existing is None:
+            from .dynamodb_service import get_dynamodb_service
+            from .push_notification_service import PushNotificationService
+
+            existing = PushNotificationService(get_dynamodb_service())
+            self._push_service = existing
+        return existing
+
+    async def push_echo_received(
+        self, recipient: Any, sender_name: str, echo: Any
+    ) -> int:
+        """Tell a recipient, in-app, that an echo arrived. Returns endpoints hit.
+
+        Only for recipients who have an account — ``recipient_user_id`` is set
+        by the email lookup at recipient creation. Everyone else already gets
+        the email, whose CTA opens a server-rendered viewer and needs no app.
+
+        The visible copy is deliberately generic. A push is readable by anyone
+        holding the phone, and an echo is personal: no title, no content, no
+        category on the lock screen. Identifying detail rides in ``data`` for
+        the app to use once it is open and the user is authenticated.
+
+        Never raises. The echo has already been delivered by email by the time
+        this runs; a push failure must not undo that or abort the caller.
+        """
+        try:
+            user_id = getattr(recipient, "recipient_user_id", None)
+            if not user_id:
+                return 0
+
+            return await self._push.send_notification(
+                user_id=user_id,
+                title="A new echo",
+                body=f"{sender_name} sent you an echo.".strip(),
+                data={
+                    "type": "echo_received",
+                    "echo_id": getattr(echo, "echo_id", None),
+                },
+            )
+        except Exception as e:  # noqa: BLE001 - delivery already happened by email
+            logger.warning(f"Echo-received push failed: {e}")
+            return 0
 
     async def create_echo_group(self, user_id: str, data: Dict[str, Any]) -> List[Echo]:
         """Create one echo per recipient, sharing a ``group_id``.
