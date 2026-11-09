@@ -1046,6 +1046,55 @@ async def delete_echo(
     }
 
 
+@router.patch("/echoes/group/{group_id}/release", response_model=Dict[str, Any])
+@idempotent(route_id="release_echo_group")
+async def release_echo_group(
+    group_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Release every echo in a multi-recipient send.
+
+    The create flow is create -> upload attachments -> release, all against a
+    single echo_id, and the client only holds the first row's id. Releasing
+    that one alone would leave recipients 2..N with attachment-less drafts
+    that never arrive.
+
+    EchoService.release_echo_group copies the attachment metadata across the
+    group first - the rows share S3 objects, so nothing is re-uploaded - then
+    releases each sibling individually, so every recipient gets their own
+    email, push and read state.
+
+    Partial success is reported rather than hidden: `released` may be shorter
+    than `total` if an individual write failed. One recipient failing must not
+    deny the others, and the caller deserves to know.
+
+    Idempotent for the same reason as the single release: the notification
+    emails are a user-visible side effect that a 429 retry must not duplicate.
+    """
+    from ..core.exceptions import NotFoundError, ValidationError
+
+    user_id = current_user["id"]
+
+    try:
+        echoes = await echo_service.release_echo_group(
+            group_id=group_id, user_id=user_id
+        )
+        return {
+            "success": True,
+            "data": {
+                "group_id": group_id,
+                "released": [e.echo_id for e in echoes],
+                "released_count": len(echoes),
+            },
+            "message": f"Echo released to {len(echoes)} recipients",
+        }
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.patch("/echoes/{echo_id}/release", response_model=Dict[str, Any])
 @idempotent(route_id="release_echo")
 async def release_echo(

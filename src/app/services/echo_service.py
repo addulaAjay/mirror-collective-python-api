@@ -2767,6 +2767,94 @@ class EchoService:
             created.append(await self.create_echo(user_id, per_recipient))
         return created
 
+    async def get_echo_group(self, group_id: str, user_id: str) -> List[Echo]:
+        """Every echo created by one multi-recipient send, oldest first.
+
+        No GSI on ``group_id``: a send is capped at MAX_ECHO_RECIPIENTS, and
+        the owner's echoes are already queryable, so this filters that list
+        rather than adding an index for a rare access pattern.
+        """
+        if not group_id:
+            return []
+
+        # get_user_echoes is paginated and returns (page, cursor). Walking
+        # every page matters: a group member can sit beyond the first page for
+        # any user with a reasonable vault, and silently releasing only the
+        # members that happened to land on page one is exactly the half-
+        # delivery this method exists to prevent.
+        found: List[Echo] = []
+        cursor: Optional[str] = None
+        while True:
+            page, cursor = await self.get_user_echoes(user_id, cursor=cursor)
+            found.extend(e for e in page if getattr(e, "group_id", None) == group_id)
+            if not cursor or len(found) >= MAX_ECHO_RECIPIENTS:
+                break
+        return found
+
+    async def release_echo_group(self, group_id: str, user_id: str) -> List[Echo]:
+        """Release every echo in a multi-recipient send.
+
+        The create flow is create -> upload attachments -> release, all against
+        a single echo_id, and the client only ever holds the first row's id.
+        Without this, recipients 2..N end up with attachment-less drafts that
+        are never delivered. Plain TEXT echoes happened to work; anything with
+        media silently half-delivered.
+
+        Attachments are COPIED, not re-uploaded. They are metadata rows
+        pointing at S3 keys, so siblings share the same objects — re-uploading
+        would cost N times the bytes and the upload time, and would destroy the
+        shared-media property that made fan-out the right design in the first
+        place.
+
+        Each sibling is released individually so every recipient gets their own
+        email, push and read state. One failure does not deny the others: a
+        throttled write for recipient 2 must not cost recipients 3..N their
+        echo.
+        """
+        group = await self.get_echo_group(group_id, user_id)
+        if not group:
+            raise NotFoundError(f"Echo group {group_id} not found")
+
+        # The row the client uploaded to is whichever actually has media.
+        source = next(
+            (
+                e
+                for e in group
+                if getattr(e, "attachments", None) or getattr(e, "media_url", None)
+            ),
+            None,
+        )
+
+        if source is not None:
+            for sibling in group:
+                if sibling is source:
+                    continue
+                attachments = list(getattr(source, "attachments", []) or [])
+                media_url = getattr(source, "media_url", None)
+                poster_url = getattr(source, "poster_url", None)
+                sibling.attachments = attachments
+                sibling.media_url = media_url
+                sibling.poster_url = poster_url
+                await self.update_echo(
+                    sibling.echo_id,
+                    user_id,
+                    {
+                        "attachments": attachments,
+                        "media_url": media_url,
+                        "poster_url": poster_url,
+                    },
+                )
+
+        released: List[Echo] = []
+        for echo in group:
+            try:
+                released.append(await self.release_echo(echo.echo_id, user_id))
+            except Exception as e:  # noqa: BLE001 - one failure must not deny the rest
+                logger.warning(
+                    f"Release failed for {echo.echo_id} in group {group_id}: {e}"
+                )
+        return released
+
     async def build_email_media_fields(
         self, echo: Echo, recipient_id: Optional[str] = None
     ) -> Dict[str, Any]:
