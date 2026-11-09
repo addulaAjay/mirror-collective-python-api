@@ -39,6 +39,10 @@ class CreateEchoRequest(BaseModel):
     category: str
     echo_type: str = "TEXT"  # TEXT, AUDIO, VIDEO
     recipient_id: Optional[str] = None
+    # Multi-recipient send. Additive: clients that send the singular
+    # recipient_id keep working unchanged. When both are present the list
+    # wins. Capped at MAX_ECHO_RECIPIENTS server-side.
+    recipient_ids: Optional[List[str]] = None
     guardian_id: Optional[str] = None
     release_date: Optional[str] = None  # ISO 8601 for scheduled release
     unlock_on_death: Optional[bool] = False  # If true, echo released when creator dies
@@ -322,18 +326,33 @@ async def create_echo(
     """
     user_id = current_user["id"]
 
-    echo = await echo_service.create_echo(user_id, payload.model_dump())
+    # One row per recipient, sharing a group_id. A single recipient takes the
+    # same path and simply produces one row with no group.
+    echoes = await echo_service.create_echo_group(user_id, payload.model_dump())
+    echo = echoes[0]
+
+    data: Dict[str, Any] = {
+        "echo_id": echo.echo_id,
+        "title": echo.title,
+        "category": echo.category,
+        "echo_type": echo.echo_type.value,
+        "status": echo.status.value,
+    }
+    # Only surfaced for a real group, so single-recipient responses keep their
+    # exact existing shape.
+    if len(echoes) > 1:
+        data["group_id"] = echo.group_id
+        data["echo_ids"] = [e.echo_id for e in echoes]
+        data["recipient_count"] = len(echoes)
 
     return {
         "success": True,
-        "data": {
-            "echo_id": echo.echo_id,
-            "title": echo.title,
-            "category": echo.category,
-            "echo_type": echo.echo_type.value,
-            "status": echo.status.value,
-        },
-        "message": "Echo created successfully",
+        "data": data,
+        "message": (
+            f"Echo sent to {len(echoes)} recipients"
+            if len(echoes) > 1
+            else "Echo created successfully"
+        ),
     }
 
 
