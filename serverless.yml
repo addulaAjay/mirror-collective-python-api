@@ -334,17 +334,6 @@ provider:
 
 functions:
   api:
-    # Feature-rollout tester allowlist. Scoped to this function rather than
-    # provider.environment because only the API serves
-    # /subscriptions/status; adding ~320 bytes to all six functions pushed
-    # UpdateFunctionConfiguration past its 5120-byte request limit and failed
-    # the deploy (TranscodeCompleteLambdaFunction, 2026-11-08).
-    #
-    # One shared list, not one per feature, for the same reason. Each feature
-    # can still be overridden individually via <FEATURE>_TESTER_IDS without
-    # being declared here.
-    environment:
-      FEATURE_TESTER_IDS: ${env:FEATURE_TESTER_IDS, '84289458-e081-70f8-a76f-859cc488fdde,54f8a4b8-f061-7060-5a4c-2edca101decd,045854c8-b031-7020-ce2a-0df085220040,0428f478-e051-7025-1202-d3ab0994a2a4,d4980488-00e1-70a6-bfb0-903e7886b1b7,c4f85448-d0b1-70e3-39c0-0ecf857c5201,b40894c8-f001-7038-8de0-acbe62b269cd,44986408-4041-7096-c5e6-db447f7876e6'}
     handler: src/app/handler.handler
     # Lambda CPU scales with memory: ~1024MB ≈ 0.58 vCPU, 1769MB = 1 full vCPU.
     # The API's cold-start init (~5.6s) and request work are CPU-bound (boto3 /

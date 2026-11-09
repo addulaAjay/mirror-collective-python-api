@@ -113,11 +113,15 @@ class TestSharedTesterAllowlist:
         assert ff._tester_ids("ECHO_INBOX") == frozenset({"inbox-only"})
         assert ff._tester_ids("REFLECTION_ROOM") == frozenset({"shared-1"})
 
-    def test_neither_set_means_nobody(self, monkeypatch):
+    def test_neither_set_falls_back_to_the_built_in_list(self, monkeypatch):
+        # Changed deliberately on 2026-11-08. This used to resolve to an empty
+        # set; now it falls back to _DEFAULT_TESTER_IDS, because the allowlist
+        # no longer fits in the Lambda environment and lives in code instead.
+        # Nothing in production sets either variable, so this IS the live path.
         monkeypatch.delenv("FEATURE_TESTER_IDS", raising=False)
         monkeypatch.delenv("ECHO_INBOX_TESTER_IDS", raising=False)
 
-        assert ff._tester_ids("ECHO_INBOX") == frozenset()
+        assert ff._tester_ids("ECHO_INBOX") == ff._DEFAULT_TESTER_IDS
 
     def test_an_empty_per_feature_list_falls_back_rather_than_locking_out(
         self, monkeypatch
@@ -128,3 +132,58 @@ class TestSharedTesterAllowlist:
         monkeypatch.setenv("ECHO_INBOX_TESTER_IDS", "")
 
         assert ff._tester_ids("ECHO_INBOX") == frozenset({"shared-1"})
+
+
+class TestAllowlistLivesInCodeNotEnv:
+    """The tester allowlist costs zero Lambda environment bytes.
+
+    Production deploy, 2026-11-08, second failure:
+
+        ApiLambdaFunction - environment variables exceeded the 4KB limit.
+        Measured size: 4311 bytes
+
+    Without the 313-byte FEATURE_TESTER_IDS the environment measures ~3998 —
+    roughly 98 bytes under the ceiling. There is no room for it, and the
+    22 DYNAMODB_* table-name vars account for ~1843 bytes of what is there.
+
+    So the default allowlist lives in code. These are internal test-account
+    ids, not secrets and not environment-specific config, so a constant is an
+    honest home for them. The env override is kept for the day space frees
+    up, but is no longer declared in serverless.yml.
+    """
+
+    def test_the_default_allowlist_is_not_empty(self, monkeypatch):
+        # If this empties out, testers silently lose access with no error.
+        monkeypatch.delenv("FEATURE_TESTER_IDS", raising=False)
+        monkeypatch.delenv("ECHO_INBOX_TESTER_IDS", raising=False)
+
+        assert len(ff._tester_ids("ECHO_INBOX")) > 0
+
+    def test_known_tester_accounts_resolve(self, monkeypatch):
+        monkeypatch.delenv("FEATURE_TESTER_IDS", raising=False)
+        monkeypatch.delenv("REFLECTION_ROOM_TESTER_IDS", raising=False)
+
+        # addula.ajay primary, and the mailtoajay44 trial account
+        assert (
+            ff.reflection_room_enabled_for("84289458-e081-70f8-a76f-859cc488fdde")
+            is True
+        )
+        assert (
+            ff.reflection_room_enabled_for("0428f478-e051-7025-1202-d3ab0994a2a4")
+            is True
+        )
+
+    def test_a_stranger_still_does_not(self, monkeypatch):
+        monkeypatch.delenv("FEATURE_TESTER_IDS", raising=False)
+
+        assert ff.reflection_room_enabled_for("not-a-tester") is False
+
+    def test_env_still_overrides_the_built_in_list(self, monkeypatch):
+        # Kept working so the allowlist can move back to env if space frees up.
+        monkeypatch.setenv("FEATURE_TESTER_IDS", "someone-else")
+
+        assert ff.reflection_room_enabled_for("someone-else") is True
+        assert (
+            ff.reflection_room_enabled_for("84289458-e081-70f8-a76f-859cc488fdde")
+            is False
+        )

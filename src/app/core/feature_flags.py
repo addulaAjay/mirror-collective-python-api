@@ -38,6 +38,34 @@ REFLECTION_ROOM_ENABLED = (
 )
 
 
+# Internal test accounts — the profiles belonging to addula.ajay@gmail.com and
+# mailtoajay44@gmail.com. Several each, from duplicate signups during testing,
+# so all are listed and whichever one is signed in works.
+#
+# These live in code rather than the Lambda environment because there is no
+# room: the production deploy on 2026-11-08 failed with "environment variables
+# exceeded the 4KB limit. Measured size: 4311 bytes", and without this list the
+# environment sits at roughly 3998 — about 98 bytes of headroom. The 22
+# DYNAMODB_* table-name variables account for ~1843 bytes of that; deriving
+# them in code would free most of it and is the real fix.
+#
+# They are internal test-account ids: not secrets, and not environment-specific
+# config, so a constant is an honest home for them. FEATURE_TESTER_IDS still
+# overrides when set, for the day there is space again.
+_DEFAULT_TESTER_IDS = frozenset(
+    {
+        "84289458-e081-70f8-a76f-859cc488fdde",  # addula.ajay, core_plus
+        "54f8a4b8-f061-7060-5a4c-2edca101decd",  # addula.ajay
+        "045854c8-b031-7020-ce2a-0df085220040",  # addula.ajay
+        "0428f478-e051-7025-1202-d3ab0994a2a4",  # mailtoajay44, trial
+        "d4980488-00e1-70a6-bfb0-903e7886b1b7",  # mailtoajay44
+        "c4f85448-d0b1-70e3-39c0-0ecf857c5201",  # mailtoajay44
+        "b40894c8-f001-7038-8de0-acbe62b269cd",  # mailtoajay44
+        "44986408-4041-7096-c5e6-db447f7876e6",  # mailtoajay44
+    }
+)
+
+
 def _tester_ids(feature: str) -> FrozenSet[str]:
     """Allowlist for ``feature``, falling back to the shared list.
 
@@ -54,7 +82,10 @@ def _tester_ids(feature: str) -> FrozenSet[str]:
     Read at call time so a Lambda env change needs only a cold start.
     """
     specific = _parse_ids(os.getenv(f"{feature}_TESTER_IDS"))
-    return specific if specific else _parse_ids(os.getenv("FEATURE_TESTER_IDS"))
+    if specific:
+        return specific
+    shared = _parse_ids(os.getenv("FEATURE_TESTER_IDS"))
+    return shared if shared else _DEFAULT_TESTER_IDS
 
 
 # Global switch for the Echo Inbox — the in-app view of echoes sent to you.
