@@ -14,6 +14,7 @@ from contextlib import AsyncExitStack
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 import aioboto3
 from botocore.config import Config
@@ -249,6 +250,13 @@ def decode_cursor(cursor: Optional[str]) -> Optional[Dict[str, Any]]:
     except (ValueError, TypeError, json.JSONDecodeError) as e:
         logger.warning(f"Ignoring malformed pagination cursor: {e}")
         return None
+
+
+# Upper bound on a single multi-recipient send. Unbounded fan-out is a
+# denial-of-service shape - one request writing thousands of rows and sending
+# thousands of emails. 50 matches the ceiling the inbox pagination code
+# already assumes.
+MAX_ECHO_RECIPIENTS = 50
 
 
 class EchoService:
@@ -2773,6 +2781,55 @@ class EchoService:
         except Exception as e:  # noqa: BLE001 - delivery already happened by email
             logger.warning(f"Echo-received push failed: {e}")
             return 0
+
+    async def create_echo_group(self, user_id: str, data: Dict[str, Any]) -> List[Echo]:
+        """Create one echo per recipient, sharing a ``group_id``.
+
+        Fan-out rather than a join table: every downstream path - release
+        scheduling, the per-recipient inbox, read state, the delivery email -
+        keeps working untouched, and per-recipient state comes free (one
+        person opening it does not mark it read for everyone). A join table
+        would have meant migrating live data and rewriting every read path.
+
+        Storage quota is unaffected: it sums S3 objects under a prefix rather
+        than counting echo rows, and the copies share media URLs.
+
+        Accepts ``recipient_ids`` (a list) or the existing singular
+        ``recipient_id``, so current clients are unaffected.
+        """
+        raw = data.get("recipient_ids")
+        base = {k: v for k, v in data.items() if k != "recipient_ids"}
+
+        # No list supplied: the existing single-echo path, untouched. An echo
+        # with no recipient at all is valid here - a draft, or one addressed
+        # to a guardian - so this must not start demanding one.
+        if raw is None:
+            return [await self.create_echo(user_id, base)]
+
+        # An explicitly empty list is a client error rather than a draft: the
+        # caller meant to send to someone and named nobody.
+        # Order preserved, duplicates dropped - picking the same person twice
+        # must not send them two copies.
+        recipients: List[str] = list(dict.fromkeys(r for r in raw if r))
+
+        if not recipients:
+            raise ValidationError("At least one recipient is required")
+        if len(recipients) > MAX_ECHO_RECIPIENTS:
+            raise ValidationError(
+                f"An echo can be sent to at most {MAX_ECHO_RECIPIENTS} recipients"
+            )
+
+        # A group of one would only confuse the vault's collapsing logic.
+        group_id = str(uuid4()) if len(recipients) > 1 else None
+
+        created: List[Echo] = []
+        for recipient_id in recipients:
+            per_recipient = dict(base)
+            per_recipient["recipient_id"] = recipient_id
+            if group_id:
+                per_recipient["group_id"] = group_id
+            created.append(await self.create_echo(user_id, per_recipient))
+        return created
 
     async def build_email_media_fields(
         self, echo: Echo, recipient_id: Optional[str] = None
