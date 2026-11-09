@@ -142,6 +142,12 @@ class Echo:
     status: EchoStatus = EchoStatus.DRAFT
     recipient_id: Optional[str] = None  # References Recipient
 
+    # Set when one send fanned out to several recipients: every row created by
+    # that send shares this id. Lets the vault collapse them into one card and
+    # lets edit/delete act on the whole send. None for a single-recipient echo
+    # — a group of one would only confuse the collapsing logic.
+    group_id: Optional[str] = None
+
     # Optional cover note shown alongside the echo in the recipient's inbox.
     # Captured on the "Letter to Recipient" field in ChooseRecipientScreen
     # during create/edit. Distinct from `content` (which is the echo body for
